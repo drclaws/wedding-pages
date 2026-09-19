@@ -250,6 +250,12 @@
   --gallery-columns-desktop: 3;  /* TEMP */
   --gallery-columns: var(--gallery-columns-mobile);
 
+  /* Галерея внутри колонки двухколоночной секции «Место»: колонка вдвое уже
+     широкого контейнера, поэтому число колонок у неё своё. */
+  --gallery-columns-venue-mobile: 2;   /* TEMP */
+  --gallery-columns-venue-desktop: 2;  /* TEMP */
+  --gallery-columns-venue: var(--gallery-columns-venue-mobile);
+
   --countdown-columns: 4;  /* дни/часы/минуты/секунды — не стиль */
   --countdown-gap-mobile: 4;    /* TEMP  на 360 px четыре ячейки должны поместиться */
   --countdown-gap-desktop: 14;  /* TEMP */
@@ -388,6 +394,13 @@
     max(var(--icon-size-mobile) * 1px, var(--icon-size-desktop) * 1px));
 
   --countdown-cell-min: var(--tap-min);
+  /* Предел ширины ячейки таймера: на широком экране таймер не растягивается
+     на всю текстовую колонку (ширина таймера = ячейки + зазоры). */
+  --countdown-cell-max-mobile: 96;    /* TEMP */
+  --countdown-cell-max-desktop: 128;  /* TEMP */
+  --countdown-cell-max: clamp(min(var(--countdown-cell-max-mobile) * 1px, var(--countdown-cell-max-desktop) * 1px),
+    calc(var(--countdown-cell-max-mobile) * 1px + (var(--countdown-cell-max-desktop) - var(--countdown-cell-max-mobile)) * var(--fluid)),
+    max(var(--countdown-cell-max-mobile) * 1px, var(--countdown-cell-max-desktop) * 1px));
   --divider-thickness: var(--line-width-hairline);
   --card-padding: var(--space-md);
   --btn-padding-block: var(--space-xs);
@@ -401,6 +414,7 @@
   :root {
     --grid-columns: var(--grid-columns-desktop);
     --gallery-columns: var(--gallery-columns-desktop);
+    --gallery-columns-venue: var(--gallery-columns-venue-desktop);
     --ratio-photo: var(--ratio-photo-desktop);
     --ratio-gallery: var(--ratio-gallery-desktop);
     --ratio-scheme: var(--ratio-scheme-desktop);
@@ -1265,10 +1279,221 @@ a.btn[aria-disabled="true"] {
 /* =============================================================================
    6. Page layout
    -----------------------------------------------------------------------------
-   Раскладка блоков страницы приглашения: обложка (svh/dvh + фолбэк, safe-area),
-   двухколоночные секции на десктопе, ландшафтная ориентация, заглушка.
-   Пока пусто: заполняется вместе с разметкой страницы.
+   Раскладка блоков страницы приглашения и заглушки. Здесь только расположение:
+   внешний вид элементов задают компоненты секции 5, размеры — токены секции 1.
+
+   Раскладка «внутренняя»: блоки сами переносятся и сжимаются (flex-wrap,
+   minmax(), max-content), новых брейкпоинтов нет. Две колонки на десктопе
+   дают примитив .grid и токен --grid-columns (граница --bp-layout).
+
+   Высота обложки и заглушки — min-block-size: в ландшафтной ориентации
+   телефона блок растёт вместе с содержимым, ничего не обрезается.
    ========================================================================== */
+
+/* Атрибут hidden сильнее display компонентов (таймер скрыт, пока его не
+   запустит скрипт). */
+[hidden] {
+  display: none !important;
+}
+
+/* --- Страница ------------------------------------------------------------- */
+/* flow-root: отступы первой и последней секции остаются внутри страницы. */
+.page {
+  display: flow-root;
+  padding-block-end: var(--safe-inset-bottom);
+}
+
+/* --- 1. Обложка -------------------------------------------------------------
+   Боковые безопасные зоны учитывает .container, верхнюю и нижнюю — обложка. */
+.cover {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-block-size: var(--cover-min-height);
+  padding-block:
+    calc(var(--space-xl) + var(--safe-inset-top))
+    calc(var(--space-xl) + var(--safe-inset-bottom));
+  background-color: var(--color-surface);
+  text-align: center;
+}
+
+.cover__title {
+  font-size: var(--text-display);
+}
+
+.cover__date {
+  font-size: var(--text-lg);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-muted);
+}
+
+/* --- 2. Официальное приглашение --------------------------------------------- */
+.invite__greeting {
+  font-size: var(--text-2xl);
+}
+
+/* --- 5. Дата и время ---------------------------------------------------------
+   Дата текстом видна всегда; таймер появляется только вместе со скриптом. */
+.date__inner {
+  text-align: center;
+}
+
+.date__text {
+  font-family: var(--font-heading);
+  font-size: var(--text-2xl);
+  font-weight: var(--font-weight-heading);
+  line-height: var(--line-height-heading);
+  letter-spacing: var(--tracking-heading);
+  text-wrap: balance;
+}
+
+/* Таймер не шире четырёх ячеек предельной ширины; на узком экране — во всю
+   ширину колонки. */
+.date__countdown {
+  max-inline-size: calc(
+    var(--countdown-cell-max) * var(--countdown-columns)
+    + var(--countdown-gap) * (var(--countdown-columns) - 1)
+  );
+  margin-block-start: var(--space-lg);
+  margin-inline: auto;
+}
+
+.date__actions {
+  margin-block-start: var(--space-lg);
+}
+
+/* --- 6. Место ----------------------------------------------------------------
+   .grid: на десктопе описание и галерея стоят в две колонки. Если галереи
+   нет, описание занимает всю ширину (текст внутри ограничен .prose). */
+.venue__layout > :only-child {
+  grid-column: 1 / -1;
+}
+
+.venue__name {
+  font-size: var(--text-lg);
+}
+
+.venue__address {
+  color: var(--color-text-muted);
+}
+
+/* Кнопки карт — в ряд с переносом. Вертикальный шаг несут сами элементы, а
+   не список: если ссылок нет, пустой список не оставляет лишнего отступа. */
+.venue__maps {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: var(--space-2xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.venue__map {
+  margin-block-start: var(--flow-space);
+}
+
+/* Галерея стоит в одной из двух колонок — число её колонок своё. */
+.venue__gallery {
+  --gallery-columns: var(--gallery-columns-venue);
+}
+
+/* Пока место не объявлено: короткая карточка шириной с текстовую колонку. */
+.venue__pending {
+  max-inline-size: var(--container-text);
+}
+
+/* --- 6. Программа дня --------------------------------------------------------
+   На десктопе заголовок и список стоят в две колонки (.grid). Внутри пункта
+   время и описание — тоже две колонки: ширину первой задаёт самая длинная
+   метка времени. */
+.schedule__title {
+  margin-block-end: 0;
+}
+
+.schedule__list {
+  display: grid;
+  row-gap: var(--space-md);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.schedule__item {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: var(--space-sm);
+  align-items: baseline;
+}
+
+.schedule__time {
+  grid-column: 1;
+  justify-self: start;
+}
+
+.schedule__body {
+  grid-column: 2;
+  color: var(--color-text-muted);
+}
+
+.schedule__name {
+  font-size: var(--text-md);
+  line-height: var(--line-height-tight);
+  color: var(--color-text);
+}
+
+/* Где есть subgrid, колонка времени общая на весь список и пункты выровнены
+   между собой; без него каждый пункт выравнивается сам по себе. */
+@supports (grid-template-columns: subgrid) {
+  .schedule__list {
+    grid-template-columns: max-content minmax(0, 1fr);
+    column-gap: var(--space-sm);
+  }
+
+  .schedule__item {
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+  }
+}
+
+/* --- 7. Для иногородних ------------------------------------------------------ */
+.travel__note {
+  margin-block-start: var(--space-md);
+}
+
+/* --- 9. Подтверждение -------------------------------------------------------- */
+.rsvp__inner {
+  text-align: center;
+}
+
+.rsvp__signature {
+  margin-block-start: var(--space-lg);
+  font-family: var(--font-heading);
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-heading);
+  line-height: var(--line-height-heading);
+}
+
+/* --- Заглушка ---------------------------------------------------------------- */
+.stub {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-block-size: var(--viewport-height);
+  padding-block:
+    calc(var(--space-xl) + var(--safe-inset-top))
+    calc(var(--space-xl) + var(--safe-inset-bottom));
+  text-align: center;
+}
+
+.stub__title {
+  font-size: var(--text-xl);
+}
+
+.stub__text {
+  color: var(--color-text-muted);
+}
 
 
 /* =============================================================================
