@@ -1,0 +1,1283 @@
+/* =============================================================================
+   Стили сайта приглашений.
+
+   Файл разбит на пронумерованные секции; последующие этапы дописывают код
+   каждый в свою секцию, чтобы не конфликтовать между собой:
+
+     1. Tokens              — все дизайн-токены на :root (этот этап)
+     2. Fonts               — образец @font-face для /assets/fonts/ (этот этап)
+     3. Base                — reset, типографика, доступность (этот этап)
+     4. Layout primitives   — контейнер, сетка, поток, медиа (этот этап)
+     5. Components          — компоненты дизайн-системы (этот этап)
+     6. Page layout         — раскладка блоков страницы
+     7. Motion & reveal     — появление блоков, анимация обложки
+     8. Gallery & lightbox  — лента/сетка галереи и лайтбокс
+     9. Player behaviour    — состояния плеера, управляемые скриптом
+
+   Правило: «сырых» значений (цвета, размеры, длительности) в секциях 3–9 нет —
+   только токены из секции 1, calc() над ними и ключевые слова. Единственные
+   исключения: закомментированный @font-face и числа брейкпоинтов в @media
+   (в медиазапросах var() не работает).
+
+   Временные значения (стилизация — отдельный этап) помечены пометкой TEMP.
+   ========================================================================== */
+
+
+/* =============================================================================
+   1. Tokens
+   -----------------------------------------------------------------------------
+   Имена — по роли, а не по значению.
+
+   Два класса устройств. Параметр, который может отличаться между мобильным и
+   десктопом, задан парой токенов `…-mobile` / `…-desktop`; компоненты
+   используют только производный токен без суффикса. Производный токен
+   получается одним из двух способов:
+
+     а) плавная интерполяция clamp() между опорными ширинами --vw-min и
+        --vw-max. Значения пары хранятся безразмерными числами, потому что
+        calc() не умеет делить длину на длину; в длину их превращает умножение
+        на 1px (а типографическую шкалу — на 1rem, см. ниже). Порядок
+        значений в паре любой: мобильное может быть и меньше, и больше
+        десктопного — границы clamp() берутся как min()/max() от пары;
+     б) переопределение производного токена в @media на границе раскладки —
+        для величин, которые нельзя интерполировать (число колонок,
+        пропорции изображений).
+
+   Параметры без пары (длительности, радиусы, тени, интерлиньяж и т.п.) при
+   необходимости переопределяются в том же блоке @media на границе раскладки.
+
+   Брейкпоинты (var() в @media не работает, значения повторяются буквально):
+     --bp-layout: 768px — единственная граница раскладки: одна колонка →
+                          две, лента → сетка, узкие поля → широкие.
+   Токен --bp-layout только документирует значение (его читает витрина);
+   менять его нужно вместе с числом в @media ниже.
+   Других брейкпоинтов нет: всё остальное меняется плавно.
+   ========================================================================== */
+
+:root {
+  /* --- Тема ---------------------------------------------------------------
+     Одна фиксированная тема: страница не реагирует на тёмный режим ОС и на
+     принудительное затемнение во встроенных браузерах. Дублируется мета-тегом
+     <meta name="color-scheme" content="only light">. Какая тема окончательная —
+     решает этап стилизации; prefers-color-scheme не используется нигде. */
+  color-scheme: only light;
+
+  /* --- Опорные ширины и множитель интерполяции ---------------------------- */
+  --vw-min: 360;   /* нижняя опорная ширина, px (минимальная поддерживаемая ширина) */
+  --vw-max: 1440;  /* верхняя опорная ширина, px */
+  /* 0 на --vw-min, 1px на --vw-max: умножение безразмерной дельты на этот
+     множитель даёт длину. Используется только внутри токенов. */
+  --fluid: calc((100vw - var(--vw-min) * 1px) / (var(--vw-max) - var(--vw-min)));
+  /* Граница раскладки. Только для чтения: в @media var() не работает, поэтому
+     то же число повторено буквально в блоке @media в конце секции. */
+  --bp-layout: 768px;
+
+  /* --- Цвета (по ролям) --------------------------------------------------- */
+  --color-bg: #ffffff;              /* TEMP  фон страницы */
+  --color-surface: #f1f2f4;         /* TEMP  поверхность: карточка, панель */
+  --color-surface-sunken: #e4e6ea;  /* TEMP  утопленная поверхность: дорожка, плашка */
+  --color-text: #1b1d21;            /* TEMP  основной текст */
+  --color-text-muted: #56595f;      /* TEMP  вторичный текст, подписи */
+  --color-accent: #1f5673;          /* TEMP  акцент: основная кнопка, ссылки */
+  --color-accent-hover: #164257;    /* TEMP  акцент под курсором/нажатием */
+  --color-on-accent: #ffffff;       /* TEMP  текст на акценте */
+  --color-line: #c9ccd2;            /* TEMP  линии: разделители, рамки блоков */
+  --color-line-strong: #6b7078;     /* TEMP  линии интерактивных элементов (≥3:1 к фону) */
+  --color-focus: #8a3d00;           /* TEMP  кольцо фокуса (≥3:1 к фону и к поверхностям) */
+  --color-overlay: rgba(14, 16, 18, 0.78);  /* TEMP  подложка лайтбокса */
+  --color-on-overlay: #ffffff;        /* TEMP  текст, иконки и кнопки поверх оверлея */
+  --color-focus-on-overlay: #ffc46b;  /* TEMP  кольцо фокуса поверх оверлея (≥3:1 к нему) */
+  --color-disabled-bg: #e4e6ea;     /* TEMP  фон выключенного элемента */
+  --color-disabled-text: #6b7078;   /* TEMP  текст выключенного элемента */
+  --color-shadow: rgba(14, 16, 18, 0.16);   /* TEMP  цвет теней */
+
+  /* --- Шрифты (по ролям) --------------------------------------------------
+     По умолчанию — системный стек (внешние шрифты запрещены). Как подключить
+     локальные woff2 — секция 2. */
+  --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, "Noto Sans", sans-serif;        /* TEMP */
+  --font-heading: var(--font-body);        /* TEMP  заголовки = текст, пока нет своего шрифта */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; /* TEMP */
+
+  --font-weight-body: 400;      /* TEMP */
+  --font-weight-medium: 500;    /* TEMP */
+  --font-weight-heading: 600;   /* TEMP */
+
+  --line-height-body: 1.6;      /* TEMP */
+  --line-height-tight: 1.3;     /* TEMP */
+  --line-height-heading: 1.15;  /* TEMP */
+
+  --tracking-body: 0em;         /* TEMP */
+  --tracking-heading: -0.01em;  /* TEMP */
+  --tracking-caps: 0.08em;      /* TEMP  для мелких подписей в верхнем регистре */
+
+  /* --- Типографическая шкала (пара mobile/desktop) -------------------------
+     Значения пары — числа в px при системном размере шрифта 16px; в формуле
+     они делятся на 16 и умножаются на 1rem, поэтому шкала целиком следует
+     за размером шрифта, выбранным пользователем в браузере. */
+  --text-xs-mobile: 12;     /* TEMP */
+  --text-xs-desktop: 13;    /* TEMP */
+  --text-xs: clamp(min(var(--text-xs-mobile) / 16 * 1rem, var(--text-xs-desktop) / 16 * 1rem),
+    calc(var(--text-xs-mobile) / 16 * 1rem + (var(--text-xs-desktop) - var(--text-xs-mobile)) * var(--fluid)),
+    max(var(--text-xs-mobile) / 16 * 1rem, var(--text-xs-desktop) / 16 * 1rem));
+
+  --text-sm-mobile: 14;     /* TEMP */
+  --text-sm-desktop: 15;    /* TEMP */
+  --text-sm: clamp(min(var(--text-sm-mobile) / 16 * 1rem, var(--text-sm-desktop) / 16 * 1rem),
+    calc(var(--text-sm-mobile) / 16 * 1rem + (var(--text-sm-desktop) - var(--text-sm-mobile)) * var(--fluid)),
+    max(var(--text-sm-mobile) / 16 * 1rem, var(--text-sm-desktop) / 16 * 1rem));
+
+  --text-base-mobile: 16;   /* TEMP */
+  --text-base-desktop: 17;  /* TEMP */
+  --text-base: clamp(min(var(--text-base-mobile) / 16 * 1rem, var(--text-base-desktop) / 16 * 1rem),
+    calc(var(--text-base-mobile) / 16 * 1rem + (var(--text-base-desktop) - var(--text-base-mobile)) * var(--fluid)),
+    max(var(--text-base-mobile) / 16 * 1rem, var(--text-base-desktop) / 16 * 1rem));
+
+  --text-md-mobile: 18;     /* TEMP */
+  --text-md-desktop: 20;    /* TEMP */
+  --text-md: clamp(min(var(--text-md-mobile) / 16 * 1rem, var(--text-md-desktop) / 16 * 1rem),
+    calc(var(--text-md-mobile) / 16 * 1rem + (var(--text-md-desktop) - var(--text-md-mobile)) * var(--fluid)),
+    max(var(--text-md-mobile) / 16 * 1rem, var(--text-md-desktop) / 16 * 1rem));
+
+  --text-lg-mobile: 21;     /* TEMP */
+  --text-lg-desktop: 25;    /* TEMP */
+  --text-lg: clamp(min(var(--text-lg-mobile) / 16 * 1rem, var(--text-lg-desktop) / 16 * 1rem),
+    calc(var(--text-lg-mobile) / 16 * 1rem + (var(--text-lg-desktop) - var(--text-lg-mobile)) * var(--fluid)),
+    max(var(--text-lg-mobile) / 16 * 1rem, var(--text-lg-desktop) / 16 * 1rem));
+
+  --text-xl-mobile: 25;     /* TEMP */
+  --text-xl-desktop: 32;    /* TEMP */
+  --text-xl: clamp(min(var(--text-xl-mobile) / 16 * 1rem, var(--text-xl-desktop) / 16 * 1rem),
+    calc(var(--text-xl-mobile) / 16 * 1rem + (var(--text-xl-desktop) - var(--text-xl-mobile)) * var(--fluid)),
+    max(var(--text-xl-mobile) / 16 * 1rem, var(--text-xl-desktop) / 16 * 1rem));
+
+  --text-2xl-mobile: 30;    /* TEMP */
+  --text-2xl-desktop: 42;   /* TEMP */
+  --text-2xl: clamp(min(var(--text-2xl-mobile) / 16 * 1rem, var(--text-2xl-desktop) / 16 * 1rem),
+    calc(var(--text-2xl-mobile) / 16 * 1rem + (var(--text-2xl-desktop) - var(--text-2xl-mobile)) * var(--fluid)),
+    max(var(--text-2xl-mobile) / 16 * 1rem, var(--text-2xl-desktop) / 16 * 1rem));
+
+  --text-display-mobile: 38;   /* TEMP  «дисплейный» размер обложки */
+  --text-display-desktop: 68;  /* TEMP */
+  --text-display: clamp(min(var(--text-display-mobile) / 16 * 1rem, var(--text-display-desktop) / 16 * 1rem),
+    calc(var(--text-display-mobile) / 16 * 1rem + (var(--text-display-desktop) - var(--text-display-mobile)) * var(--fluid)),
+    max(var(--text-display-mobile) / 16 * 1rem, var(--text-display-desktop) / 16 * 1rem));
+
+  /* --- Шкала отступов (пара mobile/desktop, px) ---------------------------- */
+  --space-3xs-mobile: 4;    /* TEMP */
+  --space-3xs-desktop: 4;   /* TEMP */
+  --space-3xs: clamp(min(var(--space-3xs-mobile) * 1px, var(--space-3xs-desktop) * 1px),
+    calc(var(--space-3xs-mobile) * 1px + (var(--space-3xs-desktop) - var(--space-3xs-mobile)) * var(--fluid)),
+    max(var(--space-3xs-mobile) * 1px, var(--space-3xs-desktop) * 1px));
+
+  --space-2xs-mobile: 8;    /* TEMP */
+  --space-2xs-desktop: 8;   /* TEMP */
+  --space-2xs: clamp(min(var(--space-2xs-mobile) * 1px, var(--space-2xs-desktop) * 1px),
+    calc(var(--space-2xs-mobile) * 1px + (var(--space-2xs-desktop) - var(--space-2xs-mobile)) * var(--fluid)),
+    max(var(--space-2xs-mobile) * 1px, var(--space-2xs-desktop) * 1px));
+
+  --space-xs-mobile: 12;    /* TEMP */
+  --space-xs-desktop: 14;   /* TEMP */
+  --space-xs: clamp(min(var(--space-xs-mobile) * 1px, var(--space-xs-desktop) * 1px),
+    calc(var(--space-xs-mobile) * 1px + (var(--space-xs-desktop) - var(--space-xs-mobile)) * var(--fluid)),
+    max(var(--space-xs-mobile) * 1px, var(--space-xs-desktop) * 1px));
+
+  --space-sm-mobile: 16;    /* TEMP */
+  --space-sm-desktop: 18;   /* TEMP */
+  --space-sm: clamp(min(var(--space-sm-mobile) * 1px, var(--space-sm-desktop) * 1px),
+    calc(var(--space-sm-mobile) * 1px + (var(--space-sm-desktop) - var(--space-sm-mobile)) * var(--fluid)),
+    max(var(--space-sm-mobile) * 1px, var(--space-sm-desktop) * 1px));
+
+  --space-md-mobile: 20;    /* TEMP */
+  --space-md-desktop: 26;   /* TEMP */
+  --space-md: clamp(min(var(--space-md-mobile) * 1px, var(--space-md-desktop) * 1px),
+    calc(var(--space-md-mobile) * 1px + (var(--space-md-desktop) - var(--space-md-mobile)) * var(--fluid)),
+    max(var(--space-md-mobile) * 1px, var(--space-md-desktop) * 1px));
+
+  --space-lg-mobile: 28;    /* TEMP */
+  --space-lg-desktop: 40;   /* TEMP */
+  --space-lg: clamp(min(var(--space-lg-mobile) * 1px, var(--space-lg-desktop) * 1px),
+    calc(var(--space-lg-mobile) * 1px + (var(--space-lg-desktop) - var(--space-lg-mobile)) * var(--fluid)),
+    max(var(--space-lg-mobile) * 1px, var(--space-lg-desktop) * 1px));
+
+  --space-xl-mobile: 40;    /* TEMP */
+  --space-xl-desktop: 60;   /* TEMP */
+  --space-xl: clamp(min(var(--space-xl-mobile) * 1px, var(--space-xl-desktop) * 1px),
+    calc(var(--space-xl-mobile) * 1px + (var(--space-xl-desktop) - var(--space-xl-mobile)) * var(--fluid)),
+    max(var(--space-xl-mobile) * 1px, var(--space-xl-desktop) * 1px));
+
+  --space-2xl-mobile: 56;   /* TEMP */
+  --space-2xl-desktop: 88;  /* TEMP */
+  --space-2xl: clamp(min(var(--space-2xl-mobile) * 1px, var(--space-2xl-desktop) * 1px),
+    calc(var(--space-2xl-mobile) * 1px + (var(--space-2xl-desktop) - var(--space-2xl-mobile)) * var(--fluid)),
+    max(var(--space-2xl-mobile) * 1px, var(--space-2xl-desktop) * 1px));
+
+  /* Отступ между секциями страницы. */
+  --space-section-mobile: 56;   /* TEMP */
+  --space-section-desktop: 104; /* TEMP */
+  --space-section: clamp(min(var(--space-section-mobile) * 1px, var(--space-section-desktop) * 1px),
+    calc(var(--space-section-mobile) * 1px + (var(--space-section-desktop) - var(--space-section-mobile)) * var(--fluid)),
+    max(var(--space-section-mobile) * 1px, var(--space-section-desktop) * 1px));
+
+  /* Вертикальный ритм внутри блока текста (шаг «стека»). */
+  --flow-space: var(--space-sm);
+
+  /* --- Контейнер ----------------------------------------------------------- */
+  --container-text-mobile: 560;    /* TEMP  ширина текстовой колонки */
+  --container-text-desktop: 680;   /* TEMP */
+  --container-text: clamp(min(var(--container-text-mobile) * 1px, var(--container-text-desktop) * 1px),
+    calc(var(--container-text-mobile) * 1px + (var(--container-text-desktop) - var(--container-text-mobile)) * var(--fluid)),
+    max(var(--container-text-mobile) * 1px, var(--container-text-desktop) * 1px));
+
+  --container-wide-mobile: 640;    /* TEMP  широкий контейнер: галерея, две колонки */
+  --container-wide-desktop: 1120;  /* TEMP */
+  --container-wide: clamp(min(var(--container-wide-mobile) * 1px, var(--container-wide-desktop) * 1px),
+    calc(var(--container-wide-mobile) * 1px + (var(--container-wide-desktop) - var(--container-wide-mobile)) * var(--fluid)),
+    max(var(--container-wide-mobile) * 1px, var(--container-wide-desktop) * 1px));
+
+  --container-gutter-mobile: 16;   /* TEMP  боковые поля */
+  --container-gutter-desktop: 32;  /* TEMP */
+  --container-gutter: clamp(min(var(--container-gutter-mobile) * 1px, var(--container-gutter-desktop) * 1px),
+    calc(var(--container-gutter-mobile) * 1px + (var(--container-gutter-desktop) - var(--container-gutter-mobile)) * var(--fluid)),
+    max(var(--container-gutter-mobile) * 1px, var(--container-gutter-desktop) * 1px));
+
+  /* --- Сетка --------------------------------------------------------------- */
+  --grid-columns-mobile: 1;    /* TEMP  переопределяется на --bp-layout */
+  --grid-columns-desktop: 2;   /* TEMP */
+  --grid-columns: var(--grid-columns-mobile);
+
+  --gallery-columns-mobile: 2;   /* TEMP */
+  --gallery-columns-desktop: 3;  /* TEMP */
+  --gallery-columns: var(--gallery-columns-mobile);
+
+  --countdown-columns: 4;  /* дни/часы/минуты/секунды — не стиль */
+  --countdown-gap-mobile: 4;    /* TEMP  на 360 px четыре ячейки должны поместиться */
+  --countdown-gap-desktop: 14;  /* TEMP */
+  --countdown-gap: clamp(min(var(--countdown-gap-mobile) * 1px, var(--countdown-gap-desktop) * 1px),
+    calc(var(--countdown-gap-mobile) * 1px + (var(--countdown-gap-desktop) - var(--countdown-gap-mobile)) * var(--fluid)),
+    max(var(--countdown-gap-mobile) * 1px, var(--countdown-gap-desktop) * 1px));
+
+  --grid-gap-mobile: 16;   /* TEMP */
+  --grid-gap-desktop: 28;  /* TEMP */
+  --grid-gap: clamp(min(var(--grid-gap-mobile) * 1px, var(--grid-gap-desktop) * 1px),
+    calc(var(--grid-gap-mobile) * 1px + (var(--grid-gap-desktop) - var(--grid-gap-mobile)) * var(--fluid)),
+    max(var(--grid-gap-mobile) * 1px, var(--grid-gap-desktop) * 1px));
+
+  /* --- Радиусы, тени, линии ------------------------------------------------ */
+  --radius-sm: 4px;      /* TEMP */
+  --radius-md: 10px;     /* TEMP */
+  --radius-lg: 18px;     /* TEMP */
+  --radius-pill: 999px;  /* TEMP */
+  --radius-round: 50%;   /* TEMP */
+
+  --shadow-sm: 0 1px 2px var(--color-shadow);                          /* TEMP */
+  --shadow-md: 0 4px 12px var(--color-shadow);                         /* TEMP */
+  --shadow-lg: 0 12px 32px var(--color-shadow);                        /* TEMP */
+
+  --line-width-hairline: 1px;  /* TEMP  разделители, рамки блоков */
+  --line-width: 2px;           /* TEMP  рамки интерактивных элементов */
+  --line-width-thick: 3px;     /* TEMP  акцентные линии */
+
+  --focus-ring-width: 3px;   /* TEMP  толщина кольца фокуса */
+  --focus-ring-offset: 2px;  /* TEMP */
+
+  --opacity-disabled: 0.6;  /* TEMP */
+
+  /* --- Пропорции изображений ----------------------------------------------
+     Интерполировать нельзя — переопределяются на --bp-layout. */
+  --ratio-photo-mobile: 4 / 3;      /* TEMP  фото площадки */
+  --ratio-photo-desktop: 3 / 2;     /* TEMP */
+  --ratio-photo: var(--ratio-photo-mobile);
+
+  --ratio-gallery-mobile: 1 / 1;    /* TEMP  элемент галереи */
+  --ratio-gallery-desktop: 4 / 3;   /* TEMP */
+  --ratio-gallery: var(--ratio-gallery-mobile);
+
+  --ratio-scheme-mobile: 4 / 3;     /* TEMP  схема проезда */
+  --ratio-scheme-desktop: 16 / 9;   /* TEMP */
+  --ratio-scheme: var(--ratio-scheme-mobile);
+
+  --ratio-video: 16 / 9;   /* формат видеофайла — не стиль */
+  --ratio-og: 1200 / 630;  /* формат OG-картинки — не стиль */
+
+  /* Точка фокуса кадра по умолчанию. */
+  --image-focus: 50% 50%;  /* TEMP */
+
+  /* --- Высота области просмотра, обложка, предел высоты медиа ---------------
+     Фолбэк задан на уровне токенов: 100vh, а где поддерживаются новые единицы —
+     100svh / 100dvh (блок @supports в конце секции). */
+  --viewport-height: 100vh;          /* «малая» высота: не прыгает при скрытии панелей браузера */
+  --viewport-height-dynamic: 100vh;  /* «динамическая» высота: следует за панелями браузера */
+
+  /* Доля высоты экрана, которую занимает обложка; переопределяется на
+     --bp-layout (долю нельзя интерполировать: множитель --fluid — длина). */
+  --cover-height-ratio-mobile: 1;      /* TEMP */
+  --cover-height-ratio-desktop: 0.9;   /* TEMP */
+  --cover-height-ratio: var(--cover-height-ratio-mobile);
+  --cover-min-height: calc(var(--viewport-height) * var(--cover-height-ratio));
+
+  /* Медиа и плеер не выше этой доли экрана — чтобы в ландшафтной ориентации
+     телефона кадр вместе с панелью управления помещался целиком. */
+  --media-max-height-ratio: 0.8;  /* TEMP */
+  --media-max-height: calc(var(--viewport-height) * var(--media-max-height-ratio));
+
+  /* --- Движение ------------------------------------------------------------ */
+  --duration-fast: 140ms;   /* TEMP  hover, нажатие */
+  --duration-base: 280ms;   /* TEMP  появление блоков */
+  --duration-slow: 600ms;   /* TEMP  анимация обложки */
+
+  --ease-out: cubic-bezier(0.2, 0.6, 0.3, 1);      /* TEMP */
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);     /* TEMP */
+
+  --reveal-distance-mobile: 14;    /* TEMP  сдвиг блока при появлении */
+  --reveal-distance-desktop: 24;   /* TEMP */
+  --reveal-distance: clamp(min(var(--reveal-distance-mobile) * 1px, var(--reveal-distance-desktop) * 1px),
+    calc(var(--reveal-distance-mobile) * 1px + (var(--reveal-distance-desktop) - var(--reveal-distance-mobile)) * var(--fluid)),
+    max(var(--reveal-distance-mobile) * 1px, var(--reveal-distance-desktop) * 1px));
+
+  --cover-distance-mobile: 6;    /* TEMP  амплитуда анимации обложки */
+  --cover-distance-desktop: 12;  /* TEMP */
+  --cover-distance: clamp(min(var(--cover-distance-mobile) * 1px, var(--cover-distance-desktop) * 1px),
+    calc(var(--cover-distance-mobile) * 1px + (var(--cover-distance-desktop) - var(--cover-distance-mobile)) * var(--fluid)),
+    max(var(--cover-distance-mobile) * 1px, var(--cover-distance-desktop) * 1px));
+
+  --reveal-stagger: 70ms;  /* TEMP  задержка между соседними блоками */
+  --hover-scale: 1.03;     /* TEMP  увеличение изображения под курсором */
+
+  /* --- Доступность и слои --------------------------------------------------
+     44px — требование доступности, а не стилистическое решение: не менять. */
+  --tap-min: 44px;
+
+  --z-base: 0;
+  --z-raised: 1;
+  --z-player-ui: 20;
+  --z-overlay: 100;
+  --z-lightbox: 110;
+
+  /* Безопасные зоны выреза/скруглений экрана (не стиль — платформа). */
+  --safe-inset-top: env(safe-area-inset-top, 0px);
+  --safe-inset-right: env(safe-area-inset-right, 0px);
+  --safe-inset-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-inset-left: env(safe-area-inset-left, 0px);
+
+  /* --- Токены компонентов -------------------------------------------------- */
+  --player-control-size: var(--tap-min);
+  --player-track-height-mobile: 6;    /* TEMP */
+  --player-track-height-desktop: 8;   /* TEMP */
+  --player-track-height: clamp(min(var(--player-track-height-mobile) * 1px, var(--player-track-height-desktop) * 1px),
+    calc(var(--player-track-height-mobile) * 1px + (var(--player-track-height-desktop) - var(--player-track-height-mobile)) * var(--fluid)),
+    max(var(--player-track-height-mobile) * 1px, var(--player-track-height-desktop) * 1px));
+  --player-thumb-size-mobile: 14;     /* TEMP */
+  --player-thumb-size-desktop: 18;    /* TEMP */
+  --player-thumb-size: clamp(min(var(--player-thumb-size-mobile) * 1px, var(--player-thumb-size-desktop) * 1px),
+    calc(var(--player-thumb-size-mobile) * 1px + (var(--player-thumb-size-desktop) - var(--player-thumb-size-mobile)) * var(--fluid)),
+    max(var(--player-thumb-size-mobile) * 1px, var(--player-thumb-size-desktop) * 1px));
+  --player-time-width: 8ch;  /* TEMP  ширина поля времени, чтобы не «прыгало» */
+  --player-progress-min-mobile: 150;   /* TEMP  минимальная ширина дорожки до переноса */
+  --player-progress-min-desktop: 240;  /* TEMP */
+  --player-progress-min: clamp(min(var(--player-progress-min-mobile) * 1px, var(--player-progress-min-desktop) * 1px),
+    calc(var(--player-progress-min-mobile) * 1px + (var(--player-progress-min-desktop) - var(--player-progress-min-mobile)) * var(--fluid)),
+    max(var(--player-progress-min-mobile) * 1px, var(--player-progress-min-desktop) * 1px));
+  /* Позиция воспроизведения; задаётся скриптом плеера как процент. */
+  --player-progress-value: 0%;
+
+  --icon-size-mobile: 20;    /* TEMP  размер иконки в кнопке */
+  --icon-size-desktop: 22;   /* TEMP */
+  --icon-size: clamp(min(var(--icon-size-mobile) * 1px, var(--icon-size-desktop) * 1px),
+    calc(var(--icon-size-mobile) * 1px + (var(--icon-size-desktop) - var(--icon-size-mobile)) * var(--fluid)),
+    max(var(--icon-size-mobile) * 1px, var(--icon-size-desktop) * 1px));
+
+  --countdown-cell-min: var(--tap-min);
+  --divider-thickness: var(--line-width-hairline);
+  --card-padding: var(--space-md);
+  --btn-padding-block: var(--space-xs);
+  --btn-padding-inline: var(--space-md);
+}
+
+/* Граница раскладки: переопределяются ТОЛЬКО раскладочные токены,
+   визуальный стиль компонентов не меняется.
+   Значение должно совпадать с --bp-layout = 768px. */
+@media (min-width: 768px) {
+  :root {
+    --grid-columns: var(--grid-columns-desktop);
+    --gallery-columns: var(--gallery-columns-desktop);
+    --ratio-photo: var(--ratio-photo-desktop);
+    --ratio-gallery: var(--ratio-gallery-desktop);
+    --ratio-scheme: var(--ratio-scheme-desktop);
+    --cover-height-ratio: var(--cover-height-ratio-desktop);
+  }
+}
+
+/* Единицы высоты, учитывающие панели мобильного браузера. */
+@supports (height: 100svh) {
+  :root {
+    --viewport-height: 100svh;
+    --viewport-height-dynamic: 100dvh;
+  }
+}
+
+/* Уважение к prefers-reduced-motion выполнено на уровне токенов: движение
+   обнуляется один раз здесь, компоненты и будущие этапы ничего не знают об
+   этом медиазапросе. 0.01ms вместо 0s — чтобы события transitionend/animationend
+   всё-таки срабатывали и скрипты не «зависали» в ожидании. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0.01ms;
+    --duration-base: 0.01ms;
+    --duration-slow: 0.01ms;
+    --reveal-stagger: 0.01ms;
+    --reveal-distance: 0px;
+    --cover-distance: 0px;
+    --hover-scale: 1;
+  }
+}
+
+
+/* =============================================================================
+   2. Fonts
+   -----------------------------------------------------------------------------
+   Внешние шрифты не используются: со страницы нет запросов на сторонние домены.
+   По умолчанию — системный стек.
+
+   Чтобы подключить локальный шрифт на этапе стилизации:
+     1) положить woff2-файлы в /assets/fonts/ (каталог уже есть);
+     2) раскомментировать и размножить блок ниже по начертаниям;
+     3) переключить в секции 1 токены --font-heading и/или --font-body на
+        новое семейство, оставив системный стек последним фолбэком, например:
+          --font-heading: "Invitation Display", var(--font-body);
+     4) при необходимости подстроить --font-weight-*, --line-height-* и
+        --tracking-* — размеры шкалы менять не требуется.
+   font-display: swap обязателен: текст виден сразу, без «мигания пустотой».
+
+   @font-face {
+     font-family: "Invitation Display";
+     src: url("/assets/fonts/invitation-display-400.woff2") format("woff2");
+     font-weight: 400;
+     font-style: normal;
+     font-display: swap;
+   }
+
+   @font-face {
+     font-family: "Invitation Display";
+     src: url("/assets/fonts/invitation-display-600.woff2") format("woff2");
+     font-weight: 600;
+     font-style: normal;
+     font-display: swap;
+   }
+   ========================================================================== */
+
+
+/* =============================================================================
+   3. Base
+   -----------------------------------------------------------------------------
+   Минимальный reset, типографика по умолчанию, перенос длинных слов, фокус.
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-body);
+  line-height: var(--line-height-body);
+  letter-spacing: var(--tracking-body);
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: break-word;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-weight: var(--font-weight-heading);
+  line-height: var(--line-height-heading);
+  letter-spacing: var(--tracking-heading);
+  text-wrap: balance;
+}
+
+h1 { font-size: var(--text-2xl); }
+h2 { font-size: var(--text-xl); }
+h3 { font-size: var(--text-lg); }
+h4 { font-size: var(--text-md); }
+h5 { font-size: var(--text-base); }
+h6 { font-size: var(--text-sm); }
+
+p,
+ul,
+ol,
+dl,
+dd,
+figure,
+blockquote,
+pre,
+fieldset {
+  margin: 0;
+}
+
+ul,
+ol {
+  padding-inline-start: var(--space-md);
+}
+
+/* Длинные слова и ссылки не расширяют раскладку. */
+:where(h1, h2, h3, h4, h5, h6, p, li, dt, dd, figcaption, a, button, label, th, td) {
+  overflow-wrap: anywhere;
+}
+
+a {
+  color: var(--color-accent);
+  text-decoration-thickness: var(--line-width-hairline);
+  text-underline-offset: var(--space-3xs);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+@media (hover: hover) {
+  a:hover {
+    color: var(--color-accent-hover);
+  }
+}
+
+a:active {
+  color: var(--color-accent-hover);
+}
+
+strong,
+b {
+  font-weight: var(--font-weight-heading);
+}
+
+small {
+  font-size: var(--text-sm);
+}
+
+img,
+picture,
+video,
+canvas,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+img,
+video {
+  height: auto;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+
+/* Фокус с клавиатуры виден всегда и одинаково на обоих форматах.
+   .is-focus — демонстрационный класс витрины: только показывает то же
+   оформление статически, собственных значений не задаёт. */
+:focus-visible,
+.is-focus {
+  outline: var(--focus-ring-width) solid var(--color-focus);
+  outline-offset: var(--focus-ring-offset);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+::selection {
+  background-color: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+hr {
+  border: none;
+}
+
+/* Сокращённое движение: длительности и дистанции уже обнулены на уровне
+   токенов (секция 1). Страховка ниже гасит анимации, заданные в обход токенов
+   (например будущей сторонней библиотекой), и мгновенную прокрутку. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: var(--duration-fast) !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: var(--duration-fast) !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+
+/* =============================================================================
+   4. Layout primitives
+   -----------------------------------------------------------------------------
+   Один контейнер (две ширины), одна сетка, один вертикальный ритм, одно медиа
+   с фиксированными пропорциями. Раскладка страницы — секция 6.
+   ========================================================================== */
+
+/* Контейнер: текстовая колонка ограниченной ширины; модификатор --wide —
+   для галереи и двухколоночных секций. Боковые поля учитывают вырез экрана. */
+.container {
+  width: 100%;
+  max-width: calc(var(--container-text) + var(--container-gutter) + var(--container-gutter));
+  margin-inline: auto;
+  padding-inline:
+    max(var(--container-gutter), var(--safe-inset-left))
+    max(var(--container-gutter), var(--safe-inset-right));
+}
+
+.container--wide {
+  max-width: calc(var(--container-wide) + var(--container-gutter) + var(--container-gutter));
+}
+
+.container--flush {
+  padding-inline: 0;
+}
+
+/* Сетка: число колонок и зазор — из токенов; на мобильном одна колонка. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(var(--grid-columns), minmax(0, 1fr));
+  gap: var(--grid-gap);
+  align-items: start;
+}
+
+.grid--tight {
+  gap: var(--space-sm);
+}
+
+/* Вертикальный ритм: единый шаг между соседями, переопределяется --flow-space. */
+.stack > * + * {
+  margin-block-start: var(--flow-space);
+}
+
+.stack--tight {
+  --flow-space: var(--space-2xs);
+}
+
+.stack--loose {
+  --flow-space: var(--space-lg);
+}
+
+/* Медиа с фиксированными пропорциями: рамка задаёт пропорцию, содержимое
+   кадрируется по --image-focus. Высота ограничена --media-max-height; чтобы
+   пропорция при этом сохранялась, ограничивается ширина (высота × пропорция). */
+.media {
+  --media-ratio: var(--ratio-photo);
+  display: block;
+  width: 100%;
+  max-inline-size: calc(var(--media-max-height) * var(--media-ratio));
+  margin-inline: auto;
+  aspect-ratio: var(--media-ratio);
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface-sunken);
+}
+
+.media > img,
+.media > video,
+.media > picture > img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: var(--image-focus);
+}
+
+.media--video { --media-ratio: var(--ratio-video); }
+.media--gallery { --media-ratio: var(--ratio-gallery); }
+.media--scheme { --media-ratio: var(--ratio-scheme); }
+
+/* Скрыто визуально, доступно скринридеру (подписи кнопок плеера и т.п.). */
+.visually-hidden {
+  position: absolute;
+  width: var(--line-width-hairline);
+  height: var(--line-width-hairline);
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(100%);
+  white-space: nowrap;
+  border: 0;
+}
+
+
+/* =============================================================================
+   5. Components
+   -----------------------------------------------------------------------------
+   Каждый компонент описан один раз. Классы — только для стилей; скрипты
+   цепляются за data-атрибуты (data-reveal, data-countdown, data-gallery,
+   data-lightbox, data-player).
+
+   Состояния одинаковы на обоих форматах:
+     hover        — только внутри @media (hover: hover);
+     :focus-visible — кольцо фокуса из секции 3, видно всегда;
+     :active      — нажатие;
+     disabled     — :disabled и [aria-disabled="true"].
+   Классы .is-hover / .is-focus / .is-active перечислены рядом с настоящими
+   состояниями (без собственных значений) — чтобы витрина могла показать
+   состояние статически.
+
+   Интерактивные элементы — не меньше --tap-min (44px, требование доступности).
+   ========================================================================== */
+
+/* --- Секция и её заголовок ------------------------------------------------ */
+.section {
+  margin-block: var(--space-section);
+}
+
+.section__title {
+  margin-block-end: var(--space-md);
+  font-family: var(--font-heading);
+  font-size: var(--text-xl);
+  font-weight: var(--font-weight-heading);
+  line-height: var(--line-height-heading);
+  letter-spacing: var(--tracking-heading);
+  color: var(--color-text);
+  text-wrap: balance;
+}
+
+.section__subtitle {
+  margin-block-end: var(--space-2xs);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.section--centered .section__title,
+.section--centered .section__subtitle {
+  text-align: center;
+}
+
+/* --- Текстовый блок ------------------------------------------------------- */
+.prose {
+  max-width: var(--container-text);
+  font-size: var(--text-base);
+  line-height: var(--line-height-body);
+  color: var(--color-text);
+}
+
+.prose > * + * {
+  margin-block-start: var(--flow-space);
+}
+
+.prose--lead {
+  font-size: var(--text-md);
+}
+
+.prose--muted {
+  color: var(--color-text-muted);
+}
+
+.prose--centered {
+  margin-inline: auto;
+  text-align: center;
+}
+
+/* --- Карточка ------------------------------------------------------------- */
+.card {
+  padding: var(--card-padding);
+  background-color: var(--color-surface);
+  border: var(--line-width-hairline) solid var(--color-line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.card--plain {
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.card__title {
+  margin-block-end: var(--space-2xs);
+  font-family: var(--font-heading);
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-heading);
+  line-height: var(--line-height-tight);
+  color: var(--color-text);
+}
+
+.card__text {
+  color: var(--color-text-muted);
+}
+
+.card__footer {
+  margin-block-start: var(--space-md);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs);
+}
+
+/* --- Кнопка (работает и для <a>, и для <button>) -------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2xs);
+  min-block-size: var(--tap-min);
+  min-inline-size: var(--tap-min);
+  padding: var(--btn-padding-block) var(--btn-padding-inline);
+  border: var(--line-width) solid transparent;
+  border-radius: var(--radius-pill);
+  background-color: transparent;
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-tight);
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.btn__icon {
+  inline-size: var(--icon-size);
+  block-size: var(--icon-size);
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: var(--line-width);
+}
+
+.btn--primary {
+  background-color: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-on-accent);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn--secondary {
+  background-color: var(--color-bg);
+  border-color: var(--color-line-strong);
+  color: var(--color-text);
+}
+
+@media (hover: hover) {
+  .btn--primary:hover:not(:disabled):not([aria-disabled="true"]),
+  .btn--primary.is-hover {
+    background-color: var(--color-accent-hover);
+    border-color: var(--color-accent-hover);
+  }
+
+  .btn--secondary:hover:not(:disabled):not([aria-disabled="true"]),
+  .btn--secondary.is-hover {
+    background-color: var(--color-surface);
+    border-color: var(--color-accent);
+    color: var(--color-accent-hover);
+  }
+}
+
+.btn--primary:active:not(:disabled):not([aria-disabled="true"]),
+.btn--primary.is-active {
+  background-color: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+  box-shadow: none;
+}
+
+.btn--secondary:active:not(:disabled):not([aria-disabled="true"]),
+.btn--secondary.is-active {
+  background-color: var(--color-surface-sunken);
+  border-color: var(--color-accent);
+  color: var(--color-accent-hover);
+}
+
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  background-color: var(--color-disabled-bg);
+  border-color: var(--color-disabled-bg);
+  color: var(--color-disabled-text);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+/* Выключенная ссылка-кнопка. CSS блокирует только указатель: с клавиатуры
+   ссылка с href всё равно сработает, поэтому шаблон обязан выводить
+   выключенную ссылку БЕЗ href (role="link" aria-disabled="true"). */
+a.btn[aria-disabled="true"] {
+  pointer-events: none;
+}
+
+/* --- Метка времени -------------------------------------------------------- */
+.time-label {
+  display: inline-block;
+  padding: var(--space-3xs) var(--space-2xs);
+  background-color: var(--color-surface);
+  border: var(--line-width-hairline) solid var(--color-line);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-tight);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.time-label--strong {
+  background-color: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+/* --- Разделитель ---------------------------------------------------------- */
+.divider {
+  block-size: var(--divider-thickness);
+  margin-block: var(--space-lg);
+  border: none;
+  background-color: var(--color-line);
+}
+
+.divider--accent {
+  inline-size: var(--space-2xl);
+  block-size: var(--line-width-thick);
+  margin-inline: auto;
+  border-radius: var(--radius-pill);
+  background-color: var(--color-accent);
+}
+
+/* --- Галерея -------------------------------------------------------------- */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(var(--gallery-columns), minmax(0, 1fr));
+  gap: var(--grid-gap);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Элемент галереи: пропорция и кадрирование из токенов. Класс можно ставить
+   и на само изображение, и на его обёртку (<li>, <a>, <figure>) — во втором
+   случае вложенное изображение заполняет рамку. */
+.gallery__item {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+  aspect-ratio: var(--ratio-gallery);
+  overflow: hidden;
+  object-fit: cover;
+  object-position: var(--image-focus);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface-sunken);
+}
+
+.gallery__item > img,
+.gallery__item > picture > img,
+.gallery__item > .gallery__link > img,
+.gallery__item > .gallery__link > picture > img {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+  object-position: var(--image-focus);
+}
+
+.gallery__item > .gallery__link {
+  block-size: 100%;
+}
+
+/* Обёртка, если изображение открывает лайтбокс. */
+.gallery__link {
+  display: block;
+  inline-size: 100%;
+  min-inline-size: var(--tap-min);
+  min-block-size: var(--tap-min);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: pointer;
+  background-color: transparent;
+  border: none;
+  padding: 0;
+}
+
+.gallery__link .gallery__item,
+.gallery__link > img,
+.gallery__link > picture > img {
+  transition: transform var(--duration-base) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .gallery__link:hover .gallery__item,
+  .gallery__link:hover > img,
+  .gallery__link:hover > picture > img,
+  .gallery__link.is-hover .gallery__item,
+  .gallery__link.is-hover > img,
+  .gallery__link.is-hover > picture > img {
+    transform: scale(var(--hover-scale));
+  }
+}
+
+.gallery__link:active .gallery__item,
+.gallery__link:active > img,
+.gallery__link:active > picture > img,
+.gallery__link.is-active .gallery__item,
+.gallery__link.is-active > img,
+.gallery__link.is-active > picture > img {
+  transform: none;
+}
+
+.gallery__caption {
+  margin-block-start: var(--space-2xs);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* --- Таймер обратного отсчёта --------------------------------------------- */
+.countdown {
+  display: grid;
+  grid-template-columns: repeat(var(--countdown-columns), minmax(0, 1fr));
+  gap: var(--countdown-gap);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.countdown__cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3xs);
+  min-inline-size: var(--countdown-cell-min);
+  padding: var(--space-xs) var(--space-3xs);
+  background-color: var(--color-surface);
+  border: var(--line-width-hairline) solid var(--color-line);
+  border-radius: var(--radius-md);
+  text-align: center;
+}
+
+.countdown__value {
+  font-family: var(--font-heading);
+  font-size: var(--text-xl);
+  font-weight: var(--font-weight-heading);
+  line-height: var(--line-height-heading);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+/* Подписи ячеек — короткие слова: рвать их посреди слова нельзя, иначе на
+   360 px «секунд» разваливается на две строки. */
+.countdown__label {
+  font-size: var(--text-xs);
+  line-height: var(--line-height-tight);
+  overflow-wrap: normal;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+/* --- Плеер: внешний вид элементов управления (логика — в скрипте плеера) --- */
+.player {
+  position: relative;
+  display: block;
+  inline-size: 100%;
+  overflow: hidden;
+  background-color: var(--color-surface-sunken);
+  border: var(--line-width-hairline) solid var(--color-line);
+  border-radius: var(--radius-lg);
+}
+
+/* Кадр не выше --media-max-height: ограничивается ширина (высота × 16:9), так
+   что пропорция сохраняется, а панель управления остаётся во всю ширину. */
+.player__media {
+  display: block;
+  inline-size: 100%;
+  max-inline-size: calc(var(--media-max-height) * var(--ratio-video));
+  block-size: auto;
+  margin-inline: auto;
+  aspect-ratio: var(--ratio-video);
+  object-fit: cover;
+  object-position: var(--image-focus);
+  background-color: var(--color-surface-sunken);
+}
+
+.player__controls {
+  position: relative;
+  z-index: var(--z-player-ui);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-2xs) var(--space-xs);
+  background-color: var(--color-surface);
+  border-block-start: var(--line-width-hairline) solid var(--color-line);
+}
+
+.player__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--player-control-size);
+  block-size: var(--player-control-size);
+  padding: 0;
+  border: var(--line-width) solid transparent;
+  border-radius: var(--radius-round);
+  background-color: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.player__icon {
+  inline-size: var(--icon-size);
+  block-size: var(--icon-size);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: var(--line-width);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+@media (hover: hover) {
+  .player__button:hover:not(:disabled):not([aria-disabled="true"]),
+  .player__button.is-hover {
+    background-color: var(--color-surface-sunken);
+    color: var(--color-accent-hover);
+  }
+}
+
+.player__button:active:not(:disabled):not([aria-disabled="true"]),
+.player__button.is-active {
+  background-color: var(--color-surface-sunken);
+  border-color: var(--color-line-strong);
+  color: var(--color-accent-hover);
+}
+
+.player__button:disabled,
+.player__button[aria-disabled="true"] {
+  color: var(--color-disabled-text);
+  opacity: var(--opacity-disabled);
+  cursor: not-allowed;
+}
+
+/* Дорожка прогресса: область нажатия во всю высоту панели (≥ --tap-min). */
+.player__progress {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 var(--player-progress-min);
+  min-block-size: var(--tap-min);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+
+.player__track {
+  inline-size: 100%;
+  block-size: var(--player-track-height);
+  overflow: hidden;
+  background-color: var(--color-surface-sunken);
+  /* Граница — единственное, что отделяет пустую часть дорожки от панели:
+     ей нужен контраст не ниже 3:1. */
+  border: var(--line-width-hairline) solid var(--color-line-strong);
+  border-radius: var(--radius-pill);
+}
+
+.player__fill {
+  display: block;
+  inline-size: var(--player-progress-value);
+  block-size: 100%;
+  background-color: var(--color-accent);
+}
+
+.player__thumb {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: var(--player-progress-value);
+  margin-block: auto;
+  margin-inline-start: calc(var(--player-thumb-size) / -2);
+  inline-size: var(--player-thumb-size);
+  block-size: var(--player-thumb-size);
+  border: var(--line-width-hairline) solid var(--color-bg);
+  border-radius: var(--radius-round);
+  background-color: var(--color-accent);
+  pointer-events: none;
+}
+
+.player__time {
+  flex: none;
+  min-inline-size: var(--player-time-width);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.player__progress:disabled,
+.player__progress[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: var(--opacity-disabled);
+}
+
+/* --- Контекст «поверх оверлея» --------------------------------------------
+   Внутри тёмной подложки (лайтбокс) роли текста и кольца фокуса получают
+   значения для оверлея; компоненты при этом не переписываются. */
+.on-overlay {
+  --color-text: var(--color-on-overlay);
+  --color-text-muted: var(--color-on-overlay);
+  --color-focus: var(--color-focus-on-overlay);
+  color: var(--color-on-overlay);
+}
+
+
+/* =============================================================================
+   6. Page layout
+   -----------------------------------------------------------------------------
+   Раскладка блоков страницы приглашения: обложка (svh/dvh + фолбэк, safe-area),
+   двухколоночные секции на десктопе, ландшафтная ориентация, заглушка.
+   Пока пусто: заполняется вместе с разметкой страницы.
+   ========================================================================== */
+
+
+/* =============================================================================
+   7. Motion & reveal
+   -----------------------------------------------------------------------------
+   Появление блоков при прокрутке ([data-reveal]) и анимация обложки.
+   Скрытые начальные состояния — только под html.js: без скрипта всё видно сразу.
+   Токены движения уже есть в секции 1 и обнулены под prefers-reduced-motion.
+   Пока пусто: заполняется вместе со скриптом появления блоков.
+   ========================================================================== */
+
+
+/* =============================================================================
+   8. Gallery & lightbox
+   -----------------------------------------------------------------------------
+   Лента со scroll-snap на мобильном, сетка на десктопе, лайтбокс
+   ([data-gallery], [data-lightbox]): подложка --color-overlay, слой --z-lightbox.
+   Пока пусто: заполняется вместе с галереей.
+   ========================================================================== */
+
+
+/* =============================================================================
+   9. Player behaviour
+   -----------------------------------------------------------------------------
+   Состояния плеера, которыми управляет скрипт ([data-player]): скрытие панели
+   без JS, воспроизведение/пауза, полноэкранный режим, перемотка.
+   Внешний вид элементов управления уже задан в секции 5.
+   Пока пусто: заполняется вместе с плеером.
+   ========================================================================== */
