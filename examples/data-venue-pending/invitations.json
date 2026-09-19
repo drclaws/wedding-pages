@@ -1,0 +1,28 @@
+[
+  {
+    "token": "La3RLfA0TFqFpSnKW6s7Dw",
+    "greeting": "Дорогая Сибил!",
+    "ty": true,
+    "vy": false,
+    "plusOne": false,
+    "outOfTown": true,
+    "travelNote": "Как только станет известно место, пришлём подробности о дороге."
+  },
+  {
+    "token": "X6dmISN6LtAhyCg5XyXHwA",
+    "greeting": "Дорогие Уолтер и Венди!",
+    "ty": false,
+    "vy": true,
+    "plusOne": false,
+    "outOfTown": false,
+    "note": "Очень ждём вас!"
+  },
+  {
+    "token": "JhlkiN2-7agdX9Fl6D_Z6Q",
+    "greeting": "Уважаемая Джуди Сергеевна!",
+    "ty": false,
+    "vy": true,
+    "plusOne": true,
+    "outOfTown": false
+  }
+]
