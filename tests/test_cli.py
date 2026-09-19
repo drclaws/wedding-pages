@@ -404,12 +404,6 @@ class ExitCodeTests(CliTestCase):
         for command in ("build", "validate", "token", "links"):
             self.assertIn(command, result.stdout)
 
-    def test_links_is_registered_but_not_implemented(self):
-        result = run_cli(self.code, "links", "--base", "https://example.invalid", cwd=self.work)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("not implemented yet", result.stderr)
-        self.assertEqual(result.stdout, "")
-
     def test_links_requires_base(self):
         self.assertEqual(run_cli(self.code, "links", cwd=self.work).returncode, 2)
 

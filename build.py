@@ -2688,11 +2688,65 @@ def cmd_token(_args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def cmd_links(_args: argparse.Namespace) -> int:
-    # Implemented by a later build stage; the subcommand exists so that the
-    # command line stays stable.
-    _stderr("links: not implemented yet")
-    return EXIT_ERROR
+#: Environment variables that mark an automated run; `links` refuses to work
+#: there, because it is the one command that prints personal data.
+CI_ENVIRONMENT_VARIABLES = ("CI", "GITHUB_ACTIONS")
+
+
+def running_in_ci(environ: Any = None) -> bool:
+    """True when `CI` or `GITHUB_ACTIONS` is set (and is not empty, 0 or false)."""
+    environ = os.environ if environ is None else environ
+    return any(
+        environ.get(name, "").strip().lower() not in ("", "0", "false")
+        for name in CI_ENVIRONMENT_VARIABLES
+    )
+
+
+def parse_base_url(value: str) -> str:
+    """`--base`: an http(s) URL of the site; the trailing '/' is dropped."""
+    value = value.strip()
+    try:
+        parts = urlsplit(value)
+        parts.port  # noqa: B018 - raises ValueError for a malformed port
+    except ValueError:
+        parts = None
+    if (
+        parts is None
+        or parts.scheme.lower() not in ("http", "https")
+        or not parts.hostname
+        or parts.query
+        or parts.fragment
+        or "?" in value
+        or "#" in value
+        or any(char.isspace() for char in value)
+    ):
+        raise argparse.ArgumentTypeError(
+            "expected the site address, e.g. https://example.org "
+            "(http or https, no query string or fragment)"
+        )
+    return value.rstrip("/")
+
+
+def invitation_links(base: str, invitations: Sequence[dict]) -> list[str]:
+    """`<greeting><TAB><base>/i/<token>/` for every invitation."""
+    return [
+        f"{' '.join(invitation['greeting'].split())}\t"
+        f"{base}/{PAGES_DIRNAME}/{invitation['token']}/"
+        for invitation in invitations
+    ]
+
+
+def cmd_links(args: argparse.Namespace) -> int:
+    if running_in_ci():
+        raise BuildError(
+            "this command prints personal data and is meant for local use only; "
+            f"it does not run in CI ({' or '.join(CI_ENVIRONMENT_VARIABLES)} is set)"
+        )
+    _site, invitations = load_data(_data_dir(args, CODE_DIR), report=_cli_report())
+    # Nothing is printed unless the whole data set is valid.
+    for line in invitation_links(args.base, invitations):
+        _stdout(line)
+    return EXIT_OK
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2738,7 +2792,13 @@ def build_parser() -> argparse.ArgumentParser:
     links_cmd = subparsers.add_parser(
         "links", help="print invitation links for manual sending (local use only)"
     )
-    links_cmd.add_argument("--base", metavar="URL", required=True, help="site base URL")
+    links_cmd.add_argument(
+        "--base",
+        metavar="URL",
+        required=True,
+        type=parse_base_url,
+        help="address of the published site, e.g. https://example.org",
+    )
     add_data_options(links_cmd, media=False)
     links_cmd.set_defaults(func=cmd_links)
 
