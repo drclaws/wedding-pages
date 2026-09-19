@@ -1,0 +1,27 @@
+{
+  "coupleNames": "Алиса и Боб",
+  "dateISO": "2030-08-10T15:00:00+05:00",
+  "dateText": "10 августа 2030, 15:00",
+  "rsvpDeadline": "1 июля 2030",
+  "mediaDir": "MR7IwBP4RVsVlBUFCeyEqQ",
+  "outOfTownText": "Подробности о дороге и размещении сообщим вместе с адресом.",
+  "schedule": [
+    {
+      "time": "15:00",
+      "title": "Церемония"
+    },
+    {
+      "time": "16:30",
+      "title": "Праздничный ужин",
+      "text": "Место уточняется."
+    }
+  ],
+  "venue": {
+    "ready": false,
+    "name": "",
+    "description": "",
+    "address": "",
+    "photos": [],
+    "directionsImage": ""
+  }
+}
