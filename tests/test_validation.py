@@ -336,6 +336,22 @@ class SiteValidationTests(TempDirTestCase):
         site["schedule"][0]["text"] = "first\nsecond"
         self.assertEqual(self.errors(site), [])
 
+    def test_map_identifiers(self):
+        site = site_data()
+        site["venue"]["maps"] = {"googlePlaceId": " ChIJ_example-ID123 ", "yandexOrgId": "1234567890"}
+        self.assertEqual(self.errors(site), [])
+        site["venue"]["maps"] = {"googlePlaceId": None, "yandexOrgId": ""}
+        self.assertEqual(self.errors(site), [])
+        site["venue"]["maps"] = {
+            "googlePlaceId": "https://maps.example.invalid/?q=place",
+            "yandexOrgId": "org/1234567890",
+        }
+        errors = self.errors(site)
+        self.assertEqual(len(errors), 2, errors)
+        self.assertIn("field 'venue.maps.googlePlaceId' may only contain", errors[0])
+        self.assertIn("field 'venue.maps.yandexOrgId' may only contain digits", errors[1])
+        self.assertNotIn("1234567890", " ".join(errors))
+
     def test_media_case_sensitivity(self):
         site = site_data()
         site["venue"]["photos"] = ["Venue-1.webp"]

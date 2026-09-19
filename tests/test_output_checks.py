@@ -174,6 +174,26 @@ class ExternalResourceTests(FailingBuildTestCase):
                 )
                 self.assertBuildFails(expected)
 
+    def test_markup_hidden_in_svg_title(self):
+        self.add_to_template(
+            '<svg><title><img src="https://cdn.example.invalid/x.png"></title></svg>'
+        )
+        result = self.assertBuildFails()
+        self.assertRegex(result.stderr, "markup-like text is not allowed|<img src>: external URL")
+        self.add_to_stub('<svg><textarea><img src="https://cdn.example.invalid/x.png"></textarea></svg>')
+        result = self.assertBuildFails()
+        self.assertRegex(result.stderr, "markup-like text is not allowed|<img src>: external URL")
+
+    def test_css_line_continuation_and_bare_scheme(self):
+        (self.code / "assets" / "app.css").write_text(
+            "a { background: image-set('ht\\\ntps://cdn.example.invalid/x' 1x) }", encoding="utf-8"
+        )
+        self.assertBuildFails("assets/app.css line 1: CSS: a backslash before a line break")
+        (self.code / "assets" / "app.css").write_text(
+            "a { background: image-set('http:cdn.example.invalid/x' 1x) }", encoding="utf-8"
+        )
+        self.assertBuildFails("assets/app.css line 1: CSS: external URL")
+
     def test_meta_refresh(self):
         self.add_to_template('<meta HTTP-EQUIV="Refresh" content="5">')
         self.assertBuildFails('<meta http-equiv="refresh"> is not allowed')
@@ -800,10 +820,36 @@ class HtmlCheckUnitTests(unittest.TestCase):
             html_problems('<script src="/a.js"><img src=https://h.example.invalid/x></script>', "a.js"),
             ["<script src> must be empty"],
         )
-        self.assertEqual(
+        self.assertIn(
+            "<style> elements are not allowed; styles must be files in /assets/",
             html_problems("<svg><style><img src=https://h.example.invalid/x></style></svg>"),
-            ["<style> elements are not allowed; styles must be files in /assets/"],
         )
+
+    def test_markup_like_text(self):
+        # inside <svg> a browser reads the content of <title>/<textarea> as
+        # elements; whichever way the parser reads it, the page is refused
+        for element in ("title", "textarea", "xmp", "noembed", "plaintext"):
+            with self.subTest(element=element):
+                problems = html_problems(
+                    f"<svg><{element}><img src=https://h.example.invalid/x></{element}></svg>"
+                )
+                self.assertTrue(problems)
+                self.assertTrue(
+                    any("markup-like text" in p or "external URL" in p for p in problems),
+                    problems,
+                )
+        self.assertEqual(
+            html_problems("<title>Приглашение</title><p>1 < 2, a &lt;b&gt; &amp; <3</p>"), []
+        )
+
+    def test_unknown_schemes_are_not_echoed(self):
+        problems = html_problems('<a href="SecretWord:x">x</a><img src="Other-Word:y">')
+        self.assertEqual(len(problems), 2)
+        for problem in problems:
+            self.assertIn("'…:'", problem)
+            self.assertNotIn("ecret", problem.lower())
+            self.assertNotIn("other", problem.lower())
+        self.assertIn("'tel:…'", html_problems('<a href="tel:123">x</a>')[0])
 
     def test_unterminated_comment(self):
         self.assertTrue(html_problems("<p>x</p><!-- never closed"))
@@ -860,6 +906,28 @@ class CssCheckUnitTests(unittest.TestCase):
                 problems = css_problems(text)
                 self.assertTrue(problems, text)
                 self.assertTrue(any(expected in problem for problem in problems), problems)
+
+    def test_line_continuation_is_refused(self):
+        for ending in ("\n", "\r\n", "\r", "\f"):
+            with self.subTest(ending=ending):
+                text = f"a {{ color: red }}\nb {{ background: image-set('ht\\{ending}tps://h.example.invalid/x' 1x) }}"
+                problems = build.check_stylesheet(text, exists_in())
+                self.assertEqual(len(problems), 1, problems)
+                self.assertEqual(problems[0][0], 2)
+                self.assertIn("a backslash before a line break is not allowed", problems[0][1])
+
+    def test_strings_that_start_with_a_scheme(self):
+        for value in ("http:h.example.invalid/x", "HTTPS:h.example.invalid/x", "ftp:x", "\\68ttp:h.example.invalid/x"):
+            with self.subTest(value=value):
+                problems = css_problems(f"a {{ background: image-set('{value}' 1x) }}")
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("external URL", problems[0])
+        harmless = (
+            'a::before { content: "→" } b { font-family: "Name", serif } '
+            'c { grid-template-areas: "a b" "c d" } d::after { content: "12:30" } '
+            'e::after { content: "Note: text" } f { background: image-set("data:image/png;base64,AA" 1x) }'
+        )
+        self.assertEqual(css_problems(harmless), [])
 
     def test_harmless_escapes_pass(self):
         text = 'a::before { content: "\\201C" } .sm\\:flex { color: red } .w-\\[calc(1px)\\] { top: 0 }'

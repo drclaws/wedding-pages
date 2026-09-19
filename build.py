@@ -947,6 +947,15 @@ def _check_schedule(site: dict, report: Report, where: str) -> None:
         _warn_unknown(entry, SCHEDULE_FIELDS, f"{where}: schedule[{index}]", report)
 
 
+_MAP_ID_RULES = {
+    "googlePlaceId": (
+        re.compile(r"[A-Za-z0-9_-]+\Z"),
+        "may only contain A-Z, a-z, 0-9, '_' and '-'",
+    ),
+    "yandexOrgId": (re.compile(r"[0-9]+\Z"), "may only contain digits"),
+}
+
+
 def _check_venue(site: dict, report: Report, where: str) -> None:
     venue = _field(site, "venue", "object", where, report)
     if not isinstance(venue, dict):
@@ -1009,10 +1018,17 @@ def _check_venue(site: dict, report: Report, where: str) -> None:
     )
     if isinstance(maps, dict):
         for key in MAPS_FIELDS:
-            _field(
+            value = _field(
                 maps, key, "string", where, report, prefix="venue.maps.",
                 required=False, nullable=True,
             )
+            if isinstance(value, str) and value.strip():
+                pattern, expected = _MAP_ID_RULES[key]
+                if not pattern.match(value.strip()):
+                    report.error(
+                        f"{where}: field 'venue.maps.{key}' {expected} "
+                        "(use the identifier, not a link)"
+                    )
         _warn_unknown(maps, MAPS_FIELDS, f"{where}: venue.maps", report)
 
     _warn_unknown(venue, VENUE_FIELDS, f"{where}: venue", report)
@@ -1639,6 +1655,14 @@ _META_URL_KEYS = frozenset(
     }
 )
 _SCHEME_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*):")
+#: Schemes that are named in messages; anything else before a ':' may be text.
+_KNOWN_SCHEMES = frozenset(
+    {"http", "https", "mailto", "tel", "sms", "ftp", "blob", "file", "javascript",
+     "vbscript", "data", "about", "ws", "wss"}
+)
+#: Text that a browser may read as markup where the parser sees plain text
+#: (`<svg><title><img …>`): a '<' followed by a letter, '/', '!' or '?'.
+_MARKUP_LIKE_RE = re.compile(r"<[A-Za-z/!?]")
 _EXTERNAL_TEXT_RE = re.compile(r"(?:https?:)?//[A-Za-z0-9\[]", re.IGNORECASE)
 _URL_WHITESPACE_RE = re.compile(r"[\t\n\r]")
 _URL_TRIM = "".join(map(chr, range(33)))  # C0 control characters and space
@@ -1661,7 +1685,9 @@ def _show_url(url: str) -> str:
         return _shorten(re.split(r"[;,]", url, maxsplit=1)[0], 40) + ",…"
     scheme = _SCHEME_RE.match(url)
     if scheme and scheme.group(1).lower() not in ("http", "https"):
-        return f"{scheme.group(1).lower()}:…"  # e.g. mailto: - the rest is data
+        # e.g. mailto: - the rest is data, and so is an unknown "scheme"
+        name = scheme.group(1).lower()
+        return f"{name}:…" if name in _KNOWN_SCHEMES else "…:"
     if scheme or url.replace("\\", "/").startswith("//"):
         head = re.match(r"[^/\\?#]*[/\\]{0,2}[^/\\?#]*", url)
         shown = head.group(0) if head else url
@@ -1940,6 +1966,10 @@ def _css_string_value(token: str) -> str:
     return token[1:-1] if len(token) >= 2 and token[0] in "\"'" else token
 
 
+_CSS_CONTINUATION_RE = re.compile(r"\\[\n\r\f]")
+#: A string that starts with a URL scheme (`image-set('http:host/x')`); "12:30"
+#: and "Note: text" are not URLs, `data:` is judged where it is used.
+_CSS_SCHEME_STRING_RE = re.compile(r"(?!data:)[a-z][a-z0-9+.-]*:(?=\S)", re.IGNORECASE)
 _CSS_ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6})\s?|\\([^\n])")
 _CSS_NAME = r"(?:[\w-]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n0-9a-fA-F])+"
 _CSS_FUNCTION_RE = re.compile(rf"({_CSS_NAME})\(")
@@ -1967,6 +1997,15 @@ def check_css(
     refused wherever they could hide a URL: in function and at-rule names and
     inside `url()` / `@import`; other strings are checked decoded as well.
     """
+    # first of all: a backslash before a line break continues a string, which
+    # would split a URL across lines and hide it from everything below
+    continuation = _CSS_CONTINUATION_RE.search(text)
+    if continuation:
+        policy.problem(
+            first_line + text.count("\n", 0, continuation.start()),
+            f"{where}: a backslash before a line break is not allowed in CSS",
+        )
+        return
     text = _CSS_NAMESPACE_RE.sub(_blank, strip_css_comments(text))
 
     def line_at(offset: int) -> int:
@@ -2014,6 +2053,7 @@ def check_css(
         value = _css_string_value(match.group(0))
         if any(
             _EXTERNAL_TEXT_RE.match(candidate.strip())
+            or _CSS_SCHEME_STRING_RE.match(candidate.strip())
             for candidate in (value, _css_unescape(value))
         ):
             policy.problem(
@@ -2118,8 +2158,14 @@ class _HtmlChecker(HTMLParser):
             # a browser may read this as markup (inside <svg>), the parser does not
             if data.strip():
                 self.policy.problem(self.line, "<script src> must be empty")
-        elif "<!--" in data:
-            self.policy.problem(self.line, "unterminated HTML comment")
+        elif _MARKUP_LIKE_RE.search(data):
+            # Escaped text ("&lt;img") never gets here as '<'.  A literal '<'
+            # in text means that the parser took something for text - the
+            # content of <title>/<textarea> inside <svg>, an unterminated
+            # comment - which a browser may read as elements.
+            self.policy.problem(
+                self.line, "markup-like text is not allowed (write '<' as '&lt;')"
+            )
 
     def handle_decl(self, decl: str) -> None:
         if not decl.strip().lower().startswith("doctype"):

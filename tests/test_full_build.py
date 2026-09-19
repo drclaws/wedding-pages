@@ -182,6 +182,24 @@ class OutputContentsTests(FullBuildTestCase):
         self.assertNotIn("<!--", page)
         self.assertIn("</html>", page)  # nothing was cut out
 
+    def test_markup_in_every_text_field_is_just_text(self):
+        hostile = '<img src=https://h.example.invalid/x> <!-- <![CDATA[ <?php </p> {{x}}'
+        site = site_data(
+            coupleNames=hostile, dateText=hostile, rsvpDeadline=hostile, outOfTownText=hostile
+        )
+        site["venue"].update(name=hostile, description=hostile, address=hostile)
+        for entry in site["schedule"]:
+            entry.update(time=hostile, title=hostile, text=hostile)
+        invitations = invitations_data()
+        for invitation in invitations:
+            invitation.update(greeting=hostile, note=hostile, travelNote=hostile, outOfTown=True)
+        write_data(self.data, site=site, invitations=invitations)
+        self.build()
+        page = self.page(support.TOKEN_A)
+        self.assertNotIn("<img src=https", page)
+        self.assertGreater(page.count("&lt;img src=https://h.example.invalid/x&gt;"), 10)
+        self.assertNotIn("h.example.invalid", (self.out / "index.html").read_text(encoding="utf-8"))
+
     def test_html_comments_are_removed(self):
         self.assertIn("<!-- a note", support.TEMPLATE)
         self.assertIn("<!-- a note", support.STUB)
