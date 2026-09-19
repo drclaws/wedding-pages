@@ -11,7 +11,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.support import TempDirTestCase, build, make_code_dir, write_assets
+from tests.support import (
+    MEDIA_FILES,
+    TempDirTestCase,
+    build,
+    make_code_dir,
+    site_data,
+    write_assets,
+    write_media,
+)
 
 
 def hidden_entries(directory: Path) -> list[str]:
@@ -97,18 +105,92 @@ class ReplaceableOutputTests(TempDirTestCase):
         (self.tmp / "empty").mkdir()
         build.check_replaceable(self.tmp / "empty")
 
-    def test_every_known_name_is_accepted(self):
+    def make_previous_build(self) -> Path:
         out = self.tmp / "dist"
         out.mkdir()
         for name in build.OUTPUT_TOP_LEVEL | build.OS_JUNK_FILES:
-            (out / name).write_text("x", encoding="utf-8")
-        build.check_replaceable(out)
+            if name in build.OUTPUT_TOP_LEVEL_DIRS:
+                (out / name).mkdir()
+            else:
+                (out / name).write_text("x", encoding="utf-8")
+        return out
+
+    def test_every_known_name_is_accepted(self):
+        build.check_replaceable(self.make_previous_build())
+
+    def test_known_names_must_have_the_expected_type(self):
+        out = self.make_previous_build()
+        (out / "assets").rmdir()
+        (out / "assets").write_text("not a directory", encoding="utf-8")
+        with self.assertRaises(build.BuildError) as caught:
+            build.check_replaceable(out)
+        self.assertIn("'assets' is not a directory", str(caught.exception))
+
+        out = self.tmp / "other"
+        (out / "index.html").mkdir(parents=True)
+        with self.assertRaises(build.BuildError) as caught:
+            build.check_replaceable(out)
+        self.assertIn("'index.html' is not a regular file", str(caught.exception))
+
+    def test_symlinks_with_known_names_are_refused(self):
+        target = self.tmp / "elsewhere"
+        target.mkdir()
+        (target / "keep.txt").write_text("precious", encoding="utf-8")
+        out = self.tmp / "dist"
+        out.mkdir()
+        try:
+            os.symlink(target, out / "assets", target_is_directory=True)
+            os.symlink(target / "keep.txt", out / "robots.txt")
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symbolic links are not available: {exc}")
+        with self.assertRaises(build.BuildError) as caught:
+            build.check_replaceable(out)
+        self.assertIn("is not a", str(caught.exception))
+
+    def test_names_that_look_like_tokens_are_masked(self):
+        # --out pointing inside a previous build by mistake: <out>/i holds the
+        # tokens and <out>/assets holds the media directory
+        pages = self.tmp / "dist" / "i"
+        for token in ("EveToken-0123456789abcdefg", "KarlKlaraToken-zyxwvutsrq98"):
+            (pages / token).mkdir(parents=True)
+        with self.assertRaises(build.BuildError) as caught:
+            build.check_replaceable(pages)
+        message = str(caught.exception)
+        self.assertIn("'EveT…'", message)
+        self.assertIn("'Karl…'", message)
+        self.assertNotIn("EveToken", message)
+        self.assertNotIn("KarlKlara", message)
+
+        assets = self.tmp / "dist" / "assets"
+        (assets / "m3d1a-f1xtur3-dir").mkdir(parents=True)
+        (assets / "app.css").write_text("x", encoding="utf-8")
+        with self.assertRaises(build.BuildError) as caught:
+            build.check_replaceable(assets)
+        message = str(caught.exception)
+        self.assertIn("'m3d1…'", message)
+        self.assertIn("'app.css'", message)
+        self.assertNotIn("m3d1a-f1xtur3-dir", message)
 
     def test_known_names(self):
         self.assertEqual(
             build.OUTPUT_TOP_LEVEL,
             {"i", "assets", "index.html", "404.html", "_headers", "robots.txt"},
         )
+
+    def test_tokens_in_paths_are_redacted(self):
+        token = "EveToken-0123456789abcdefg"
+        for path in (
+            f"i/{token}/index.html",
+            f"dist/i/{token}/index.html",
+            f"dist\\i\\{token}\\index.html",
+            f"cannot write 'i/{token}/index.html'",
+        ):
+            with self.subTest(path=path):
+                redacted = build._redact_paths(path)
+                self.assertNotIn(token, redacted)
+                self.assertIn("EveT…", redacted)
+        # other directories whose name merely ends in "i" are left alone
+        self.assertEqual(build._redact_paths(f"wiki/{token}"), f"wiki/{token}")
 
     def test_unexpected_entries_are_listed_but_capped(self):
         out = self.tmp / "dist"
@@ -143,6 +225,82 @@ class CopyAssetsTests(TempDirTestCase):
         self.assertEqual(copied, 1)
         self.assertFalse((self.tmp / "out" / "assets" / "vendor").exists())
 
+    def test_ignore_receives_the_relative_path(self):
+        source = write_assets(self.tmp / "assets")
+        (source / "vendor" / "deep").mkdir()
+        (source / "vendor" / "deep" / "lib.js").write_text("// deep\n", encoding="utf-8")
+        seen: list[str] = []
+
+        def ignore(relative: str) -> bool:
+            seen.append(relative)
+            return relative == "vendor/lib.js"
+
+        copied = build.copy_assets(source, self.tmp / "out" / "assets", ignore=ignore)
+        self.assertEqual(copied, 2)
+        self.assertEqual(
+            sorted(seen), ["app.css", "fonts", "vendor", "vendor/deep", "vendor/deep/lib.js", "vendor/lib.js"]
+        )
+        self.assertFalse((self.tmp / "out" / "assets" / "vendor" / "lib.js").exists())
+        self.assertTrue((self.tmp / "out" / "assets" / "vendor" / "deep" / "lib.js").is_file())
+
+    def test_styleguide_files_are_recognised_at_any_depth(self):
+        for relative in ("styleguide.css", "styleguide.js", "vendor/Styleguide.min.js"):
+            self.assertTrue(build.is_styleguide_asset(relative), relative)
+        for relative in ("app.css", "styleguide/app.css", "my-styleguide.css", "styleguide"):
+            self.assertFalse(build.is_styleguide_asset(relative), relative)
+
+    def test_empty_directories_are_not_created(self):
+        source = write_assets(self.tmp / "assets")  # fonts/ holds a dot-file only
+        (source / "a" / "b" / "c").mkdir(parents=True)
+        destination = self.tmp / "out" / "assets"
+        build.copy_assets(source, destination)
+        self.assertEqual(
+            sorted(p.relative_to(destination).as_posix() for p in destination.rglob("*")),
+            ["app.css", "vendor", "vendor/lib.js"],
+        )
+
+    def test_empty_assets_directory(self):
+        (self.tmp / "assets").mkdir()
+        destination = self.tmp / "out" / "assets"
+        self.assertEqual(build.copy_assets(self.tmp / "assets", destination), 0)
+        self.assertTrue(destination.is_dir())
+
+    def test_symlinks_are_an_error_and_are_not_followed(self):
+        source = write_assets(self.tmp / "assets")
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (outside / "secret.css").write_text("a{}", encoding="utf-8")
+        try:
+            os.symlink(outside, source / "vendor" / "linked", target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symbolic links are not available: {exc}")
+        with self.assertRaises(build.BuildError) as caught:
+            build.copy_assets(source, self.tmp / "out" / "assets")
+        self.assertIn("symbolic links are not allowed in assets", str(caught.exception))
+        self.assertIn(os.path.join("vendor", "linked"), str(caught.exception))
+
+    def test_ignored_and_hidden_symlinks_are_skipped(self):
+        source = write_assets(self.tmp / "assets")
+        try:
+            os.symlink(source / "app.css", source / ".hidden-link")
+            os.symlink(source / "app.css", source / "styleguide.css")
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symbolic links are not available: {exc}")
+        copied = build.copy_assets(
+            source, self.tmp / "out" / "assets", ignore=build.is_styleguide_asset
+        )
+        self.assertEqual(copied, 2)
+
+    def test_assets_directory_that_is_a_symlink(self):
+        source = write_assets(self.tmp / "real-assets")
+        try:
+            os.symlink(source, self.tmp / "assets", target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symbolic links are not available: {exc}")
+        with self.assertRaises(build.BuildError) as caught:
+            build.copy_assets(self.tmp / "assets", self.tmp / "out" / "assets")
+        self.assertIn("must not be a symbolic link", str(caught.exception))
+
     def test_copy_errors_are_readable(self):
         source = write_assets(self.tmp / "assets")
         failures = [(str(source / "app.css"), "somewhere", "Permission denied")]
@@ -167,6 +325,60 @@ class CopyAssetsTests(TempDirTestCase):
     def test_missing_source(self):
         with self.assertRaises(build.BuildError):
             build.copy_assets(self.tmp / "nope", self.tmp / "out")
+
+
+class CopyMediaTests(TempDirTestCase):
+    def test_only_referenced_files_are_copied(self):
+        media = write_media(self.tmp / "media", (*MEDIA_FILES, "unused.webp", "notes.txt"))
+        (media / "clip.mp4").write_bytes(b"video")
+        destination = self.tmp / "out" / "assets" / "media-dir"
+        copied = build.copy_media(site_data(), media, destination)
+        self.assertEqual(copied, len(MEDIA_FILES))
+        self.assertEqual(sorted(p.name for p in destination.iterdir()), sorted(MEDIA_FILES))
+        self.assertEqual((destination / "clip.mp4").read_bytes(), b"video")
+
+    def test_a_file_referenced_twice_is_copied_once(self):
+        site = site_data()
+        site["venue"]["photos"] = ["venue-1.webp", "venue-1.webp"]
+        site["venue"]["directionsImage"] = "venue-1.webp"
+        del site["video"]
+        media = write_media(self.tmp / "media")
+        copied = build.copy_media(site, media, self.tmp / "out" / "m")
+        self.assertEqual(copied, 1)
+
+    def test_no_references_gives_an_empty_directory(self):
+        site = site_data(video=None)
+        site["venue"] = {"ready": False}
+        destination = self.tmp / "out" / "m"
+        self.assertEqual(build.copy_media(site, self.tmp / "no-media", destination), 0)
+        self.assertEqual(list(destination.iterdir()), [])
+
+    def test_existing_destination_is_a_collision(self):
+        destination = self.tmp / "out" / "vendor"
+        destination.mkdir(parents=True)
+        with self.assertRaises(build.BuildError) as caught:
+            build.copy_media(site_data(), write_media(self.tmp / "media"), destination)
+        self.assertIn("'mediaDir' collides", str(caught.exception))
+
+    def test_symlink_is_refused(self):
+        media = write_media(self.tmp / "media")
+        os.remove(media / "poster.jpg")
+        try:
+            os.symlink(media / "route.png", media / "poster.jpg")
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symbolic links are not available: {exc}")
+        with self.assertRaises(build.BuildError) as caught:
+            build.copy_media(site_data(), media, self.tmp / "out" / "m")
+        self.assertIn("symbolic links are not allowed in media", str(caught.exception))
+        self.assertIn("poster.jpg", str(caught.exception))
+
+    def test_unreadable_file(self):
+        media = write_media(self.tmp / "media")
+        os.remove(media / "poster.jpg")
+        with self.assertRaises(build.BuildError) as caught:
+            build.copy_media(site_data(), media, self.tmp / "out" / "m")
+        self.assertIn("cannot copy the media file", str(caught.exception))
+        self.assertIn("poster.jpg", str(caught.exception))
 
 
 class DebugSwitchTests(unittest.TestCase):

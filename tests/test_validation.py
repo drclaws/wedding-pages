@@ -254,6 +254,38 @@ class SiteValidationTests(TempDirTestCase):
                     any("venue.photos[0]" in error for error in errors), errors
                 )
 
+    def test_media_file_types(self):
+        self.assertIsNone(build.check_media_name("photo.JPG"))
+        self.assertIsNone(build.check_media_name("scheme.svg", build.IMAGE_EXTENSIONS))
+        self.assertIn("unsupported file type", build.check_media_name("photo.heic"))
+        self.assertIn("unsupported file type", build.check_media_name("no-extension"))
+        self.assertIn(
+            "unsupported file type", build.check_media_name("clip.mp4", build.IMAGE_EXTENSIONS)
+        )
+        self.assertIn("reserved", build.check_media_name("EVENT.ics"))
+        # a video where an image is expected, and the other way round
+        errors = self.errors(site_data(video={"file": "poster.jpg", "poster": "clip.mp4"}))
+        self.assertTrue(any("'video.file' has an unsupported" in e for e in errors), errors)
+        self.assertTrue(any("'video.poster' has an unsupported" in e for e in errors), errors)
+        # everything the data may refer to can be published
+        self.assertLessEqual(
+            build.IMAGE_EXTENSIONS | build.VIDEO_EXTENSIONS, build.ASSET_EXTENSIONS
+        )
+
+    def test_media_dir_must_not_shadow_an_asset(self):
+        assets = self.tmp / "assets"
+        (assets / "Fonts-And-Vendor-Files").mkdir(parents=True)
+        report = build.Report()
+        build.check_media_dir_collision(
+            site_data(mediaDir="fonts-and-vendor-files"), assets, report
+        )
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("'mediaDir' collides with 'Fonts-And-Vendor-Files'", report.errors[0])
+        report = build.Report()
+        build.check_media_dir_collision(site_data(), assets, report)
+        build.check_media_dir_collision(site_data(), self.tmp / "no-assets", report)
+        self.assertEqual(report.errors, [])
+
     def test_media_case_sensitivity(self):
         site = site_data()
         site["venue"]["photos"] = ["Venue-1.webp"]
@@ -431,14 +463,19 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(context["travelNote"], "")
         self.assertEqual(build.render("<!-- if:note -->{{note}}<!-- endif -->", context), "")
 
-    def test_video_is_none_when_absent(self):
-        site = site_data()
-        del site["video"]
-        context = build.build_context(site, invitations_data(1)[0])
-        self.assertIsNone(context["video"])
-        self.assertEqual(
-            build.render("<!-- if:video.file -->x<!-- endif -->", context), ""
-        )
+    def test_video_is_an_empty_object_when_absent(self):
+        absent = site_data()
+        del absent["video"]
+        for site in (absent, site_data(video=None)):
+            context = build.build_context(site, invitations_data(1)[0])
+            self.assertEqual(
+                context["video"], {"file": "", "poster": "", "src": "", "posterSrc": ""}
+            )
+            self.assertEqual(
+                build.render("<!-- if:video.file -->x<!-- endif -->", context), ""
+            )
+            # the fields resolve even outside of a condition
+            self.assertEqual(build.render("[{{video.src}}]", context), "[]")
 
     def test_venue_is_fully_normalised(self):
         site = site_data()
