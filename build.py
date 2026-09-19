@@ -60,6 +60,18 @@ MIN_TOKEN_LENGTH = 20
 MIN_UUID_HEX_DIGITS = 30
 #: Random media directory name (`site.json` -> `mediaDir`).
 MIN_MEDIA_DIR_LENGTH = 16
+#: Tokens and `mediaDir` become directory names, so their length is capped well
+#: below the file name limit of common file systems (255 bytes).
+MAX_NAME_LENGTH = 200
+
+#: Everything a build may put at the top level of the output directory.  It is
+#: used to recognise a previous build before replacing `--out`, and is meant to
+#: be the allow-list for the contents of the finished output as well.
+OUTPUT_TOP_LEVEL = frozenset(
+    {"i", ASSETS_DIRNAME, "index.html", "404.html", "_headers", "robots.txt"}
+)
+#: Files created by the operating system; ignored when `--out` is inspected.
+OS_JUNK_FILES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -474,6 +486,11 @@ def check_token(token: Any) -> str | None:
         return "'token' is empty"
     if not _TOKEN_CHARS_RE.match(token):
         return "'token' may only contain A-Z, a-z, 0-9, '_' and '-'"
+    if len(token) > MAX_NAME_LENGTH:
+        return (
+            f"'token' is too long: at most {MAX_NAME_LENGTH} characters allowed "
+            f"(it becomes a directory name), got {len(token)}"
+        )
     if _HEX_DASH_RE.match(token):
         # UUID-like token: only hex digits carry entropy.
         digits = len(token) - token.count("-")
@@ -510,7 +527,9 @@ def invitation_label(index: int, token: Any = None) -> str:
 # Data loading and validation
 # --------------------------------------------------------------------------
 
-_MEDIA_DIR_RE = re.compile(rf"[A-Za-z0-9_-]{{{MIN_MEDIA_DIR_LENGTH},}}\Z")
+_MEDIA_DIR_RE = re.compile(
+    rf"[A-Za-z0-9_-]{{{MIN_MEDIA_DIR_LENGTH},{MAX_NAME_LENGTH}}}\Z"
+)
 _DATE_ISO_RE = re.compile(
     r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}(?::\d{2}(?:\.\d{3}|\.\d{6})?)?)"
     r"(Z|z|[+-]\d{2}:\d{2})?\Z"
@@ -557,13 +576,19 @@ _KINDS: dict[str, tuple[str, Callable[[Any], bool]]] = {
     "boolean": ("a boolean (true/false)", lambda v: isinstance(v, bool)),
     "number": (
         "a number",
-        lambda v: isinstance(v, (int, float))
-        and not isinstance(v, bool)
-        and math.isfinite(v),
+        lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
     ),
     "array": ("an array", lambda v: isinstance(v, list)),
     "object": ("an object", lambda v: isinstance(v, dict)),
 }
+
+
+def _is_finite(value: int | float) -> bool:
+    """False for infinities, NaN and integers too large to fit into a float."""
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def json_type(value: Any) -> str:
@@ -674,6 +699,12 @@ def _field(
     if nonempty and kind == "string" and not value.strip():
         report.error(f"{where}: field '{name}' must not be empty")
         return MISSING
+    if kind == "number" and not _is_finite(value):
+        report.error(
+            f"{where}: field '{name}' must be a finite number "
+            "(the value is infinite or too large)"
+        )
+        return MISSING
     return value
 
 
@@ -758,9 +789,9 @@ def check_site(site: Any, report: Report, where: str = SITE_FILE) -> None:
     media_dir = _field(site, "mediaDir", "string", where, report, nonempty=True)
     if isinstance(media_dir, str) and not _MEDIA_DIR_RE.match(media_dir):
         report.error(
-            f"{where}: field 'mediaDir' must be at least {MIN_MEDIA_DIR_LENGTH} "
-            "characters long and may only contain A-Z, a-z, 0-9, '_' and '-' "
-            f"(got {len(media_dir)} characters)"
+            f"{where}: field 'mediaDir' must be {MIN_MEDIA_DIR_LENGTH} to "
+            f"{MAX_NAME_LENGTH} characters long and may only contain A-Z, a-z, 0-9, "
+            f"'_' and '-' (got {len(media_dir)} characters)"
         )
 
     _check_video(site, report, where)
@@ -1134,6 +1165,11 @@ def _same_path(first: Path, second: Path) -> bool:
         return first == second
 
 
+def _is_within(path: Path, ancestor: Path) -> bool:
+    """True when `path` is `ancestor` or lies inside it (both already resolved)."""
+    return any(_same_path(candidate, ancestor) for candidate in (path, *path.parents))
+
+
 def check_out_dir(
     out_dir: Path | str,
     *,
@@ -1141,15 +1177,20 @@ def check_out_dir(
     data_dir: Path | str,
     media_dir: Path | str,
 ) -> None:
-    """Refuse output directories whose replacement would destroy input data.
+    """Refuse output directories whose replacement would destroy anything.
 
     The build replaces `--out` completely, so it must not be the code, data or
     media directory (or a parent of one), the working directory (or a parent of
     it), the home directory, the file system root, or a directory inside the
-    trees that are copied into the output.
+    trees that are copied into the output.  An existing directory is replaced
+    only when it is empty or looks like the output of a previous build.
+
+    Extension point: later build steps may pass further protected directories
+    through the same checks.
     """
     out = Path(out_dir).absolute()
     resolved = Path(os.path.realpath(out))
+    shown = display_path(out)
 
     if resolved == Path(resolved.anchor):
         raise BuildError("--out must not be the file system root")
@@ -1160,7 +1201,7 @@ def check_out_dir(
     if home is not None and _same_path(resolved, home):
         raise BuildError("--out must not be the home directory")
     if out.exists() and not out.is_dir():
-        raise BuildError(f"--out exists and is not a directory: {display_path(out)}")
+        raise BuildError(f"--out exists and is not a directory: {shown}")
 
     protected = {
         "code": Path(code_dir),
@@ -1175,7 +1216,7 @@ def check_out_dir(
                 relation = "the" if candidate == target else "a parent of the"
                 raise BuildError(
                     f"--out must not be {relation} {label} directory "
-                    f"({display_path(out)}); choose a separate output directory"
+                    f"({shown}); choose a separate output directory"
                 )
 
     inside = {
@@ -1184,48 +1225,133 @@ def check_out_dir(
     }
     for label, path in inside.items():
         target = Path(os.path.realpath(path.absolute()))
-        if target in resolved.parents:
+        if _is_within(resolved, target):
+            relation = "the" if _same_path(resolved, target) else "inside the"
             raise BuildError(
-                f"--out must not be inside the {label} directory ({display_path(out)})"
+                f"--out must not be {relation} {label} directory ({shown}); "
+                "choose a separate output directory"
             )
+
+    if out.is_symlink():
+        raise BuildError(
+            f"--out must not be a symbolic link ({shown}); "
+            "point --out at the real directory"
+        )
+    check_replaceable(out)
+
+
+def check_replaceable(out_dir: Path | str) -> None:
+    """Allow replacing an existing directory only if it is a previous build.
+
+    A directory qualifies when it is empty or when every top-level entry is one
+    of `OUTPUT_TOP_LEVEL` (files created by the operating system are ignored).
+    No marker file is written into the output: its contents stay limited to
+    what the site needs.
+    """
+    out = Path(out_dir)
+    try:
+        names = sorted(entry.name for entry in os.scandir(out))
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise BuildError(
+            f"cannot read the output directory {display_path(out)}: {exc.strerror}"
+        ) from None
+    unexpected = [
+        name for name in names if name not in OUTPUT_TOP_LEVEL and name not in OS_JUNK_FILES
+    ]
+    if unexpected:
+        listed = ", ".join(f"'{_shorten(name, 40)}'" for name in unexpected[:3])
+        more = f" and {len(unexpected) - 3} more" if len(unexpected) > 3 else ""
+        raise BuildError(
+            f"refusing to replace {display_path(out)}: it does not look like a "
+            f"previous build output (unexpected: {listed}{more}); "
+            "remove it manually or choose another --out"
+        )
+
+
+def _remove_tree(path: Path) -> bool:
+    """Remove a directory tree (or a symlink); True when nothing is left."""
+    try:
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        else:
+            shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        pass
+    return not os.path.lexists(path)
 
 
 class _StagedOutput:
-    """Build into a temporary directory next to `--out`, then swap it in."""
+    """Build into a temporary directory next to `--out`, then swap it in.
 
-    def __init__(self, out_dir: Path):
+    The temporary names are `.<name>.tmp-<hex>` (the new output) and
+    `.<name>.old-<hex>` (the previous one while it is being replaced).  They
+    may hold rendered pages, so leftovers of an interrupted build are removed
+    before the next one starts, and a failure to remove them is reported.
+    """
+
+    def __init__(self, out_dir: Path, warn: Callable[[str], None] | None = None):
         self.out = Path(out_dir).absolute()
+        self.warn = warn if warn is not None else (lambda _message: None)
         self.stage = self.out.parent / f".{self.out.name}.tmp-{secrets.token_hex(6)}"
+        self._stale_re = re.compile(
+            rf"\.{re.escape(self.out.name)}\.(?:tmp|old)-[0-9a-f]{{12}}\Z"
+        )
 
     def __enter__(self) -> Path:
-        self.out.parent.mkdir(parents=True, exist_ok=True)
-        self.stage.mkdir()
+        try:
+            self.out.parent.mkdir(parents=True, exist_ok=True)
+            self._remove_stale()
+            self.stage.mkdir()
+        except OSError as exc:
+            raise BuildError(
+                "cannot create a temporary directory next to "
+                f"{display_path(self.out)}: {exc.strerror}"
+            ) from None
         return self.stage
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         if exc_type is not None:
-            shutil.rmtree(self.stage, ignore_errors=True)
+            self._discard(self.stage)
             return False
         self._swap()
         return False
 
+    def _remove_stale(self) -> None:
+        """Remove what an interrupted build left next to the output directory."""
+        with os.scandir(self.out.parent) as entries:
+            stale = [Path(entry.path) for entry in entries if self._stale_re.match(entry.name)]
+        for path in stale:
+            self._discard(path)
+
+    def _discard(self, path: Path) -> None:
+        if not _remove_tree(path):
+            self.warn(
+                f"could not remove the temporary directory {display_path(path)}; "
+                "it may contain rendered pages, remove it manually"
+            )
+
     def _swap(self) -> None:
-        previous: Path | None = None
-        if self.out.exists() or self.out.is_symlink():
-            previous = self.out.parent / f".{self.out.name}.old-{secrets.token_hex(6)}"
-            os.rename(self.out, previous)
+        previous = self.out.parent / f".{self.out.name}.old-{secrets.token_hex(6)}"
         try:
+            if os.path.lexists(self.out):
+                os.rename(self.out, previous)
             os.rename(self.stage, self.out)
-        except OSError:
-            if previous is not None:
-                os.rename(previous, self.out)
-            shutil.rmtree(self.stage, ignore_errors=True)
-            raise
-        if previous is not None:
-            if previous.is_symlink():
-                previous.unlink()
-            else:
-                shutil.rmtree(previous, ignore_errors=True)
+        except OSError as exc:
+            hint = ""
+            if os.path.lexists(previous) and not os.path.lexists(self.out):
+                try:  # put the previous output back
+                    os.rename(previous, self.out)
+                except OSError:
+                    hint = f"; the previous output was kept in {display_path(previous)}"
+            self._discard(self.stage)
+            raise BuildError(
+                f"cannot replace the output directory {display_path(self.out)}: "
+                f"{exc.strerror}{hint}"
+            ) from None
+        if os.path.lexists(previous):
+            self._discard(previous)
 
 
 def copy_assets(
@@ -1235,8 +1361,8 @@ def copy_assets(
 ) -> int:
     """Copy `assets/` into the output, skipping dot-files; returns file count.
 
-    `ignore` is an extension point for later build steps (files that must not
-    reach `dist/`, e.g. style guide helpers).
+    `ignore` receives a file or directory name and returns True for entries
+    that must not reach the output (extension point for later build steps).
     """
     if not source.is_dir():
         raise BuildError(f"assets directory not found: {display_path(source)}")
@@ -1248,7 +1374,21 @@ def copy_assets(
             if name.startswith(".") or (ignore is not None and ignore(name))
         }
 
-    shutil.copytree(source, destination, ignore=skip)
+    shown = display_path(source)
+    try:
+        shutil.copytree(source, destination, ignore=skip)
+    except shutil.Error as exc:  # a list of (source, destination, reason)
+        failures = exc.args[0] if exc.args and isinstance(exc.args[0], list) else []
+        detail = f"{len(failures)} file(s) could not be copied"
+        if failures:
+            failed, _target, reason = failures[0]
+            detail += f"; first: {display_path(failed)}: {reason}"
+        raise BuildError(f"cannot copy assets from {shown}: {detail}") from None
+    except OSError as exc:
+        where = f" ({display_path(exc.filename)})" if exc.filename else ""
+        raise BuildError(
+            f"cannot copy assets from {shown}: {exc.strerror or type(exc).__name__}{where}"
+        ) from None
     return sum(len(files) for _root, _dirs, files in os.walk(destination))
 
 
@@ -1263,6 +1403,10 @@ def load_template(path: Path) -> Template:
         source = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         raise BuildError(f"template not found: {display_path(path)}") from None
+    except UnicodeDecodeError as exc:
+        raise BuildError(
+            f"{display_path(path)}: not valid UTF-8 (at byte {exc.start})"
+        ) from None
     except OSError as exc:
         raise BuildError(
             f"cannot read the template {display_path(path)}: {exc.strerror}"
@@ -1279,7 +1423,7 @@ def render_pages(
     half-written output directory behind.
     """
     pages: list[tuple[str, str]] = []
-    errors: list[str] = []
+    failures: dict[str, list[str]] = {}  # message -> labels, in order of appearance
     for index, invitation in enumerate(invitations, start=1):
         label = invitation_label(index, invitation.get("token"))
         try:
@@ -1287,9 +1431,15 @@ def render_pages(
                 (invitation["token"], template.render(build_context(site, invitation)))
             )
         except TemplateError as exc:
-            errors.append(f"{label}: {exc}")
-    if errors:
-        raise ValidationError(errors)
+            failures.setdefault(str(exc), []).append(label)
+    if failures:
+        # A template problem usually hits every page: report it once.
+        raise ValidationError(
+            f"{labels[0]}: {message}"
+            if len(labels) == 1
+            else f"{len(labels)} invitation(s): {message}; first: {labels[0]}"
+            for message, labels in failures.items()
+        )
     return pages
 
 
@@ -1329,7 +1479,7 @@ def build_site(
     template = load_template(code_dir / TEMPLATE_FILE)
     pages = render_pages(template, site, invitations)
 
-    with _StagedOutput(out_dir) as stage:
+    with _StagedOutput(out_dir, warn=report.warn) as stage:
         written = write_pages(stage, pages)
         assets = copy_assets(code_dir / ASSETS_DIRNAME, stage / ASSETS_DIRNAME)
         # Extension point for the full build: stub pages (index.html, 404.html),
@@ -1457,6 +1607,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def debug_enabled() -> bool:
+    """`BUILD_DEBUG=1` (or `true` / `yes`) shows tracebacks of internal errors."""
+    return os.environ.get("BUILD_DEBUG", "").strip().lower() in {"1", "true", "yes"}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1473,14 +1628,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         _stderr(f"{command}: failed")
         return EXIT_ERROR
     except OSError as exc:
-        _stderr(f"error: {_redact_paths(exc.strerror or exc)}")
+        where = f": {display_path(exc.filename)}" if exc.filename else ""
+        _stderr(f"error: {_redact_paths(f'{exc.strerror or type(exc).__name__}{where}')}")
         _stderr(f"{command}: failed")
         return EXIT_ERROR
     except KeyboardInterrupt:  # pragma: no cover - interactive use
         _stderr(f"{command}: interrupted")
         return EXIT_ERROR
     except Exception as exc:  # unexpected: report without leaking data
-        if os.environ.get("BUILD_DEBUG"):
+        if debug_enabled():
             traceback.print_exc()
         else:
             # The exception message may quote the data, so only the type and

@@ -120,6 +120,22 @@ class ValidateCommandTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("0 media file(s)", result.stdout)
 
+    def test_data_that_is_not_utf8(self):
+        (self.data / "site.json").write_bytes(b'{"coupleNames": "\xff\xfe"}')
+        result = self.run_validate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("site.json: not valid UTF-8", result.stderr)
+        self.assertNotIn("internal error", result.stderr)
+
+    def test_oversized_token_is_rejected_by_validate(self):
+        invitations = invitations_data()
+        invitations[0]["token"] = "Z" * 5000
+        write_data(self.data, invitations=invitations)
+        result = self.run_validate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("invitation #1 (ZZZZ…): 'token' is too long", result.stderr)
+        self.assertNotIn("Z" * 10, result.stderr)
+
     def test_unknown_field_warning_goes_to_stderr(self):
         invitations = invitations_data()
         invitations[0]["surpriseField"] = "VALUE-MUST-NOT-LEAK"
@@ -164,17 +180,29 @@ class BuildCommandTests(CliTestCase):
         page = (self.out / "i" / support.TOKEN_C / "index.html").read_text(encoding="utf-8")
         self.assertIn("</p><p>", page)
 
-    def test_output_directory_is_replaced(self):
+    def test_previous_build_output_is_replaced(self):
+        # every name a build may create, plus a file left by the OS
         self.out.mkdir(parents=True)
-        (self.out / "stale.txt").write_text("old", encoding="utf-8")
+        for name in ("index.html", "404.html", "_headers", "robots.txt", ".DS_Store"):
+            (self.out / name).write_text("old", encoding="utf-8")
+        (self.out / "assets").mkdir()
+        (self.out / "assets" / "stale.css").write_text("old", encoding="utf-8")
         stale_page = self.out / "i" / "StaleToken-000000000000" / "index.html"
         stale_page.parent.mkdir(parents=True)
         stale_page.write_text("old", encoding="utf-8")
 
         result = self.run_build()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse((self.out / "stale.txt").exists())
         self.assertFalse(stale_page.parent.exists())
+        self.assertFalse((self.out / "assets" / "stale.css").exists())
+        self.assertFalse((self.out / "robots.txt").exists())
+        self.assertTrue((self.out / "i" / support.TOKEN_A / "index.html").is_file())
+
+    def test_empty_output_directory_is_replaced(self):
+        self.out.mkdir(parents=True)
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.out / "i" / support.TOKEN_A / "index.html").is_file())
 
     def test_no_temporary_directories_are_left_behind(self):
         self.run_build()
@@ -183,7 +211,7 @@ class BuildCommandTests(CliTestCase):
 
     def test_invalid_data_keeps_the_previous_output(self):
         self.run_build()
-        marker = self.out / "marker.txt"
+        marker = self.out / "robots.txt"  # a name that belongs to a build output
         marker.write_text("keep", encoding="utf-8")
         invitations = invitations_data()
         del invitations[0]["greeting"]
@@ -192,10 +220,10 @@ class BuildCommandTests(CliTestCase):
         result = self.run_build()
         self.assertEqual(result.returncode, 1)
         self.assertIn("greeting", result.stderr)
-        self.assertTrue(marker.is_file())
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
         self.assertNoPrivateData(result.stdout, result.stderr)
 
-    def test_template_error_is_reported_per_invitation(self):
+    def test_template_error_is_reported_once(self):
         (self.code / "template.html").write_text(
             "<p>{{greeting}}</p>\n<p>{{missingField}}</p>\n", encoding="utf-8"
         )
@@ -203,9 +231,46 @@ class BuildCommandTests(CliTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("missingField", result.stderr)
         self.assertIn("template.html line 2", result.stderr)
-        self.assertIn(f"invitation #1 ({support.TOKEN_A[:4]}…)", result.stderr)
+        self.assertIn("3 invitation(s):", result.stderr)
+        self.assertIn(f"first: invitation #1 ({support.TOKEN_A[:4]}…)", result.stderr)
+        errors = [line for line in result.stderr.splitlines() if line.startswith("error:")]
+        self.assertEqual(len(errors), 1, result.stderr)
         self.assertFalse(self.out.exists())
         self.assertNoPrivateData(result.stdout, result.stderr)
+
+    def test_template_error_for_a_single_invitation(self):
+        # Only the second fixture invitation has plusOne, so only its page
+        # reaches the failing placeholder (an array inside {{…}}).
+        (self.code / "template.html").write_text(
+            "<!-- if:plusOne -->{{schedule}}<!-- endif -->\n", encoding="utf-8"
+        )
+        result = self.run_build()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"error: invitation #2 ({support.TOKEN_B[:4]}…): template.html", result.stderr)
+        self.assertNotIn("invitation(s):", result.stderr)
+
+    def test_template_that_is_not_utf8(self):
+        (self.code / "template.html").write_bytes(b"<p>\xff\xfe{{greeting}}</p>")
+        result = self.run_build()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not valid UTF-8", result.stderr)
+        self.assertIn("template.html", result.stderr)
+        self.assertNotIn("internal error", result.stderr)
+        self.assertFalse(self.out.exists())
+
+    def test_leftovers_of_an_interrupted_build_are_removed(self):
+        stale_new = self.work / ".dist.tmp-0123456789ab"
+        stale_old = self.work / ".dist.old-ba9876543210"
+        unrelated = self.work / ".dist.tmp-notes"
+        for directory in (stale_new, stale_old, unrelated):
+            (directory / "i" / "SomeToken").mkdir(parents=True)
+            (directory / "i" / "SomeToken" / "index.html").write_text("x", encoding="utf-8")
+
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(stale_new.exists())
+        self.assertFalse(stale_old.exists())
+        self.assertTrue(unrelated.is_dir())  # not a name this tool creates
 
     def test_broken_template_syntax(self):
         (self.code / "template.html").write_text(
@@ -290,6 +355,56 @@ class OutputDirectoryGuardTests(CliTestCase):
 
     def test_inside_the_assets_directory(self):
         self.assertRefused(self.code / "assets" / "sub")
+
+    def test_the_assets_directory_itself(self):
+        before = sorted(str(p.relative_to(self.code)) for p in (self.code / "assets").rglob("*"))
+        self.assertRefused(self.code / "assets", fragment="assets directory")
+        after = sorted(str(p.relative_to(self.code)) for p in (self.code / "assets").rglob("*"))
+        self.assertEqual(before, after)
+        self.assertTrue((self.code / "assets" / ".gitkeep").is_file())
+        self.assertFalse((self.code / "assets" / "i").exists())
+
+    def test_unrelated_directory_is_not_replaced(self):
+        for directory in (self.code / "tests", self.work / "notes"):
+            directory.mkdir()
+            keep = directory / "test_something.py"
+            keep.write_text("# keep me\n", encoding="utf-8")
+            result = self.assertRefused(
+                directory, fragment="does not look like a previous build output"
+            )
+            self.assertIn("test_something.py", result.stderr)
+            self.assertIn("remove it manually or choose another --out", result.stderr)
+            self.assertEqual(keep.read_text(encoding="utf-8"), "# keep me\n")
+
+    def test_mixed_directory_is_not_replaced(self):
+        # known names do not help when something else lives there as well
+        self.out.mkdir()
+        (self.out / "index.html").write_text("old", encoding="utf-8")
+        (self.out / "thesis.txt").write_text("precious", encoding="utf-8")
+        self.assertRefused(self.out, fragment="'thesis.txt'")
+        self.assertEqual((self.out / "thesis.txt").read_text(encoding="utf-8"), "precious")
+
+    def symlink(self, link: Path, target: Path) -> None:
+        try:
+            os.symlink(target, link, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:  # e.g. no privilege
+            self.skipTest(f"symbolic links are not available: {exc}")
+
+    def test_symlink_to_a_protected_directory(self):
+        link = self.work / "out-link"
+        self.symlink(link, self.data)
+        self.assertRefused(link, fragment="data directory")
+        self.assertTrue((self.data / "site.json").is_file())
+        self.assertTrue(link.is_symlink())
+
+    def test_symlink_to_another_directory(self):
+        target = self.tmp / "elsewhere"
+        target.mkdir()
+        link = self.work / "out-link"
+        self.symlink(link, target)
+        self.assertRefused(link, fragment="symbolic link")
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(list(target.iterdir()), [])
 
     def test_home_directory(self):
         home = self.tmp / "home"

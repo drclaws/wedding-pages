@@ -57,6 +57,17 @@ class ValueTests(unittest.TestCase):
     def test_escaping_happens_before_line_breaks(self):
         self.assertEqual(render("{{note}}", {"note": "<i>\n</i>"}), "&lt;i&gt;<br>&lt;/i&gt;")
 
+    def test_multiline_value_inside_an_attribute(self):
+        # Documents the current behaviour: line breaks are converted wherever
+        # the value is inserted, so multi-line fields belong inside <p>…</p>
+        # only and must not be used in attributes.
+        rendered = render('<img alt="{{note}}">', {"note": 'a "b"\nc\n\nd'})
+        self.assertEqual(rendered, '<img alt="a &quot;b&quot;<br>c</p><p>d">')
+
+    def test_single_line_value_inside_an_attribute(self):
+        rendered = render('<img alt="{{note}}">', {"note": 'a "b" <c>'})
+        self.assertEqual(rendered, '<img alt="a &quot;b&quot; &lt;c&gt;">')
+
     def test_booleans_and_numbers(self):
         context = {"flag": True, "off": False, "count": 3, "ratio": 2.5}
         self.assertEqual(

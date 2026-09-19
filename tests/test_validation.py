@@ -54,6 +54,11 @@ class TokenTests(unittest.TestCase):
     def test_short_token(self):
         self.assertIn("too short", build.check_token("short-token-xyz") or "")
 
+    def test_token_length_is_capped(self):
+        self.assertIsNone(build.check_token("Z" * build.MAX_NAME_LENGTH))
+        self.assertIn("too long", build.check_token("Z" * (build.MAX_NAME_LENGTH + 1)) or "")
+        self.assertIn("too long", build.check_token("0" * 5000) or "")
+
     def test_invalid_characters(self):
         for token in ("with space aaaaaaaaaaaaa", "токен-кириллица-длинный", "plus+slash/aaaaaaaaaa"):
             with self.subTest(token=token):
@@ -204,6 +209,9 @@ class SiteValidationTests(TempDirTestCase):
         self.assertTrue(self.errors(site_data(mediaDir="short")))
         self.assertTrue(self.errors(site_data(mediaDir="media dir with spaces")))
         self.assertEqual(self.errors(site_data(mediaDir="a" * 16)), [])
+        self.assertEqual(self.errors(site_data(mediaDir="a" * build.MAX_NAME_LENGTH)), [])
+        errors = self.errors(site_data(mediaDir="a" * (build.MAX_NAME_LENGTH + 1)))
+        self.assertTrue(any("'mediaDir'" in error for error in errors), errors)
 
     def test_missing_required_site_fields(self):
         site = site_data()
@@ -284,6 +292,22 @@ class SiteValidationTests(TempDirTestCase):
         self.assertTrue(any("venue.geo.lat" in error for error in errors), errors)
         self.assertTrue(any("venue.geo.lng" in error for error in errors), errors)
 
+    def test_huge_and_infinite_numbers(self):
+        # 10**400 does not fit into a float, 1e999 is parsed as infinity
+        for literal in ("1" + "0" * 400, "1e999", "-1e999"):
+            with self.subTest(literal=literal):
+                data_dir = write_data(self.tmp / "data")
+                raw = (data_dir / "site.json").read_text(encoding="utf-8")
+                self.assertEqual(raw.count('"lat": 10.5'), 1)
+                (data_dir / "site.json").write_text(
+                    raw.replace('"lat": 10.5', f'"lat": {literal}'), encoding="utf-8"
+                )
+                with self.assertRaises(build.ValidationError) as caught:
+                    build.load_data(data_dir)
+                errors = caught.exception.errors
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("'venue.geo.lat' must be a finite number", errors[0])
+
     def test_top_level_must_be_an_object(self):
         errors = self.errors([1, 2])
         self.assertTrue(any("must be an object" in error for error in errors), errors)
@@ -353,6 +377,16 @@ class MediaAndLoadingTests(TempDirTestCase):
             build.load_data(data_dir)
         self.assertTrue(any("invalid JSON" in e for e in caught.exception.errors))
 
+    def test_data_that_is_not_utf8(self):
+        data_dir = write_data(self.tmp / "data")
+        (data_dir / "invitations.json").write_bytes(b'[{"greeting": "\xff\xfe"}]')
+        with self.assertRaises(build.ValidationError) as caught:
+            build.load_data(data_dir)
+        self.assertTrue(
+            any("invitations.json: not valid UTF-8" in e for e in caught.exception.errors),
+            caught.exception.errors,
+        )
+
     def test_nan_is_rejected(self):
         data_dir = self.tmp / "data"
         write_data(data_dir)
@@ -367,7 +401,7 @@ class MediaAndLoadingTests(TempDirTestCase):
     def test_utf8_bom_is_tolerated(self):
         data_dir = write_data(self.tmp / "data")
         raw = (data_dir / "site.json").read_text(encoding="utf-8")
-        (data_dir / "site.json").write_text("﻿" + raw, encoding="utf-8")
+        (data_dir / "site.json").write_text("\ufeff" + raw, encoding="utf-8")
         build.load_data(data_dir)
 
     def test_error_messages_contain_no_guest_data(self):
