@@ -144,12 +144,86 @@ class ExternalResourceTests(FailingBuildTestCase):
         )
         self.assertBuildFails("assets/vendor/lib.css line 1")
 
-    def test_inline_style_and_style_element(self):
+    def test_inline_style_attribute(self):
         self.add_to_template(
-            '<p style="background: url(https://cdn.example.invalid/a.png)">x</p>\n'
-            "<style>@import 'https://cdn.example.invalid/b.css';</style>"
+            '<p style="background: url(https://cdn.example.invalid/a.png)">x</p>'
         )
-        self.assertBuildFails("<p style> url(): external URL", "<style> @import: external URL")
+        self.assertBuildFails("<p style> url(): external URL")
+
+    def test_style_elements_are_not_allowed(self):
+        self.add_to_template("<style>a { color: red }</style>")
+        self.assertBuildFails("<style> elements are not allowed")
+
+    def test_css_escapes_that_hide_a_url(self):
+        hidden = "u\\72l(https://cdn.example.invalid/x.png)"
+        cases = {
+            "assets/app.css": lambda: (self.code / "assets" / "app.css").write_text(
+                f"a {{ background: {hidden} }}", encoding="utf-8"
+            ),
+            "<p style>": lambda: self.add_to_template(f'<p style="background: {hidden}">x</p>'),
+            "<style>": lambda: self.add_to_template(f"<style>a {{ background: {hidden} }}</style>"),
+        }
+        for where, prepare in cases.items():
+            with self.subTest(where=where):
+                (self.code / "assets" / "app.css").write_text(":root{}", encoding="utf-8")
+                prepare()
+                expected = (
+                    "<style> elements are not allowed"
+                    if where == "<style>"
+                    else "CSS escapes are not allowed in function names"
+                )
+                self.assertBuildFails(expected)
+
+    def test_meta_refresh(self):
+        self.add_to_template('<meta HTTP-EQUIV="Refresh" content="5">')
+        self.assertBuildFails('<meta http-equiv="refresh"> is not allowed')
+
+    def test_cdata_section_that_hides_markup(self):
+        self.add_to_template(
+            '<![CDATA[ > <img src="https://cdn.example.invalid/x.png"> ]]>'
+        )
+        self.assertBuildFails("'<![…' (CDATA sections, processing instructions) is not allowed")
+        self.add_to_stub("<?xml version='1.0'?>")
+        self.assertBuildFails("stub.html line ", "'<?…'")
+
+    def test_markup_hidden_in_svg_content(self):
+        self.add_to_template(
+            '<svg><script src="/assets/vendor/lib.js">'
+            '<img src="https://cdn.example.invalid/x.png"></script></svg>'
+        )
+        self.assertBuildFails("<script src> must be empty")
+        self.add_to_template('<svg><script href="https://cdn.example.invalid/x.js"></script></svg>')
+        self.assertBuildFails("<script href> (an SVG script) is not allowed")
+        self.add_to_template(
+            '<svg><a href="#x"><set attributeName="xlink:href" to="javascript:x"></set></a></svg>'
+        )
+        self.assertBuildFails("<set>: animating 'href' is not allowed")
+
+    def test_unsafe_svg_file(self):
+        (self.code / "assets" / "icon.svg").write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" onload="x()">\n'
+            "<script>x()</script>\n"
+            "<foreignObject><p>x</p></foreignObject>\n"
+            '<image xlink:href="https://cdn.example.invalid/x.png"/>\n'
+            '<use href="//cdn.example.invalid/sprite.svg#a"/></svg>',
+            encoding="utf-8",
+        )
+        self.assertBuildFails(
+            "assets/icon.svg line 1: <svg onload>: event handlers are not allowed",
+            "assets/icon.svg line 2: <script> is not allowed in SVG files",
+            "assets/icon.svg line 3: <foreignobject> is not allowed in SVG files",
+            "assets/icon.svg line 4: <image xlink:href>: external URL 'https://cdn.example.invalid/…'",
+            "assets/icon.svg line 5: <use href>: external URL '//cdn.example.invalid/…'",
+        )
+
+    def test_plain_svg_file_passes(self):
+        (self.code / "assets" / "icon.svg").write_text(
+            '<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg" '
+            'xmlns:xlink="http://www.w3.org/1999/xlink"><defs><path id="a" d="M0 0"/></defs>'
+            '<use xlink:href="#a"/><a href="/">x</a></svg>',
+            encoding="utf-8",
+        )
+        self.assertBuildPasses()
 
     def test_external_url_in_the_stub(self):
         self.add_to_stub('<img src="https://cdn.example.invalid/pic.png" alt="">')
@@ -240,17 +314,17 @@ class LinkTests(FailingBuildTestCase):
 class LocalPathTests(FailingBuildTestCase):
     def test_missing_stylesheet(self):
         self.add_to_template('<link rel="stylesheet" href="/assets/x.css">')
-        self.assertBuildFails("<link href>: '/assets/x.css' does not exist in the output")
+        self.assertBuildFails("<link href>: '/assets/….css' does not exist in the output")
 
     def test_missing_media_file(self):
         self.add_to_template('<img src="{{mediaPath}}/forgotten.webp" alt="">')
         self.assertBuildFails(
-            f"<img src>: '/assets/{support.MEDIA_DIR}/forgotten.webp' does not exist"
+            f"<img src>: '/assets/{support.MEDIA_DIR}/….webp' does not exist"
         )
 
     def test_missing_local_link(self):
         self.add_to_template('<a href="/about/">x</a>')
-        self.assertBuildFails("<a href>: '/about/' does not exist in the output")
+        self.assertBuildFails("<a href>: '/…' does not exist in the output")
 
     def test_missing_file_in_css(self):
         (self.code / "assets" / "app.css").write_text(
@@ -258,21 +332,55 @@ class LocalPathTests(FailingBuildTestCase):
             encoding="utf-8",
         )
         self.assertBuildFails(
-            "assets/app.css line 1: CSS url(): '/assets/fonts/missing.woff2' does not exist"
+            "assets/app.css line 1: CSS url(): '/assets/….woff2' does not exist"
         )
 
     def test_relative_resource_path(self):
         self.add_to_template('<link rel="stylesheet" href="assets/app.css">')
         self.assertBuildFails(
-            "<link href>: relative path 'assets/app.css'",
+            "<link href>: relative path '….css'",
             "must be absolute from the site root",
         )
 
-    def test_relative_path_in_css(self):
-        (self.code / "assets" / "app.css").write_text(
-            "a { background: url(img/bg.png) }", encoding="utf-8"
+    def vendor_css(self, text: str) -> Path:
+        directory = self.code / "assets" / "vendor" / "lib"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "lib.css").write_text(text, encoding="utf-8")
+        return directory
+
+    def test_relative_url_in_a_css_file_is_relative_to_the_file(self):
+        directory = self.vendor_css(
+            "a { background: url(img/x.svg) } b { background: url('../lib.js?v=1#f') }"
         )
-        self.assertBuildFails("CSS url(): relative path 'img/bg.png'")
+        (directory / "img").mkdir()
+        (directory / "img" / "x.svg").write_text("<svg/>", encoding="utf-8")
+        self.assertBuildPasses()
+
+    def test_relative_url_in_a_css_file_must_exist(self):
+        self.vendor_css("a { background: url(img/x.svg) }")
+        self.assertBuildFails(
+            "assets/vendor/lib/lib.css line 1: CSS url(): '….svg' (relative to the style "
+            "sheet) does not exist in the output"
+        )
+
+    def test_relative_url_in_a_css_file_must_stay_inside_the_output(self):
+        # three levels up from assets/vendor/lib/ is still the output root
+        self.vendor_css("a { background: url(../../../x.svg) }")
+        self.assertBuildFails("'….svg' (relative to the style sheet) does not exist")
+        self.vendor_css("a { background: url(../../../../x.svg) }")
+        self.assertBuildFails("CSS url(): '….svg' points outside the output")
+        self.vendor_css("a { background: url(img/../../../../../../etc/x.svg) }")
+        self.assertBuildFails("points outside the output")
+
+    def test_relative_url_in_an_inline_style_is_refused(self):
+        self.add_to_template('<p style="background: url(assets/app.css)">x</p>')
+        self.assertBuildFails("<p style> url(): relative path '….css'")
+
+    def test_text_in_a_path_is_not_echoed(self):
+        # a Latin word from the data would pass for a plain URL
+        self.add_to_template('<img src="/assets/SecretWord.png" alt=""><a href="/SecretWord/">x</a>')
+        result = self.assertBuildFails("'/assets/….png' does not exist", "'/…' does not exist")
+        self.assertNotIn("SecretWord", result.stderr)
 
     def test_empty_url(self):
         # e.g. a computed field used outside of its <!-- if: --> block
@@ -302,6 +410,19 @@ class LocalPathTests(FailingBuildTestCase):
             '<meta name="description" content="Приглашение">'
         )
         self.assertBuildPasses()
+
+    def test_template_and_stub_must_not_be_symlinks(self):
+        for name in ("template.html", "stub.html"):
+            with self.subTest(name=name):
+                real = self.tmp / f"real-{name}"
+                os.replace(self.code / name, real)
+                try:
+                    os.symlink(real, self.code / name)
+                except (OSError, NotImplementedError) as exc:
+                    self.skipTest(f"symbolic links are not available: {exc}")
+                self.assertBuildFails("must not be a symbolic link", name)
+                os.remove(self.code / name)
+                os.replace(real, self.code / name)
 
 
 class StubCheckTests(FailingBuildTestCase):
@@ -638,21 +759,51 @@ class HtmlCheckUnitTests(unittest.TestCase):
         )
         self.assertEqual(html_problems('<base href="/">'), ["<base> is not allowed"])
 
-    def test_meta_refresh_to_another_site(self):
-        problems = html_problems(
-            '<meta http-equiv="refresh" content="0; url=https://other.example.invalid/x">'
-        )
+    def test_meta_refresh_is_refused_whatever_the_content(self):
+        for content in ("0; url=https://other.example.invalid/x", "0; url=/", "30"):
+            problems = html_problems(f'<meta http-equiv="REFRESH" content="{content}">')
+            self.assertEqual(problems, ['<meta http-equiv="refresh"> is not allowed'])
+
+    def test_external_url_in_other_meta_content(self):
         self.assertEqual(
-            problems,
+            html_problems('<meta name="x" content="see https://other.example.invalid/x">'),
             ["<meta content>: external URL 'https://other.example.invalid/…' is not allowed"],
         )
 
-    def test_script_and_style_content_is_not_markup(self):
-        document = (
-            '<script src="/a.js">var x = "<img src=https://h.example.invalid/x>";</script>'
-            "<style>/* <!-- --> */ a { color: red }</style>"
+    def test_escaped_comment_markers_in_text_are_text(self):
+        self.assertEqual(html_problems("<p>a &lt;!-- b</p><p>c --&gt; d</p>"), [])
+
+    def test_declarations_and_processing_instructions(self):
+        self.assertEqual(html_problems("<!doctype html><p>x</p>"), [])
+        self.assertTrue(html_problems("<!ELEMENT br EMPTY><p>x</p>"))
+        self.assertTrue(html_problems("<?php echo 1 ?>"))
+        self.assertTrue(html_problems("<![if !IE]><p>x</p><![endif]>"))
+
+    def test_map_links_with_dot_segments(self):
+        for url in (
+            "https://www.google.com/maps/../x",
+            "https://www.google.com/maps/%2e%2e/x",
+            "https://www.google.com/maps/%2E%2E%2Fx",
+            "https://yandex.ru/maps/./../x",
+            "https://maps.apple.com/\\x",
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(build._is_map_link(url))
+                self.assertTrue(
+                    html_problems(f'<a href="{url}" target="_blank" rel="noopener noreferrer">x</a>')
+                )
+        self.assertTrue(build._is_map_link("https://www.google.com/maps/search/?api=1&query=1.5,2.5"))
+
+    def test_script_content_and_style_elements(self):
+        self.assertEqual(html_problems('<script src="/a.js"> \n</script>', "a.js"), [])
+        self.assertEqual(
+            html_problems('<script src="/a.js"><img src=https://h.example.invalid/x></script>', "a.js"),
+            ["<script src> must be empty"],
         )
-        self.assertEqual(html_problems(document, "a.js"), [])
+        self.assertEqual(
+            html_problems("<svg><style><img src=https://h.example.invalid/x></style></svg>"),
+            ["<style> elements are not allowed; styles must be files in /assets/"],
+        )
 
     def test_unterminated_comment(self):
         self.assertTrue(html_problems("<p>x</p><!-- never closed"))
@@ -690,8 +841,29 @@ class CssCheckUnitTests(unittest.TestCase):
     def test_imports(self):
         self.assertEqual(css_problems('@import "/assets/base.css";', "assets/base.css"), [])
         self.assertIn("does not exist", css_problems('@import "/assets/base.css";')[0])
-        self.assertIn("relative path", css_problems("@import 'base.css';")[0])
+        self.assertEqual(css_problems("@import 'base.css';", "base.css"), [])
+        self.assertIn("relative to the style sheet", css_problems("@import 'base.css';")[0])
         self.assertIn("external URL", css_problems("@IMPORT url(//h.example.invalid/x.css);")[0])
+
+    def test_escapes_are_refused_where_they_could_hide_a_url(self):
+        cases = {
+            "a { background: u\\72l(https://h.example.invalid/x) }": "function names",
+            "a { background: \\55 RL(https://h.example.invalid/x) }": "function names",
+            "a { background: url(ht\\74ps://h.example.invalid/x) }": "in URLs",
+            "a { background: url('\\2f\\2fh.example.invalid/x') }": "in URLs",
+            "@\\69mport 'https://h.example.invalid/x.css';": "at-rule names",
+            "@import '\\68ttps://h.example.invalid/x.css';": "in URLs",
+            "a { background: image-set('\\68ttps://h.example.invalid/x' 1x) }": "external URL",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                problems = css_problems(text)
+                self.assertTrue(problems, text)
+                self.assertTrue(any(expected in problem for problem in problems), problems)
+
+    def test_harmless_escapes_pass(self):
+        text = 'a::before { content: "\\201C" } .sm\\:flex { color: red } .w-\\[calc(1px)\\] { top: 0 }'
+        self.assertEqual(css_problems(text), [])
 
     def test_fonts_as_data_urls_are_refused(self):
         problems = css_problems("@font-face { src: url(data:font/woff2;base64,AAAA) }")
@@ -717,11 +889,14 @@ class CommentStrippingTests(unittest.TestCase):
             "<p>a</p><p>b</p>",
         )
 
-    def test_conditional_and_odd_comments(self):
-        self.assertEqual(
-            build.strip_html_comments("<!--[if IE]><p>x</p><![endif]-->a<!---->b<!-- -- -->c"),
-            "abc",
-        )
+    def test_odd_comments(self):
+        self.assertEqual(build.strip_html_comments("<!--[if IE]><p>x</p>-->a<!---->b<!-- -- -->c"), "abc")
+
+    def test_markup_that_browsers_read_differently_is_refused(self):
+        for document in ("<![CDATA[ > <p>x</p> ]]>", "<!--[if IE]>x<![endif]-->", "<?xml?>"):
+            with self.subTest(document=document):
+                with self.assertRaises(build.TemplateError):
+                    build.strip_html_comments(document, "stub.html")
 
     def test_doctype_and_text_are_kept(self):
         document = "<!doctype html>\n<p>1 < 2 &amp; 3 > 2</p>\n"

@@ -164,6 +164,7 @@ TEMPLATE = """<!doctype html>
 <!-- each:venue.photos --><img src="{{.src}}" alt="" loading="lazy"><!-- endeach -->
 </div>
 <!-- if:venue.directionsSrc --><img src="{{venue.directionsSrc}}" alt="Схема проезда"><!-- endif -->
+<!-- if:venue.hasMapLinks --><p>На карте:</p><!-- endif -->
 <!-- if:venue.mapLinks.google --><a href="{{venue.mapLinks.google}}" target="_blank" rel="noopener noreferrer">Google</a><!-- endif -->
 <!-- if:venue.mapLinks.yandex --><a href="{{venue.mapLinks.yandex}}" target="_blank" rel="noopener noreferrer">Яндекс</a><!-- endif -->
 <!-- if:venue.mapLinks.apple --><a href="{{venue.mapLinks.apple}}" target="_blank" rel="noopener noreferrer">Apple</a><!-- endif -->

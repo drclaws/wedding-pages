@@ -93,6 +93,15 @@ class ValidateCommandTests(CliTestCase):
         self.assertIn("invitation #1 (ZZZZ…): 'token' is too long", result.stderr)
         self.assertNotIn("Z" * 10, result.stderr)
 
+    def test_empty_out_of_town_section_is_a_warning(self):
+        invitations = invitations_data()
+        invitations[2]["travelNote"] = None
+        write_data(self.data, site=site_data(outOfTownText=""), invitations=invitations)
+        result = self.run_validate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("warning: invitation #3 (Gosh…): 'outOfTown' is true", result.stderr)
+        self.assertNoPrivateData(result.stdout, result.stderr)
+
     def test_unknown_field_warning_goes_to_stderr(self):
         invitations = invitations_data()
         invitations[0]["surpriseField"] = "VALUE-MUST-NOT-LEAK"
@@ -458,7 +467,7 @@ class NoPersonalDataInLogsTests(CliTestCase):
         self.assertIn("needs rel=", result.stderr)
         self.assertIn("external URL 'https://cdn.example.invalid/…'", result.stderr)
         self.assertIn("'mailto:…'", result.stderr)
-        self.assertIn("relative path '…'", result.stderr)
+        self.assertIn("relative path '….png'", result.stderr)
         self.assertNoPrivateData(result.stdout, result.stderr)
         for fragment in ("%D0%", "Ева", "Алиса"):
             self.assertNotIn(fragment, result.stderr)

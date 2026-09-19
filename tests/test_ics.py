@@ -36,6 +36,7 @@ class CalendarFileTests(unittest.TestCase):
                 "DTSTAMP",
                 "DTSTART",
                 "DTEND",
+                "SEQUENCE",
                 "SUMMARY",
                 "LOCATION",
                 "END",
@@ -103,6 +104,17 @@ class CalendarFileTests(unittest.TestCase):
         payload = build.build_ics(site)
         self.assertNotIn("LOCATION", properties(payload))
         self.assertNotIn("Энск", payload.decode("utf-8"))
+
+    def test_sequence_grows_when_the_location_is_announced(self):
+        # importing the file again then updates an event saved without a place
+        self.assertEqual(properties(build.build_ics(site_data()))["SEQUENCE"], "1")
+        site = site_data()
+        site["venue"]["ready"] = False
+        self.assertEqual(properties(build.build_ics(site))["SEQUENCE"], "0")
+        self.assertEqual(
+            properties(build.build_ics(site))["UID"],
+            properties(build.build_ics(site_data()))["UID"],
+        )
 
     def test_location_without_an_address(self):
         site = site_data()

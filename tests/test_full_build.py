@@ -170,6 +170,18 @@ class OutputContentsTests(FullBuildTestCase):
         ):
             self.assertIn(fragment, page)
 
+    def test_comment_markers_in_guest_text_are_just_text(self):
+        invitations = invitations_data()
+        invitations[0]["note"] = "a <!-- b"
+        invitations[0]["greeting"] = "Ева --> !"
+        write_data(self.data, invitations=invitations)
+        self.build()
+        page = self.page(support.TOKEN_A)
+        self.assertIn("a &lt;!-- b", page)
+        self.assertIn("Ева --&gt; !", page)
+        self.assertNotIn("<!--", page)
+        self.assertIn("</html>", page)  # nothing was cut out
+
     def test_html_comments_are_removed(self):
         self.assertIn("<!-- a note", support.TEMPLATE)
         self.assertIn("<!-- a note", support.STUB)

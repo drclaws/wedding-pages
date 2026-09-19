@@ -227,6 +227,17 @@ class ComputedFieldTests(unittest.TestCase):
             '<a href="https://www.google.com/maps/search/?api=1&amp;query=10.5,20.25">',
         )
 
+    def test_has_map_links(self):
+        self.assertIs(self.context()["venue"]["hasMapLinks"], True)
+        site = site_data()
+        site["venue"]["geo"] = {"lat": 0, "lng": 0}
+        self.assertIs(self.context(site)["venue"]["hasMapLinks"], False)
+        site["venue"]["maps"]["yandexOrgId"] = "42"  # one link is enough
+        self.assertIs(self.context(site)["venue"]["hasMapLinks"], True)
+        self.assertEqual(
+            build.render("<!-- if:venue.hasMapLinks -->x<!-- endif -->", self.context(site)), "x"
+        )
+
     def test_bare_venue_has_every_computed_field(self):
         site = site_data(video=None)
         site["venue"] = {"ready": False}
@@ -236,7 +247,9 @@ class ComputedFieldTests(unittest.TestCase):
         self.assertEqual(
             context["venue"]["mapLinks"], {"google": "", "yandex": "", "apple": ""}
         )
+        self.assertIs(context["venue"]["hasMapLinks"], False)
         template = (
+            "<!-- if:venue.hasMapLinks -->m<!-- endif -->"
             "<!-- if:venue.mapLinks.google -->g<!-- endif -->"
             "<!-- if:venue.mapLinks.yandex -->y<!-- endif -->"
             "<!-- if:venue.mapLinks.apple -->a<!-- endif -->"
@@ -258,6 +271,7 @@ class ComputedFieldTests(unittest.TestCase):
             "each:venue.photos",
             "{{.src}}",
             "{{venue.directionsSrc}}",
+            "if:venue.hasMapLinks",
             "if:venue.mapLinks.google",
             "if:venue.mapLinks.yandex",
             "if:venue.mapLinks.apple",

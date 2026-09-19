@@ -131,7 +131,7 @@ class LinksCommandTests(CliTestCase):
 
     def test_greeting_stays_on_one_line(self):
         invitations = invitations_data(1)
-        invitations[0]["greeting"] = "Дорогая\tЕва,\nздравствуй!  "
+        invitations[0]["greeting"] = "Дорогая\tЕва,   здравствуй!  "
         write_data(self.data, invitations=invitations)
         result = self.links()
         self.assertEqual(result.returncode, 0, result.stderr)

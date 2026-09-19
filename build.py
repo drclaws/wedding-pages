@@ -36,6 +36,7 @@ import html
 import json
 import math
 import os
+import posixpath
 import re
 import secrets
 import shutil
@@ -779,6 +780,7 @@ def _field(
     required: bool = True,
     nullable: bool = False,
     nonempty: bool = False,
+    single_line: bool = False,
 ) -> Any:
     """Type-checked field access; reports problems and returns MISSING on error."""
     description, matches = _KINDS[kind]
@@ -795,6 +797,11 @@ def _field(
         report.error(
             f"{where}: field '{name}' must be {description}{suffix}, got {json_type(value)}"
         )
+        return MISSING
+    if single_line and kind == "string" and ("\n" in value or "\r" in value):
+        # the template puts these fields into headings and similar elements,
+        # where the paragraphs made from line breaks would be invalid markup
+        report.error(f"{where}: field '{name}' must be a single line (no line breaks)")
         return MISSING
     if nonempty and kind == "string" and not value.strip():
         report.error(f"{where}: field '{name}' must not be empty")
@@ -849,7 +856,9 @@ def check_invitations(
                 else:
                     seen[key] = index
 
-        _field(invitation, "greeting", "string", label, report, nonempty=True)
+        _field(
+            invitation, "greeting", "string", label, report, nonempty=True, single_line=True
+        )
         flags = {
             key: _field(invitation, key, "boolean", label, report)
             for key in ("ty", "vy", "plusOne", "outOfTown")
@@ -876,7 +885,7 @@ def check_site(site: Any, report: Report, where: str = SITE_FILE) -> None:
         return
 
     for key in ("coupleNames", "dateText", "rsvpDeadline"):
-        _field(site, key, "string", where, report, nonempty=True)
+        _field(site, key, "string", where, report, nonempty=True, single_line=True)
     _field(site, "outOfTownText", "string", where, report)
 
     date_iso = _field(site, "dateISO", "string", where, report, nonempty=True)
@@ -926,8 +935,11 @@ def _check_schedule(site: dict, report: Report, where: str) -> None:
                 f"{where}: schedule[{index}] must be an object, got {json_type(entry)}"
             )
             continue
-        _field(entry, "time", "string", where, report, prefix=prefix)
-        _field(entry, "title", "string", where, report, prefix=prefix, nonempty=True)
+        _field(entry, "time", "string", where, report, prefix=prefix, single_line=True)
+        _field(
+            entry, "title", "string", where, report, prefix=prefix, nonempty=True,
+            single_line=True,
+        )
         _field(
             entry, "text", "string", where, report, prefix=prefix, required=False,
             nullable=True,
@@ -942,7 +954,7 @@ def _check_venue(site: dict, report: Report, where: str) -> None:
     ready = _field(venue, "ready", "boolean", where, report, prefix="venue.")
     name = _field(
         venue, "name", "string", where, report, prefix="venue.", required=False,
-        nullable=True,
+        nullable=True, single_line=True,
     )
     if ready is True and not (isinstance(name, str) and name.strip()):
         if "name" not in venue or name is None or isinstance(name, str):
@@ -952,7 +964,7 @@ def _check_venue(site: dict, report: Report, where: str) -> None:
     for key in ("description", "address"):
         _field(
             venue, key, "string", where, report, prefix="venue.", required=False,
-            nullable=True,
+            nullable=True, single_line=key == "address",
         )
 
     photos = _field(
@@ -1120,6 +1132,25 @@ def check_media_dir_collision(
             return
 
 
+def warn_empty_out_of_town(site: Any, invitations: Any, report: Report) -> None:
+    """Warn about `outOfTown` invitations whose section would have no text."""
+    if not isinstance(site, dict) or not isinstance(invitations, list):
+        return
+    if _optional_text(site.get("outOfTownText")):
+        return
+    for index, invitation in enumerate(invitations, start=1):
+        if (
+            isinstance(invitation, dict)
+            and invitation.get("outOfTown") is True
+            and not _optional_text(invitation.get("travelNote"))
+        ):
+            report.warn(
+                f"{invitation_label(index, invitation.get('token'))}: 'outOfTown' is true, "
+                "but 'outOfTownText' and 'travelNote' are both empty (the section "
+                "will have no text)"
+            )
+
+
 def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not allowed in JSON data")
 
@@ -1180,6 +1211,8 @@ def load_data(
             check_media_dir_collision(site, assets_dir, report)
     if invitations is not MISSING:
         check_invitations(invitations, report)
+    if site is not MISSING and invitations is not MISSING:
+        warn_empty_out_of_town(site, invitations, report)
     report.raise_if_failed()
     return site, invitations
 
@@ -1271,6 +1304,10 @@ def map_links(name: str, address: str, geo: Any, maps: Any) -> dict[str, str]:
     return {"google": google, "yandex": yandex, "apple": apple}
 
 
+def has_map_links(links: dict[str, str]) -> bool:
+    return any(links.values())
+
+
 def media_url(media_path: str, name: str) -> str:
     """Root-absolute URL of a media file; "" when the file is not set."""
     return f"{media_path}/{_url_component(name)}" if name else ""
@@ -1290,7 +1327,8 @@ def site_context(site: dict) -> dict:
       `<!-- if:video.file -->` works either way;
     * `venue.photos` - a list of `{src}` objects (`{{.src}}` inside `each`);
     * `venue.directionsSrc` - URL of the directions image or "";
-    * `venue.mapLinks.google` / `.yandex` / `.apple` - see `map_links`.
+    * `venue.mapLinks.google` / `.yandex` / `.apple` - see `map_links`;
+      `venue.hasMapLinks` - true when at least one of them is set.
 
     File names are percent-encoded in the URLs.
     """
@@ -1311,6 +1349,7 @@ def site_context(site: dict) -> dict:
     venue_name = _optional_text(venue.get("name"))
     venue_address = _optional_text(venue.get("address"))
     directions = _optional_text(venue.get("directionsImage"))
+    links = map_links(venue_name, venue_address, geo, maps)
 
     return {
         "coupleNames": _optional_text(site.get("coupleNames")),
@@ -1357,7 +1396,8 @@ def site_context(site: dict) -> dict:
                 "googlePlaceId": _optional_text(maps.get("googlePlaceId")),
                 "yandexOrgId": _optional_text(maps.get("yandexOrgId")),
             },
-            "mapLinks": map_links(venue_name, venue_address, geo, maps),
+            "mapLinks": links,
+            "hasMapLinks": has_map_links(links),
         },
     }
 
@@ -1461,6 +1501,9 @@ def build_ics(site: dict) -> bytes:
         f"DTSTAMP:{ICS_DTSTAMP}",
         f"DTSTART:{_ics_timestamp(start)}",
         f"DTEND:{_ics_timestamp(start + ICS_DEFAULT_DURATION)}",
+        # the revision grows when the location is announced, so that importing
+        # the file again updates an event that was saved without it
+        f"SEQUENCE:{1 if location else 0}",
         f"SUMMARY:{ics_escape(ICS_SUMMARY)}",
     ]
     if location:
@@ -1503,8 +1546,25 @@ class _CommentLocator(HTMLParser):
         self.spans.append((start, end))
 
 
-def strip_html_comments(document: str) -> str:
+#: Markup that `html.parser` and browsers read differently (a browser ends
+#: `<![CDATA[ … ]]>` and `<? … ?>` at the first `>`, the parser may not).
+_UNSAFE_MARKUP_RE = re.compile(r"<!\[|<\?")
+
+
+def find_unsafe_markup(document: str) -> tuple[int, str] | None:
+    """(line, message) for the first `<![…` or `<?…`, which are not allowed."""
+    match = _UNSAFE_MARKUP_RE.search(document)
+    if match is None:
+        return None
+    line = document.count("\n", 0, match.start()) + 1
+    return line, f"'{match.group(0)}…' (CDATA sections, processing instructions) is not allowed"
+
+
+def strip_html_comments(document: str, name: str = "template") -> str:
     """Remove every HTML comment, so that template notes are never published."""
+    unsafe = find_unsafe_markup(document)
+    if unsafe:
+        raise TemplateError(unsafe[1], unsafe[0], name)
     if "<!" not in document and "</" not in document:
         return document
     locator = _CommentLocator(document)
@@ -1559,6 +1619,9 @@ _FORBIDDEN_ELEMENTS = frozenset(
     {"iframe", "frame", "frameset", "object", "embed", "applet", "base"}
 )
 _LINK_ELEMENTS = frozenset({"a", "area"})
+_SVG_ANIMATION_ELEMENTS = frozenset(
+    {"set", "animate", "animatemotion", "animatetransform", "animatecolor"}
+)
 #: `<meta>` entries whose `content` is a URL.
 _META_URL_KEYS = frozenset(
     {
@@ -1658,6 +1721,11 @@ def _is_map_link(url: str) -> bool:
     if parts.scheme.lower() != "https":
         return False
     host = parts.netloc.lower()  # with user info or a port it is not the host
+    path = parts.path.lower()
+    if "\\" in url or any(code in path for code in ("%2e", "%2f", "%5c")):
+        return False  # nothing that a browser may normalise into another path
+    if any(segment in (".", "..") for segment in path.split("/")):
+        return False
     return any(
         host == allowed and parts.path.startswith(prefix)
         for allowed, prefix in MAP_LINK_TARGETS
@@ -1698,9 +1766,56 @@ def _srcset_urls(value: str) -> list[str]:
 class _UrlPolicy:
     """Shared URL rules of the HTML and CSS checks; collects (line, problem)."""
 
-    def __init__(self, exists: Callable[[str], bool]):
+    def __init__(
+        self,
+        exists: Callable[[str], bool],
+        is_dir: Callable[[str], bool] | None = None,
+        base: str | None = None,
+    ):
         self.exists = exists
+        self.is_dir = is_dir if is_dir is not None else (lambda _path: False)
+        #: Directory of the style sheet being checked ("" is the root); None
+        #: for HTML, where relative URLs are not allowed at all.
+        self.base = base
         self.problems: list[tuple[int, str]] = []
+
+    def show_path(self, url: str) -> str:
+        """A local or relative URL for a message.
+
+        Only the directories that exist in the output and a known file
+        extension are shown: the rest may be text that a template put into a
+        path by mistake.
+        """
+        path = _clean_url(url).split("#", 1)[0].split("?", 1)[0]
+        absolute = path.startswith("/")
+        segments = [segment for segment in path.split("/") if segment]
+        kept: list[str] = []
+        if absolute:
+            for segment in segments:
+                candidate = "/".join([*kept, unquote(segment)])
+                if not _PLAIN_URL_RE.match(segment) or not self.is_dir(candidate):
+                    break
+                kept.append(segment)
+        lead = "/" if absolute else ""
+        if len(kept) == len(segments):
+            return lead + "/".join(kept) + ("/" if kept else "")
+        extension = os.path.splitext(segments[-1])[1].lower()
+        if extension not in ASSET_EXTENSIONS and extension != ".html":
+            extension = ""
+        return lead + "/".join([*kept, "…"]) + extension
+
+    def _relative_to_stylesheet(self, line: int, where: str, url: str) -> None:
+        """A relative `url()` of a CSS file: resolved against the file itself."""
+        path = unquote(url.split("#", 1)[0].split("?", 1)[0])
+        target = posixpath.normpath(posixpath.join(self.base or "", path))
+        if target == ".." or target.startswith(("../", "/")):
+            self.problem(line, f"{where}: '{self.show_path(url)}' points outside the output")
+        elif not self.exists(target):
+            self.problem(
+                line,
+                f"{where}: '{self.show_path(url)}' (relative to the style sheet) "
+                "does not exist in the output",
+            )
 
     def problem(self, line: int, message: str) -> None:
         self.problems.append((line, message))
@@ -1713,19 +1828,21 @@ class _UrlPolicy:
             target = _local_file(url)
             if target is None:
                 self.problem(
-                    line, f"{where}: '{_show_url(url)}' is not a plain absolute path"
+                    line, f"{where}: '{self.show_path(url)}' is not a plain absolute path"
                 )
             elif not self.exists(target):
                 self.problem(
-                    line, f"{where}: '{_show_url(url)}' does not exist in the output"
+                    line, f"{where}: '{self.show_path(url)}' does not exist in the output"
                 )
         elif kind == "empty":
             self.problem(line, f"{where}: the URL is empty")
+        elif kind == "relative" and self.base is not None:
+            self._relative_to_stylesheet(line, where, url)
         elif kind == "relative":
             self.problem(
                 line,
-                f"{where}: relative path '{_show_url(url)}'; {what} must be absolute "
-                "from the site root (start with '/')",
+                f"{where}: relative path '{self.show_path(url)}'; {what} must be "
+                "absolute from the site root (start with '/')",
             )
         elif kind == "script":
             self.problem(line, f"{where}: script URL '{_show_url(url)}' is not allowed")
@@ -1763,7 +1880,8 @@ class _UrlPolicy:
                     "for images and icons",
                 )
         else:
-            self.problem(line, f"{where}: URL '{_show_url(url)}' is not allowed")
+            shown = _show_url(url) if kind == "scheme" else self.show_path(url)
+            self.problem(line, f"{where}: URL '{shown}' is not allowed")
 
     def check_link(self, line: int, where: str, value: str, attrs: dict) -> None:
         """`<a href>`: a local page, a fragment, or a link to a map service."""
@@ -1790,7 +1908,8 @@ class _UrlPolicy:
                 "map services are allowed",
             )
         else:  # mailto:, tel:, data: and other schemes
-            self.problem(line, f"{where}: link '{_show_url(url)}' is not allowed")
+            shown = _show_url(url) if kind in ("scheme", "data") else self.show_path(url)
+            self.problem(line, f"{where}: link '{shown}' is not allowed")
 
 
 _CSS_STRING = r'"(?:[^"\\\n]|\\.)*"' + "|" + r"'(?:[^'\\\n]|\\.)*'"
@@ -1821,44 +1940,86 @@ def _css_string_value(token: str) -> str:
     return token[1:-1] if len(token) >= 2 and token[0] in "\"'" else token
 
 
+_CSS_ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6})\s?|\\([^\n])")
+_CSS_NAME = r"(?:[\w-]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n0-9a-fA-F])+"
+_CSS_FUNCTION_RE = re.compile(rf"({_CSS_NAME})\(")
+_CSS_AT_RULE_RE = re.compile(rf"@({_CSS_NAME})")
+_CSS_PLAIN_NAME_RE = re.compile(r"[\w-]+\Z")
+
+
+def _css_unescape(text: str) -> str:
+    def decode(match: re.Match) -> str:
+        if match.group(1):
+            code = int(match.group(1), 16)
+            return chr(code) if 0 < code <= 0x10FFFF else "\ufffd"
+        return match.group(2)
+
+    return _CSS_ESCAPE_RE.sub(decode, text)
+
+
 def check_css(
     text: str, policy: _UrlPolicy, where: str = "CSS", first_line: int = 1
 ) -> None:
     """`url()`, `@import` and URL-like strings of a style sheet (or of a
-    `<style>` element / `style` attribute) must point at local files."""
+    `style` attribute) must point at local files.
+
+    A browser decodes CSS escapes (`u\\72l(…)` is `url(…)`), so escapes are
+    refused wherever they could hide a URL: in function and at-rule names and
+    inside `url()` / `@import`; other strings are checked decoded as well.
+    """
     text = _CSS_NAMESPACE_RE.sub(_blank, strip_css_comments(text))
 
     def line_at(offset: int) -> int:
         return first_line + text.count("\n", 0, offset)
 
+    def check_url(offset: int, what: str, value: str, images: bool) -> None:
+        if "\\" in value and not _clean_url(value).lower().startswith("data:"):
+            policy.problem(
+                line_at(offset), f"{where} {what}: CSS escapes are not allowed in URLs"
+            )
+        else:
+            policy.check_resource(line_at(offset), f"{where} {what}", value, data_images=images)
+
+    without_strings = _CSS_STRING_RE.sub(lambda match: " " * len(match.group(0)), text)
+    for match in _CSS_AT_RULE_RE.finditer(without_strings):
+        if "\\" in match.group(1):
+            policy.problem(
+                line_at(match.start()), f"{where}: CSS escapes are not allowed in at-rule names"
+            )
+    for match in _CSS_FUNCTION_RE.finditer(without_strings):
+        name = match.group(1)
+        if "\\" in name and _CSS_PLAIN_NAME_RE.match(_css_unescape(name)):
+            policy.problem(
+                line_at(match.start()),
+                f"{where}: CSS escapes are not allowed in function names",
+            )
+
     covered: list[tuple[int, int]] = []
     for match in _CSS_IMPORT_RE.finditer(text):
         covered.append(match.span())
-        policy.check_resource(
-            line_at(match.start()),
-            f"{where} @import",
-            _css_string_value(match.group(1)),
-            data_images=False,
-        )
+        check_url(match.start(), "@import", _css_string_value(match.group(1)), False)
     for match in _CSS_URL_RE.finditer(text):
         covered.append(match.span())
         before = text[max(0, match.start() - 40) : match.start()]
         is_import = _CSS_IMPORT_BEFORE_RE.search(before) is not None
-        policy.check_resource(
-            line_at(match.start()),
-            f"{where} {'@import' if is_import else 'url()'}",
+        check_url(
+            match.start(),
+            "@import" if is_import else "url()",
             _css_string_value(match.group(1)),
-            data_images=not is_import,
+            not is_import,
         )
     for match in _CSS_STRING_RE.finditer(text):
         if any(start <= match.start() < end for start, end in covered):
             continue
         value = _css_string_value(match.group(0))
-        if _EXTERNAL_TEXT_RE.match(value.strip()):
+        if any(
+            _EXTERNAL_TEXT_RE.match(candidate.strip())
+            for candidate in (value, _css_unescape(value))
+        ):
             policy.problem(
                 line_at(match.start()),
-                f"{where}: external URL '{_show_url(value)}' in a string; every "
-                "resource must be a local file",
+                f"{where}: external URL '{_show_url(_css_unescape(value))}' in a string; "
+                "every resource must be a local file",
             )
 
 
@@ -1866,10 +2027,11 @@ class _HtmlChecker(HTMLParser):
     """Walks one HTML document and applies the URL and script rules."""
 
     def __init__(self, policy: _UrlPolicy):
-        super().__init__(convert_charrefs=True)
+        # text is reported as written: an escaped "&lt;!--" in a guest's note
+        # is text, not the start of a comment (attribute values are decoded)
+        super().__init__(convert_charrefs=False)
         self.policy = policy
-        self._style: list[str] | None = None
-        self._style_line = 1
+        self._in_script = False
 
     @property
     def line(self) -> int:
@@ -1883,12 +2045,24 @@ class _HtmlChecker(HTMLParser):
         if tag in _FORBIDDEN_ELEMENTS:
             policy.problem(line, f"<{tag}> is not allowed")
             return
-        if tag == "script" and not values.get("src", "").strip():
-            policy.problem(
-                line, "inline <script> is not allowed; scripts must be files in /assets/"
-            )
         if tag == "style":
-            self._style, self._style_line = [], line
+            # also closes a gap: inside <svg> a browser parses the content of
+            # <style> as markup, while the parser takes it for text
+            policy.problem(
+                line, "<style> elements are not allowed; styles must be files in /assets/"
+            )
+        if tag == "script":
+            self._in_script = bool(values.get("src", "").strip())
+            if not self._in_script:
+                policy.problem(
+                    line, "inline <script> is not allowed; scripts must be files in /assets/"
+                )
+            if "href" in values or "xlink:href" in values:
+                policy.problem(line, "<script href> (an SVG script) is not allowed")
+        if tag in _SVG_ANIMATION_ELEMENTS and values.get(
+            "attributename", ""
+        ).strip().lower() in ("href", "xlink:href"):
+            policy.problem(line, f"<{tag}>: animating 'href' is not allowed")
 
         for name, value in values.items():
             where = f"<{tag} {name}>"
@@ -1922,6 +2096,9 @@ class _HtmlChecker(HTMLParser):
     def _check_meta(self, values: dict, line: int) -> None:
         content = values.get("content", "")
         key = (values.get("property") or values.get("name") or "").strip().lower()
+        if values.get("http-equiv", "").strip().lower() == "refresh":
+            self.policy.problem(line, '<meta http-equiv="refresh"> is not allowed')
+            return
         if key in _META_URL_KEYS:
             self.policy.check_resource(line, f"<meta {key}>", content)
             return
@@ -1933,48 +2110,97 @@ class _HtmlChecker(HTMLParser):
             )
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "style":
-            self.finish_style()
-
-    def finish_style(self) -> None:
-        if self._style is not None:
-            check_css("".join(self._style), self.policy, "<style>", self._style_line)
-            self._style = None
+        if tag == "script":
+            self._in_script = False
 
     def handle_data(self, data: str) -> None:
-        if self._style is not None:
-            self._style.append(data)
+        if self._in_script:
+            # a browser may read this as markup (inside <svg>), the parser does not
+            if data.strip():
+                self.policy.problem(self.line, "<script src> must be empty")
         elif "<!--" in data:
             self.policy.problem(self.line, "unterminated HTML comment")
+
+    def handle_decl(self, decl: str) -> None:
+        if not decl.strip().lower().startswith("doctype"):
+            self.policy.problem(self.line, "'<!…>' declarations are not allowed")
 
     def handle_comment(self, data: str) -> None:
         self.policy.problem(self.line, "HTML comment left in the output")
 
 
-def check_html(document: str, exists: Callable[[str], bool]) -> list[tuple[int, str]]:
+def check_html(
+    document: str,
+    exists: Callable[[str], bool],
+    is_dir: Callable[[str], bool] | None = None,
+) -> list[tuple[int, str]]:
     """Problems of one HTML document as (line, message) pairs.
 
-    `exists` tells whether a file (relative path with '/') is in the output.
+    `exists` tells whether a file (relative path with '/') is in the output,
+    `is_dir` does the same for directories (only used to word the messages).
+    Whatever the parser may read differently from a browser is an error.
     """
-    policy = _UrlPolicy(exists)
+    policy = _UrlPolicy(exists, is_dir)
     leftover = _LEFTOVER_RE.search(document)
     if leftover:
         policy.problem(
             document.count("\n", 0, leftover.start()) + 1,
             f"template syntax left in the output: '{_shorten(leftover.group(0), 20)}'",
         )
+    unsafe = find_unsafe_markup(document)
+    if unsafe:
+        policy.problem(*unsafe)
     checker = _HtmlChecker(policy)
     checker.feed(document)
     checker.close()
-    checker.finish_style()  # an unclosed <style> is checked as well
     return policy.problems
 
 
-def check_stylesheet(text: str, exists: Callable[[str], bool]) -> list[tuple[int, str]]:
-    """Problems of one CSS file as (line, message) pairs."""
-    policy = _UrlPolicy(exists)
+def check_stylesheet(
+    text: str,
+    exists: Callable[[str], bool],
+    is_dir: Callable[[str], bool] | None = None,
+    base: str = "",
+) -> list[tuple[int, str]]:
+    """Problems of one CSS file as (line, message) pairs.
+
+    `base` is the directory of the file inside the output: relative `url()`s
+    are resolved against it and must stay inside the output.
+    """
+    policy = _UrlPolicy(exists, is_dir, base)
     check_css(text, policy)
     return policy.problems
+
+
+class _SvgChecker(HTMLParser):
+    """A cheap look at an SVG file: nothing active, nothing external."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.problems: list[tuple[int, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        line = self.getpos()[0]
+        if tag in ("script", "foreignobject"):
+            self.problems.append((line, f"<{tag}> is not allowed in SVG files"))
+        for name, value in attrs:
+            if name.startswith("on") and len(name) > 2:
+                self.problems.append((line, f"<{tag} {name}>: event handlers are not allowed"))
+            elif name in ("href", "xlink:href", "src"):
+                kind, url = _classify_url(value or "")
+                if kind in ("external", "script", "malformed"):
+                    self.problems.append(
+                        (line, f"<{tag} {name}>: external URL '{_show_url(url)}' is not allowed")
+                    )
+
+
+def check_svg(text: str) -> list[tuple[int, str]]:
+    """Problems of one SVG file: scripts, event handlers, `<foreignObject>`
+    and external references (namespace URIs in `xmlns` are not references)."""
+    checker = _SvgChecker()
+    checker.feed(text)
+    checker.close()
+    return checker.problems
 
 
 #: At most this many problems are listed (a problem that repeats on every page
@@ -2085,7 +2311,10 @@ def check_output(
       inline scripts or event handlers, no embedded documents; external links
       only to the map services and with `target`/`rel`; every local URL
       resolves to a file of the output;
-    * CSS: `url()` and `@import` point at local files that exist.
+    * CSS: `url()` and `@import` point at local files that exist (relative
+      URLs of a CSS file are resolved against that file); no CSS escapes that
+      could hide a URL;
+    * SVG: no scripts, event handlers, `<foreignObject>` or external references.
 
     Messages never quote page text, and tokens in paths are shortened.
     """
@@ -2099,11 +2328,12 @@ def check_output(
     problems += _check_output_tree(files, directories, tokens, media_dir)
     problems = [_redact_paths(problem) for problem in problems]
 
+    known_dirs = set(directories)
     # problem -> [(file, line)], in order of appearance
     found: dict[str, list[tuple[str, int]]] = {}
     for relative, size in files.items():
         extension = os.path.splitext(relative)[1].lower()
-        if extension not in (".html", ".css") or size > MAX_FILE_BYTES:
+        if extension not in (".html", ".css", ".svg") or size > MAX_FILE_BYTES:
             continue
         shown = _redact_paths(relative)
         try:
@@ -2113,8 +2343,15 @@ def check_output(
             continue
         except OSError as exc:
             raise BuildError(f"cannot read {shown}: {exc.strerror}") from None
-        check = check_html if extension == ".html" else check_stylesheet
-        for line, message in check(text, files.__contains__):
+        if extension == ".html":
+            file_problems = check_html(text, files.__contains__, known_dirs.__contains__)
+        elif extension == ".css":
+            file_problems = check_stylesheet(
+                text, files.__contains__, known_dirs.__contains__, posixpath.dirname(relative)
+            )
+        else:
+            file_problems = check_svg(text)
+        for line, message in file_problems:
             found.setdefault(_redact_paths(message), []).append((shown, line))
 
     for message, places in found.items():
@@ -2485,6 +2722,10 @@ def copy_media(site: dict, media_dir: Path | str, destination: Path) -> int:
 
 
 def _read_source(path: Path, what: str) -> str:
+    if path.is_symlink():
+        raise BuildError(
+            f"the {what} must not be a symbolic link: {display_path(path)}"
+        )
     try:
         return path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
@@ -2517,7 +2758,7 @@ def load_stub(path: Path) -> str:
         path.name,
         problem="must not contain template syntax (the stub gets no data)",
     )
-    return strip_html_comments(source)
+    return strip_html_comments(source, path.name)
 
 
 def render_pages(
@@ -2535,7 +2776,7 @@ def render_pages(
         label = invitation_label(index, invitation.get("token"))
         try:
             page = template.render(build_context(site, invitation))
-            pages.append((invitation["token"], strip_html_comments(page)))
+            pages.append((invitation["token"], strip_html_comments(page, template.name)))
         except TemplateError as exc:
             failures.setdefault(str(exc), []).append(label)
     if failures:
