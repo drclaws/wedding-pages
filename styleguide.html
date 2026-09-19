@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="only light">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>Дизайн-система</title>
+  <!-- Пустая иконка: медиафайлов в репозитории нет, а без этой строки браузер
+       запрашивает /favicon.ico и получает 404. -->
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/assets/app.css">
+  <link rel="stylesheet" href="/assets/styleguide.css">
+  <script src="/assets/styleguide.js" defer></script>
+</head>
+<body>
+
+<header class="sg-header">
+  <div class="container container--wide">
+    <h1 class="sg-header__title">Дизайн-система</h1>
+    <p class="sg-header__lead">
+      Витрина токенов и компонентов. Значения временные: стилизация выполняется
+      отдельным этапом, здесь только нейтральные заглушки, достаточные для
+      проверки раскладки и читаемости.
+    </p>
+    <nav class="sg-nav" aria-label="Разделы витрины">
+      <ul class="sg-nav__list">
+        <li><a class="sg-nav__link" href="#tokens">Токены</a></li>
+        <li><a class="sg-nav__link" href="#type">Типографика</a></li>
+        <li><a class="sg-nav__link" href="#layout">Раскладка</a></li>
+        <li><a class="sg-nav__link" href="#components">Компоненты</a></li>
+        <li><a class="sg-nav__link" href="#states">Состояния</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <!-- ====================================================== Токены ====== -->
+  <section class="section" id="tokens">
+    <div class="container container--wide">
+      <h2 class="section__title">Токены</h2>
+      <p class="prose prose--muted">
+        Список читается скриптом прямо из <code>/assets/app.css</code>: правила
+        <code>:root</code> → свойства <code>--*</code>; значения — вычисленные
+        (<code>getComputedStyle</code>), поэтому таблица показывает то, что
+        реально применилось на текущей ширине, и пересчитывается при изменении
+        размера окна. Пометка «mobile/desktop» — у производных токенов, для
+        которых заданы отдельные опорные значения для двух форматов.
+      </p>
+
+      <div class="sg-demo">
+        <p class="sg-meta" data-token-meta>Ширина области просмотра определяется скриптом.</p>
+        <p class="sg-note sg-nojs">
+          Таблица токенов строится скриптом и без JavaScript не отображается —
+          это единственная часть витрины, которой нужен скрипт. Компоненты,
+          состояния и типографическая шкала ниже видны и без него; значения
+          токенов можно прочитать в <code>/assets/app.css</code>, секция
+          «1. Tokens».
+        </p>
+        <div data-token-table></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================= Типографика ====== -->
+  <section class="section" id="type">
+    <div class="container container--wide">
+      <h2 class="section__title">Типографическая шкала</h2>
+      <p class="prose prose--muted">
+        Восемь ступеней — от мелкой подписи до «дисплейного» размера обложки.
+        Каждая ступень интерполируется между мобильным и десктопным опорным
+        значением, поэтому размеры на этой странице зависят от ширины окна.
+      </p>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Ступени шкалы</p>
+        <div class="sg-scale">
+          <p class="sg-scale__row">
+            <code class="sg-scale__name">--text-xs</code>
+            <span class="sg-scale__sample sg-scale__sample--xs">Мелкая подпись под элементом</span>
+          </p>
+          <p class="sg-scale__row">
+            <code class="sg-scale__name">--text-sm</code>
+            <span class="sg-scale__sample sg-scale__sample--sm">Вторичный текст и сноски</span>
+          </p>
+          <p class="sg-scale__row">
+            <code class="sg-scale__name">--text-base</code>
+            <span class="sg-scale__sample sg-scale__sample--base">Основной текст страницы</span>
+          </p>
+          <p class="sg-scale__row">
+            <code class="sg-scale__name">--text-md</code>
+            <span class="sg-scale__sample sg-scale__sample--md">Вводный абзац секции</span>
+          </p>
+          <p class="sg-scale__row">
+            <code class="sg-scale__name">--text-lg</code>
+            <span class="sg-scale__sample sg-scale__sample--lg">Заголовок третьего уровня</span>
+          </p>
+          <p class="sg-scale__row">
+            <code class="sg-scale__name">--text-xl</code>
+            <span class="sg-scale__sample sg-scale__sample--xl">Заголовок секции</span>
+          </p>
+          <p class="sg-scale__row">
+            <code class="sg-scale__name">--text-2xl</code>
+            <span class="sg-scale__sample sg-scale__sample--2xl">Заголовок страницы</span>
+          </p>
+          <p class="sg-scale__row">
+            <code class="sg-scale__name">--text-display</code>
+            <span class="sg-scale__sample sg-scale__sample--display">Обложка</span>
+          </p>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Плашка обложки: дисплейный размер, метка даты</p>
+        <div class="sg-plate sg-plate--cover">
+          <p class="sg-plate__display">Заголовок обложки</p>
+          <p class="time-label time-label--strong">15 июня 2030</p>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Перенос длинных слов</p>
+        <p class="prose">Непрерывнаястрокабезпробеловкотораядолжнаперенестисьанерастянутьраскладкустраницы</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================================================== Раскладка ====== -->
+  <section class="section" id="layout">
+    <div class="container container--wide">
+      <h2 class="section__title">Раскладка</h2>
+      <p class="prose prose--muted">
+        Один контейнер в двух ширинах, одна сетка, один вертикальный ритм и одно
+        медиа с фиксированными пропорциями. На границе раскладки (768&nbsp;px)
+        переопределяются только раскладочные токены: число колонок и пропорции
+        изображений; визуальный стиль компонентов не меняется.
+      </p>
+
+      <p class="sg-note">
+        Высота обложки задаётся токеном <code>--cover-min-height</code> — доля
+        <code>--cover-height-ratio</code> (отдельно для мобильного и десктопа)
+        от <code>--viewport-height</code> (<code>100svh</code> с фолбэком на
+        <code>100vh</code>). Медиа и кадр плеера не выше
+        <code>--media-max-height</code>, поэтому в ландшафтной ориентации
+        телефона плеер вместе с панелью помещается в экран.
+      </p>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Контейнер: .container и .container--wide</p>
+        <div class="container">
+          <p class="sg-box">.container — текстовая колонка (--container-text)</p>
+        </div>
+        <div class="container container--wide">
+          <p class="sg-box">.container--wide — широкий контейнер (--container-wide)</p>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Сетка: .grid (--grid-columns, --grid-gap)</p>
+        <div class="grid">
+          <p class="sg-box">Колонка 1</p>
+          <p class="sg-box">Колонка 2</p>
+          <p class="sg-box">Колонка 3</p>
+          <p class="sg-box">Колонка 4</p>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Вертикальный ритм: .stack (--flow-space)</p>
+        <div class="stack">
+          <p class="sg-box">Первый элемент стека</p>
+          <p class="sg-box">Второй элемент стека</p>
+          <p class="sg-box">Третий элемент стека</p>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Пропорции медиа: .media, .media--video, .media--scheme</p>
+        <div class="sg-cols">
+          <figure>
+            <div class="media sg-plate"></div>
+            <figcaption class="gallery__caption">.media — фото (--ratio-photo)</figcaption>
+          </figure>
+          <figure>
+            <div class="media media--video sg-plate"></div>
+            <figcaption class="gallery__caption">.media--video (--ratio-video)</figcaption>
+          </figure>
+          <figure>
+            <div class="media media--scheme sg-plate"></div>
+            <figcaption class="gallery__caption">.media--scheme (--ratio-scheme)</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =================================================== Компоненты ====== -->
+  <section class="section" id="components">
+    <div class="container container--wide">
+      <h2 class="section__title">Компоненты</h2>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Заголовок секции и текстовый блок</p>
+        <p class="section__subtitle">Подзаголовок секции</p>
+        <h3 class="section__title">Заголовок секции</h3>
+        <div class="prose">
+          <p class="prose--lead">
+            Вводный абзац секции: короткий текст, который задаёт тон и вводит в
+            содержание блока.
+          </p>
+          <p>
+            Основной текст секции. Он набран основным размером шкалы и
+            ограничен по ширине текстовой колонкой, чтобы строки оставались
+            удобными для чтения на широком экране.
+          </p>
+          <p class="prose--muted">
+            Дополнительное пояснение вторичным цветом: уточнение, примечание
+            или сноска.
+          </p>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Разделитель: .divider и .divider--accent</p>
+        <hr class="divider">
+        <hr class="divider divider--accent">
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Карточка: .card</p>
+        <div class="grid">
+          <div class="card">
+            <h4 class="card__title">Заголовок карточки</h4>
+            <p class="card__text">
+              Короткий текст карточки: две-три строки описания, которых хватает,
+              чтобы оценить отступы и межстрочный интервал.
+            </p>
+            <div class="card__footer">
+              <button type="button" class="btn btn--primary">Основное действие</button>
+              <button type="button" class="btn btn--secondary">Второстепенное</button>
+            </div>
+          </div>
+          <div class="card card--plain">
+            <h4 class="card__title">Карточка без заливки</h4>
+            <p class="card__text">
+              Модификатор .card--plain: та же геометрия, прозрачный фон и без
+              тени.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Метка времени: .time-label</p>
+        <div class="sg-row">
+          <span class="time-label">12:00</span>
+          <span class="time-label">15 июня 2030</span>
+          <span class="time-label time-label--strong">18:30</span>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Таймер: .countdown / .countdown__cell</p>
+        <ul class="countdown">
+          <li class="countdown__cell">
+            <span class="countdown__value">128</span>
+            <span class="countdown__label">дней</span>
+          </li>
+          <li class="countdown__cell">
+            <span class="countdown__value">07</span>
+            <span class="countdown__label">часов</span>
+          </li>
+          <li class="countdown__cell">
+            <span class="countdown__value">42</span>
+            <span class="countdown__label">минут</span>
+          </li>
+          <li class="countdown__cell">
+            <span class="countdown__value">09</span>
+            <span class="countdown__label">секунд</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Галерея: .gallery / .gallery__item (плашки вместо фотографий)</p>
+        <p class="sg-note">
+          В репозитории нет медиафайлов, поэтому элементы галереи показаны
+          плашками. На настоящих изображениях <code>.gallery__item</code>
+          задаёт пропорцию <code>--ratio-gallery</code>,
+          <code>object-fit: cover</code> и точку кадрирования
+          <code>--image-focus</code>.
+        </p>
+        <ul class="gallery">
+          <li><div class="gallery__item sg-plate"></div></li>
+          <li><div class="gallery__item sg-plate"></div></li>
+          <li><div class="gallery__item sg-plate"></div></li>
+          <li>
+            <button type="button" class="gallery__link">
+              <span class="visually-hidden">Открыть изображение</span>
+              <span class="gallery__item sg-plate"></span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="gallery__link is-hover">
+              <span class="visually-hidden">Открыть изображение</span>
+              <span class="gallery__item sg-plate"></span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="gallery__link is-focus">
+              <span class="visually-hidden">Открыть изображение</span>
+              <span class="gallery__item sg-plate"></span>
+            </button>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Плеер: .player / .player__* (внешний вид, логика — отдельный этап)</p>
+        <div class="player">
+          <div class="player__media sg-plate" role="img" aria-label="Плашка вместо кадра видео"></div>
+          <div class="player__controls">
+            <button type="button" class="player__button" aria-label="Воспроизвести">
+              <svg class="player__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M8 5 19 12 8 19Z"></path>
+              </svg>
+            </button>
+            <button type="button" class="player__button" aria-label="Выключить звук">
+              <svg class="player__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 9H8L13 5V19L8 15H4Z"></path>
+                <path d="M17 9A4 4 0 0 1 17 15"></path>
+              </svg>
+            </button>
+            <div class="player__progress sg-progress-demo" role="slider" tabindex="0"
+                 aria-label="Позиция воспроизведения" aria-valuemin="0" aria-valuemax="100"
+                 aria-valuenow="40" aria-valuetext="40 процентов">
+              <span class="player__track"><span class="player__fill"></span></span>
+              <span class="player__thumb"></span>
+            </div>
+            <span class="player__time">01:12&nbsp;/&nbsp;03:04</span>
+            <button type="button" class="player__button" aria-label="Полноэкранный режим">
+              <svg class="player__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 9V4H9M20 9V4H15M4 15V20H9M20 15V20H15"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================================================== Состояния ====== -->
+  <section class="section" id="states">
+    <div class="container container--wide">
+      <h2 class="section__title">Состояния</h2>
+      <p class="prose prose--muted">
+        Состояния одинаковы на мобильном и десктопе. Наведение действует только
+        там, где есть настоящий курсор (<code>@media (hover: hover)</code>);
+        фокус с клавиатуры виден всегда. Ниже состояния показаны статически
+        демонстрационными классами <code>.is-hover</code>,
+        <code>.is-focus</code>, <code>.is-active</code> — они перечислены рядом
+        с настоящими <code>:hover</code>, <code>:focus-visible</code> и
+        <code>:active</code> и собственных значений не задают.
+      </p>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Кнопка основная: .btn.btn--primary</p>
+        <div class="sg-row">
+          <span class="sg-state">
+            <span class="sg-state__label">обычное</span>
+            <button type="button" class="btn btn--primary">Действие</button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:hover</span>
+            <button type="button" class="btn btn--primary is-hover">Действие</button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:focus-visible</span>
+            <button type="button" class="btn btn--primary is-focus">Действие</button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:active</span>
+            <button type="button" class="btn btn--primary is-active">Действие</button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:disabled</span>
+            <button type="button" class="btn btn--primary" disabled>Действие</button>
+          </span>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Кнопка второстепенная: .btn.btn--secondary</p>
+        <div class="sg-row">
+          <span class="sg-state">
+            <span class="sg-state__label">обычное</span>
+            <a class="btn btn--secondary" href="#states">Ссылка-кнопка</a>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:hover</span>
+            <a class="btn btn--secondary is-hover" href="#states">Ссылка-кнопка</a>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:focus-visible</span>
+            <a class="btn btn--secondary is-focus" href="#states">Ссылка-кнопка</a>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:active</span>
+            <a class="btn btn--secondary is-active" href="#states">Ссылка-кнопка</a>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">aria-disabled</span>
+            <a class="btn btn--secondary" role="link" aria-disabled="true">Ссылка-кнопка</a>
+          </span>
+        </div>
+        <p class="sg-note">
+          Выключенная ссылка-кнопка выводится без <code>href</code>
+          (<code>role="link" aria-disabled="true"</code>): CSS блокирует только
+          указатель, а с клавиатуры ссылка с адресом всё равно сработала бы.
+        </p>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Кнопка плеера: .player__button</p>
+        <div class="sg-row">
+          <span class="sg-state">
+            <span class="sg-state__label">обычное</span>
+            <button type="button" class="player__button" aria-label="Пауза">
+              <svg class="player__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M9 5V19M15 5V19"></path>
+              </svg>
+            </button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:hover</span>
+            <button type="button" class="player__button is-hover" aria-label="Пауза">
+              <svg class="player__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M9 5V19M15 5V19"></path>
+              </svg>
+            </button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:focus-visible</span>
+            <button type="button" class="player__button is-focus" aria-label="Пауза">
+              <svg class="player__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M9 5V19M15 5V19"></path>
+              </svg>
+            </button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:active</span>
+            <button type="button" class="player__button is-active" aria-label="Пауза">
+              <svg class="player__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M9 5V19M15 5V19"></path>
+              </svg>
+            </button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:disabled</span>
+            <button type="button" class="player__button" aria-label="Пауза" disabled>
+              <svg class="player__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M9 5V19M15 5V19"></path>
+              </svg>
+            </button>
+          </span>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Поверх оверлея: .on-overlay (--color-on-overlay, --color-focus-on-overlay)</p>
+        <p class="sg-note">
+          Внутри <code>.on-overlay</code> роли текста и кольца фокуса получают
+          значения для тёмной подложки лайтбокса; сами компоненты при этом не
+          переписываются.
+        </p>
+        <div class="sg-overlay-frame sg-plate">
+          <div class="sg-overlay on-overlay">
+            <span>Подпись поверх оверлея</span>
+            <button type="button" class="player__button" aria-label="Закрыть">
+              <svg class="player__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M6 6 18 18M18 6 6 18"></path>
+              </svg>
+            </button>
+            <button type="button" class="player__button is-focus" aria-label="Закрыть">
+              <svg class="player__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M6 6 18 18M18 6 6 18"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Ссылка в тексте</p>
+        <p class="prose">
+          Обычный абзац с <a href="#states">ссылкой внутри текста</a> и
+          продолжением предложения после неё.
+        </p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="sg-footer">
+  <div class="container container--wide">
+    <p>
+      Страница служебная: в сборку сайта не попадает, поисковым системам
+      закрыта. Значения токенов временные и меняются на этапе стилизации.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
