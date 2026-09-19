@@ -4,11 +4,11 @@
    Файл разбит на пронумерованные секции; последующие этапы дописывают код
    каждый в свою секцию, чтобы не конфликтовать между собой:
 
-     1. Tokens              — все дизайн-токены на :root (этот этап)
-     2. Fonts               — образец @font-face для /assets/fonts/ (этот этап)
-     3. Base                — reset, типографика, доступность (этот этап)
-     4. Layout primitives   — контейнер, сетка, поток, медиа (этот этап)
-     5. Components          — компоненты дизайн-системы (этот этап)
+     1. Tokens              — все дизайн-токены на :root
+     2. Fonts               — образец @font-face для /assets/fonts/
+     3. Base                — reset, типографика, доступность
+     4. Layout primitives   — контейнер, сетка, поток, медиа
+     5. Components          — компоненты дизайн-системы
      6. Page layout         — раскладка блоков страницы
      7. Motion & reveal     — появление блоков, анимация обложки
      8. Gallery & lightbox  — лента/сетка галереи и лайтбокс
@@ -701,6 +701,16 @@ hr {
   object-position: var(--image-focus);
 }
 
+/* <picture> — строчный элемент с авто-высотой: без этого правила block-size
+   вложенного <img> не от чего считать, и кадрирование не действует. */
+.media > picture,
+.gallery__item > picture,
+.gallery__item > .gallery__link > picture {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+}
+
 .media--video { --media-ratio: var(--ratio-video); }
 .media--gallery { --media-ratio: var(--ratio-gallery); }
 .media--scheme { --media-ratio: var(--ratio-scheme); }
@@ -1236,12 +1246,19 @@ a.btn[aria-disabled="true"] {
 
 /* --- Контекст «поверх оверлея» --------------------------------------------
    Внутри тёмной подложки (лайтбокс) роли текста и кольца фокуса получают
-   значения для оверлея; компоненты при этом не переписываются. */
+   значения для оверлея; компоненты при этом не переписываются.
+   Рассчитан только на элементы без собственной светлой подложки: текст,
+   ссылки, кнопки-иконки. Компоненты со своим фоном (карточка, .btn--secondary,
+   метка времени) внутрь оверлея не помещаются. */
 .on-overlay {
   --color-text: var(--color-on-overlay);
   --color-text-muted: var(--color-on-overlay);
   --color-focus: var(--color-focus-on-overlay);
   color: var(--color-on-overlay);
+}
+
+.on-overlay a {
+  color: inherit;
 }
 
 
