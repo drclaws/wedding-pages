@@ -274,6 +274,60 @@ class MediaOverrideTests(SiteImagesTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertRegex(result.stderr, r"og\.png is 68\.\d KiB, the limit for a single file")
 
+    def test_lookalike_names_are_reported(self):
+        """A picture that will never be published should not pass in silence."""
+        cases = {
+            "OG.PNG": "the name must be exactly 'og' with one of: .jpg, .png",
+            "og.jpeg": "the name must be exactly 'og' with one of: .jpg, .png",
+            "Favicon.SVG": "the name must be exactly 'favicon' with one of: .ico, .png, .svg",
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                path = self.media / name
+                path.write_bytes(_png.encode_png(1, 1, [b"\x10\x20\x30"]))
+                result = self.build()
+                self.assertIn(f"{name} is not published", result.stderr)
+                self.assertIn(expected, result.stderr)
+                self.assertIn("generated from the design tokens is used", result.stderr)
+                # a case-insensitive file system answers exists() for og.png
+                self.assertNotIn(name, tree_files(self.out / "assets"))
+                path.unlink()
+
+    def test_the_name_that_lost_is_reported(self):
+        (self.media / "favicon.svg").write_text(PLAIN_SVG, encoding="utf-8")
+        (self.media / "favicon.png").write_bytes(_png.encode_png(1, 1, [b"\x10\x20\x30"]))
+        result = self.build()
+        self.assertRegex(
+            result.stderr, r"favicon\.png is not published: .*favicon\.svg is used instead"
+        )
+        self.assertNotIn("favicon.svg is not published", result.stderr)
+        self.assertEqual(self.page().icons[0]["href"], "/assets/favicon.svg")
+
+    def test_a_chosen_image_is_not_reported(self):
+        (self.media / "og.png").write_bytes(_png.encode_png(1200, 630, [b"\0" * 3600] * 630))
+        result = self.build()
+        self.assertNotIn("is not published", result.stderr)
+        self.assertNotIn("link previews expect", result.stderr)
+
+    def test_link_preview_image_with_unexpected_proportions(self):
+        wrong = _png.encode_png(600, 600, [b"\0" * 1800] * 600)
+        (self.media / "og.png").write_bytes(wrong)
+        result = self.build()
+        self.assertIn("og.png is 600x600; services that show link previews expect", result.stderr)
+        self.assertIn("1200x630 (a ratio of about 1.91:1)", result.stderr)
+        # the picture is published all the same: it is the author's choice
+        self.assertEqual((self.out / "assets" / "og.png").read_bytes(), wrong)
+        meta = self.page().meta
+        self.assertEqual((meta["og:image:width"], meta["og:image:height"]), ("600", "600"))
+
+    def test_proportions_close_to_the_expected_ones_pass(self):
+        for width, height in ((1200, 630), (1280, 640), (1600, 900)):
+            with self.subTest(size=(width, height)):
+                (self.media / "og.png").write_bytes(
+                    _png.encode_png(width, height, [b"\0" * (width * 3)] * height)
+                )
+                self.assertNotIn("link previews expect", self.build().stderr)
+
     def test_unsafe_svg_override_fails_the_output_check(self):
         (self.media / "favicon.svg").write_text(
             '<svg xmlns="http://www.w3.org/2000/svg"><script>x()</script></svg>', encoding="utf-8"
@@ -329,6 +383,55 @@ class BaseUrlTests(SiteImagesTestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertIn("expected the site address", result.stderr)
                 self.assertFalse(self.out.exists())
+
+    def test_credentials_in_the_address_are_refused(self):
+        for value in (
+            "https://user:pass@secret-host.example.invalid",
+            "https://user@secret-host.example.invalid",
+            "https://secret-host.example.invalid:8443@evil.example.invalid",
+        ):
+            with self.subTest(value=value):
+                result = self.build_in_process("--base-url", value)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("no user information", result.stderr)
+                # "no user information" is part of the hint, the value is not
+                for secret in ("secret-host", "user:pass", "user@", "pass@"):
+                    self.assertNotIn(secret, result.stdout + result.stderr)
+                self.assertFalse(self.out.exists())
+
+    def test_percent_encoded_credentials_are_refused(self):
+        """'%40' is '@': urlsplit reads it as part of the host, and the
+        absolute og:image would quietly point at nothing."""
+        for value in (
+            "https://user%40secret-host.example.invalid",
+            "https://user%3Apass%40secret-host.example.invalid",
+            "https://secret-host.example.invalid%3A8443",
+        ):
+            with self.subTest(value=value):
+                result = self.build_in_process("--base-url", value)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("expected the site address", result.stderr)
+                for secret in ("secret-host", "%40", "%3A", "user"):
+                    self.assertNotIn(secret, result.stdout + result.stderr.replace(
+                        "no user information", ""
+                    ))
+                self.assertFalse(self.out.exists())
+
+    def test_the_address_is_masked_in_problem_messages(self):
+        """A template that puts the address anywhere else fails - without
+        repeating the address in the message."""
+        template = support.TEMPLATE.replace(
+            '<meta property="og:image" content="{{ogImage}}">',
+            '<meta property="og:image" content="{{ogImage}}">\n'
+            '<meta name="twitter:image" content="{{ogImage}}">',
+        )
+        (self.code / "template.html").write_text(template, encoding="utf-8")
+        result = self.build_in_process("--base-url", BASE_URL)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("<meta twitter:image>: external URL '<site>/…'", result.stderr)
+        for text in (result.stdout, result.stderr):
+            self.assertNotIn("invite.example", text)
+        self.assertFalse(self.out.exists())
 
     def test_foreign_absolute_url_is_still_an_error(self):
         template = support.TEMPLATE.replace(

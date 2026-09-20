@@ -1228,6 +1228,12 @@ DEFAULT_SITE_IMAGES = SiteImages(
     og=SiteImage(gen_assets.OG_FILE, SITE_IMAGE_TYPES[".png"], None, *gen_assets.OG_SIZE),
 )
 
+#: A link preview image should be about 1200x630 (a ratio of about 1.91:1);
+#: a picture whose ratio differs by more than this fraction gets a warning.
+#: 0.1 leaves room for the neighbouring shapes (2:1 and 16:9) that the
+#: services crop without visible loss.
+OG_RATIO_TOLERANCE = 0.1
+
 #: How much of a file is read to find the size of an image.
 _IMAGE_HEADER_BYTES = 1024 * 1024
 _IMAGE_SIGNATURES = {
@@ -1265,6 +1271,13 @@ def find_site_images(media_dir: Path | str | None, report: Report) -> SiteImages
     media directory replace the generated images (the first name that exists
     wins).  They are not mentioned in `site.json`; the same rules apply as to
     the other media: regular files, no symbolic links, the size limit.
+
+    A file that only looks like one of them - another spelling (`OG.PNG`),
+    another file type (`og.jpeg`) or the name that lost to a better one
+    (`favicon.png` next to `favicon.svg`) - is a warning: silently ignoring it
+    would leave the author waiting for a picture that never appears.  A
+    picture of one's own whose proportions are not those of a link preview
+    (about 1.91:1) is a warning too.
     """
     chosen: dict[str, SiteImage] = DEFAULT_SITE_IMAGES._asdict()
     if media_dir is None:
@@ -1301,11 +1314,60 @@ def find_site_images(media_dir: Path | str | None, report: Report) -> SiteImages
         if problem:
             report.error(f"{shown} {problem}")
             continue
+        if role == "og" and width and height:
+            wanted = DEFAULT_SITE_IMAGES.og.width / DEFAULT_SITE_IMAGES.og.height
+            if abs(width / height - wanted) > wanted * OG_RATIO_TOLERANCE:
+                report.warn(
+                    f"{shown} is {width}x{height}; services that show link previews "
+                    f"expect about {DEFAULT_SITE_IMAGES.og.width}x"
+                    f"{DEFAULT_SITE_IMAGES.og.height} (a ratio of about 1.91:1), "
+                    "so the picture will be cropped"
+                )
         extension = os.path.splitext(entry.name)[1].lower()
         chosen[role] = SiteImage(
             entry.name, SITE_IMAGE_TYPES[extension], media_dir / entry.name, width, height
         )
+    _warn_site_image_lookalikes(listing, chosen, media_dir, report)
     return SiteImages(**chosen)
+
+
+def _warn_site_image_lookalikes(
+    listing: dict, chosen: dict, media_dir: Path, report: Report
+) -> None:
+    """Warn about files that look like an icon or a link preview image.
+
+    `chosen` is what `find_site_images` settled on; anything else in the media
+    directory whose name differs only in case or in the file type never
+    reaches the output, and neither does the loser of two valid names.
+    """
+    roles = {
+        os.path.splitext(name)[0].lower(): role
+        for role, names in SITE_IMAGE_NAMES.items()
+        for name in names
+    }
+    for name in sorted(listing):
+        role = roles.get(os.path.splitext(name)[0].lower())
+        if role is None:
+            continue
+        used = chosen[role].source
+        if used is not None and used.name == name:
+            continue
+        instead = (
+            f"{display_path(used)} is used instead"
+            if used is not None
+            else f"the {role} image generated from the design tokens is used"
+        )
+        expected = _extension_list(
+            os.path.splitext(known)[1] for known in SITE_IMAGE_NAMES[role]
+        )
+        detail = (
+            ""
+            if name in SITE_IMAGE_NAMES[role]
+            else f" (the name must be exactly '{role}' with one of: {expected})"
+        )
+        report.warn(
+            f"{display_path(media_dir / name)} is not published{detail}: {instead}"
+        )
 
 
 def site_images_context(
@@ -2432,6 +2494,17 @@ _SVG_UNSAFE_MARKUP = (
     (re.compile(r"<\?xml-stylesheet", re.IGNORECASE), "'<?xml-stylesheet' is not allowed"),
 )
 _SVG_URL_ATTRIBUTES = frozenset({"href", "xlink:href", "src"})
+_SVG_NAMESPACE = "http://www.w3.org/2000/svg"
+_XLINK_NAMESPACE = "http://www.w3.org/1999/xlink"
+_XHTML_NAMESPACE = "http://www.w3.org/1999/xhtml"
+#: Prefixes that mean SVG itself even when the file declares nothing.
+_SVG_OWN_PREFIXES = frozenset({"svg", "xlink"})
+#: Prefixes that spell HTML by habit; the namespace they are bound to decides,
+#: these are only what an undeclared prefix is read as.
+_SVG_HTML_PREFIXES = frozenset({"xhtml", "html"})
+#: Attributes that a browser acts on but the URL rules here cannot follow:
+#: a list of candidate URLs, and a different base for every relative one.
+_SVG_REFUSED_ATTRIBUTES = frozenset({*_SRCSET_ATTRIBUTES, "xml:base"})
 
 
 def _local_name(tag: str) -> str:
@@ -2445,14 +2518,45 @@ class _SvgChecker(HTMLParser):
     def __init__(self, policy: _UrlPolicy) -> None:
         super().__init__(convert_charrefs=True)
         self.policy = policy
+        #: `xmlns:<prefix>` seen so far -> namespace URI.  Scopes are ignored:
+        #: a prefix bound twice to different namespaces in one file is not
+        #: something an honest picture does.
+        self.namespaces: dict[str, str] = {}
+
+    def _foreign_element(self, tag: str) -> str | None:
+        """Message when the element is not SVG, judged by its namespace.
+
+        The prefix alone means nothing (`<x:div xmlns:x="…/xhtml">` is HTML),
+        so the declared namespace decides; an undeclared prefix is read by its
+        spelling and, when that says nothing either, refused all the same -
+        whatever namespace it turns out to be, it is not described here.
+        """
+        if ":" not in tag:
+            return None
+        prefix = tag.rsplit(":", 1)[0].lower()
+        uri = self.namespaces.get(prefix, "").strip().rstrip("/")
+        if uri == _XHTML_NAMESPACE or (not uri and prefix in _SVG_HTML_PREFIXES):
+            return f"<{tag}>: HTML elements are not allowed in SVG files"
+        if uri in (_SVG_NAMESPACE, _XLINK_NAMESPACE):
+            return None
+        if not uri and prefix in _SVG_OWN_PREFIXES:
+            return None
+        return f"<{tag}>: elements of another namespace are not allowed in SVG files"
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         line = self.getpos()[0]
         problem = self.policy.problem
         local = _local_name(tag)
+        values = {name: value or "" for name, value in attrs}
+        for name, value in values.items():
+            if name.startswith("xmlns:") and len(name) > 6:
+                self.namespaces[name[6:].lower()] = value
         if local in ("script", "foreignobject", "style"):
             problem(line, f"<{tag}> is not allowed in SVG files")
-        values = {name: value or "" for name, value in attrs}
+        else:
+            foreign = self._foreign_element(tag)
+            if foreign:
+                problem(line, foreign)
         if local in _SVG_ANIMATION_ELEMENTS and values.get(
             "attributename", ""
         ).strip().lower() in ("href", "xlink:href"):
@@ -2460,6 +2564,8 @@ class _SvgChecker(HTMLParser):
         for name, value in values.items():
             if name.startswith("on") and len(name) > 2:
                 problem(line, f"<{tag} {name}>: event handlers are not allowed")
+            elif name in _SVG_REFUSED_ATTRIBUTES:
+                problem(line, f"<{tag} {name}>: '{name}' is not allowed in SVG files")
             elif name in _SVG_URL_ATTRIBUTES:
                 kind, url = _classify_url(value)
                 if kind in ("external", "script", "malformed"):
@@ -2478,7 +2584,8 @@ def check_svg(
     """Problems of one SVG file as (line, message) pairs.
 
     Not allowed: scripts, `<style>` elements, event handlers, `<foreignObject>`,
-    `<!ENTITY` declarations, `<?xml-stylesheet`, animation of `href`, external
+    elements of the XHTML namespace, `<!ENTITY` declarations,
+    `<?xml-stylesheet`, animation of `href`, `srcset` and `xml:base`, external
     references in `href` / `src` and in the CSS of `style` and presentation
     attributes.  Elements are recognised by their local name (`svg:script` is a
     script); namespace URIs in `xmlns` are not references.
@@ -2615,7 +2722,7 @@ def check_output(
       entities or external references (see `check_svg`).
 
     `base_url` is passed on to `check_html`.  Messages never quote page text,
-    and tokens in paths are shortened.
+    tokens in paths are shortened and the address of the site is masked.
     """
     root = Path(out_dir)
     try:
@@ -2668,6 +2775,8 @@ def check_output(
             )
 
     if problems:
+        # the address of the site may appear in a message about og:image
+        problems = [mask_site(problem, base_url) for problem in problems]
         hidden = len(problems) - MAX_REPORTED_PROBLEMS
         if hidden > 0:
             problems = problems[:MAX_REPORTED_PROBLEMS] + [
@@ -2704,6 +2813,33 @@ _SECRET_LIKE_RE = re.compile(rf"[A-Za-z0-9_-]{{{MIN_MEDIA_DIR_LENGTH},}}\Z")
 def _redact_paths(text: Any) -> str:
     """Hide invitation tokens that may appear inside file system paths."""
     return _TOKEN_IN_PATH_RE.sub(r"\1\2…", str(text))
+
+
+#: What takes the place of the address of the site in a message.
+SITE_MASK = "<site>"
+
+
+def mask_site(text: str, base_url: str) -> str:
+    """Hide the address of the site (`--base-url`) in a message.
+
+    The address is the one external URL the output may legitimately carry
+    (`og:image`), so a problem message can quote it - and with it the host,
+    which is exactly what the log must not repeat.  The whole address and the
+    bare host (with or without a scheme and a port) become `<site>`; long URLs
+    reach messages shortened by `_show_url`, so that form is masked as well.
+    """
+    if not base_url:
+        return text
+    address = base_url.rstrip("/")
+    host = urlsplit(address).hostname or ""
+    forms = {address, _shorten(address)}
+    patterns = [re.escape(form) for form in sorted(forms, key=len, reverse=True)]
+    if host:
+        patterns.append(
+            rf"(?:[A-Za-z][A-Za-z0-9+.-]*:)?//{re.escape(host)}(?::[0-9]+)?"
+        )
+        patterns.append(rf"{re.escape(host)}(?::[0-9]+)?")
+    return re.sub("|".join(patterns), SITE_MASK, text, flags=re.IGNORECASE)
 
 
 def _mask_name(name: str) -> str:
@@ -3377,6 +3513,10 @@ def running_in_ci(environ: Any = None) -> bool:
     )
 
 
+#: '%40' is '@', '%3A' is ':' - both would pass urlsplit as part of the host.
+_PERCENT_CREDENTIALS_RE = re.compile(r"%(?:40|3a)", re.IGNORECASE)
+
+
 def parse_base_url(value: str) -> str:
     """`--base` / `--base-url`: an http(s) URL of the site; the trailing '/'
     is dropped."""
@@ -3390,15 +3530,22 @@ def parse_base_url(value: str) -> str:
         parts is None
         or parts.scheme.lower() not in ("http", "https")
         or not parts.hostname
+        or parts.username  # credentials in the URL would end up in the pages
+        or parts.password
+        or "@" in parts.netloc
+        # percent-encoded '@' and ':' hide credentials from urlsplit, and the
+        # address would silently build a broken absolute og:image
+        or _PERCENT_CREDENTIALS_RE.search(parts.netloc)
         or parts.query
         or parts.fragment
         or "?" in value
         or "#" in value
         or any(char.isspace() for char in value)
     ):
+        # the value itself is never repeated: it may carry credentials
         raise argparse.ArgumentTypeError(
             "expected the site address, e.g. https://example.org "
-            "(http or https, no query string or fragment)"
+            "(http or https, no user information, query string or fragment)"
         )
     return value.rstrip("/")
 
