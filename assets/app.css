@@ -16,8 +16,8 @@
 
    Правило: «сырых» значений (цвета, размеры, длительности) в секциях 3–9 нет —
    только токены из секции 1, calc() над ними и ключевые слова. Единственные
-   исключения: закомментированный @font-face и числа брейкпоинтов в @media
-   (в медиазапросах var() не работает).
+   исключения: закомментированный @font-face и пороги в условиях @media и
+   @container (в условиях запросов var() не работает).
 
    Временные значения (стилизация — отдельный этап) помечены пометкой TEMP.
    ========================================================================== */
@@ -35,10 +35,10 @@
 
      а) плавная интерполяция clamp() между опорными ширинами --vw-min и
         --vw-max. Значения пары хранятся безразмерными числами, потому что
-        calc() не умеет делить длину на длину; в длину их превращает умножение
-        на 1px (а типографическую шкалу — на 1rem, см. ниже). Порядок
-        значений в паре любой: мобильное может быть и меньше, и больше
-        десктопного — границы clamp() берутся как min()/max() от пары;
+        calc() не умеет делить длину на длину; в длину их превращает формула
+        (какой единицей — см. «Единицы» ниже). Порядок значений в паре
+        любой: мобильное может быть и меньше, и больше десктопного —
+        границы clamp() берутся как min()/max() от пары;
      б) переопределение производного токена в @media на границе раскладки —
         для величин, которые нельзя интерполировать (число колонок,
         пропорции изображений).
@@ -46,12 +46,47 @@
    Параметры без пары (длительности, радиусы, тени, интерлиньяж и т.п.) при
    необходимости переопределяются в том же блоке @media на границе раскладки.
 
-   Брейкпоинты (var() в @media не работает, значения повторяются буквально):
-     --bp-layout: 768px — единственная граница раскладки: одна колонка →
-                          две, лента → сетка, узкие поля → широкие.
-   Токен --bp-layout только документирует значение (его читает витрина);
-   менять его нужно вместе с числом в @media ниже.
-   Других брейкпоинтов нет: всё остальное меняется плавно.
+   Единицы. Числа в парах — это px при размере шрифта по умолчанию (16px);
+   вопрос к каждому токену один: должно ли значение расти, когда пользователь
+   увеличил шрифт в системе или браузере?
+     rem   — типографическая шкала, ширины контейнеров, размер иконок, предел
+             ширины ячейки таймера: число делится на 16 и умножается на 1rem.
+             Длина строки и пропорции «иконка — подпись» сохраняются при любом
+             размере шрифта.
+     rem с потолком от ширины окна — отступы, поля, зазоры (--space-*,
+             --space-section, --container-gutter, --grid-gap, --countdown-gap):
+             min(<та же формула в rem>, mobile / --vw-min * 100vw). На широком
+             экране отступы растут вместе с текстом, а на телефоне не превышают
+             свою «дизайнерскую» долю ширины экрана — увеличенному тексту
+             остаётся вся колонка. На экранах уже --vw-min отступы
+             пропорционально уменьшаются.
+     px    — волосяные линии и рамки, кольцо фокуса, радиусы, тени, --tap-min
+             (44px — требование к физическому размеру цели нажатия; рост
+             вместе со шрифтом только отнимал бы ширину у текста), амплитуды
+             движения, дорожка и ползунок плеера. От шрифта не зависят.
+     em/ch — трекинг и ширины «в знаках»: следуют за шрифтом самого элемента.
+   При размере шрифта по умолчанию и ширине окна от --vw-min все формулы дают
+   ровно числа из пар.
+
+   Ограничения на значения пар (иначе формулы работают не так, как задумано):
+     - типографика: большее значение пары ≤ 2.5 × меньшего — иначе масштаб
+       200 % в браузере не увеличивает текст вдвое (WCAG 1.4.4);
+     - отступы с потолком: мобильное значение > 0 и десктопное ≤ 4 × мобильного
+       — иначе потолок срабатывает и при обычном размере шрифта.
+
+   Пороги (var() в условиях @media и @container не работает, значения
+   повторяются буквально; токены только документируют их — их читает витрина;
+   менять токен нужно вместе с числом в условии):
+     --bp-layout: 48em — единственная граница раскладки по ширине окна: одна
+                         колонка → две, пропорции изображений. При шрифте по
+                         умолчанию это 768px; при увеличенном шрифте браузера
+                         две колонки включаются позже, когда для них есть место.
+     --countdown-inline-min, --schedule-inline-min — пороги по ширине
+                         контейнера (@container) в rem: компонент выбирает
+                         раскладку по месту, которое ему досталось, и по
+                         размеру шрифта. Контейнеры — .container и элементы
+                         .grid (секция 4).
+   Других порогов нет: всё остальное меняется плавно.
    ========================================================================== */
 
 :root {
@@ -69,8 +104,10 @@
      множитель даёт длину. Используется только внутри токенов. */
   --fluid: calc((100vw - var(--vw-min) * 1px) / (var(--vw-max) - var(--vw-min)));
   /* Граница раскладки. Только для чтения: в @media var() не работает, поэтому
-     то же число повторено буквально в блоке @media в конце секции. */
-  --bp-layout: 768px;
+     то же значение повторено буквально в блоке @media в конце секции.
+     em в медиазапросе — размер шрифта браузера по умолчанию (48em = 768px
+     при 16px). */
+  --bp-layout: 48em;
 
   /* --- Цвета (по ролям) --------------------------------------------------- */
   --color-bg: #ffffff;              /* TEMP  фон страницы */
@@ -163,83 +200,106 @@
     calc(var(--text-display-mobile) / 16 * 1rem + (var(--text-display-desktop) - var(--text-display-mobile)) * var(--fluid)),
     max(var(--text-display-mobile) / 16 * 1rem, var(--text-display-desktop) / 16 * 1rem));
 
-  /* --- Шкала отступов (пара mobile/desktop, px) ---------------------------- */
+  /* --- Шкала отступов (пара mobile/desktop) ---------------------------------
+     rem с потолком от ширины окна — см. «Единицы» в шапке секции. */
   --space-3xs-mobile: 4;    /* TEMP */
   --space-3xs-desktop: 4;   /* TEMP */
-  --space-3xs: clamp(min(var(--space-3xs-mobile) * 1px, var(--space-3xs-desktop) * 1px),
-    calc(var(--space-3xs-mobile) * 1px + (var(--space-3xs-desktop) - var(--space-3xs-mobile)) * var(--fluid)),
-    max(var(--space-3xs-mobile) * 1px, var(--space-3xs-desktop) * 1px));
+  --space-3xs: min(
+    clamp(min(var(--space-3xs-mobile) / 16 * 1rem, var(--space-3xs-desktop) / 16 * 1rem),
+      calc(var(--space-3xs-mobile) / 16 * 1rem + (var(--space-3xs-desktop) - var(--space-3xs-mobile)) * var(--fluid)),
+      max(var(--space-3xs-mobile) / 16 * 1rem, var(--space-3xs-desktop) / 16 * 1rem)),
+    calc(var(--space-3xs-mobile) / var(--vw-min) * 100vw));
 
   --space-2xs-mobile: 8;    /* TEMP */
   --space-2xs-desktop: 8;   /* TEMP */
-  --space-2xs: clamp(min(var(--space-2xs-mobile) * 1px, var(--space-2xs-desktop) * 1px),
-    calc(var(--space-2xs-mobile) * 1px + (var(--space-2xs-desktop) - var(--space-2xs-mobile)) * var(--fluid)),
-    max(var(--space-2xs-mobile) * 1px, var(--space-2xs-desktop) * 1px));
+  --space-2xs: min(
+    clamp(min(var(--space-2xs-mobile) / 16 * 1rem, var(--space-2xs-desktop) / 16 * 1rem),
+      calc(var(--space-2xs-mobile) / 16 * 1rem + (var(--space-2xs-desktop) - var(--space-2xs-mobile)) * var(--fluid)),
+      max(var(--space-2xs-mobile) / 16 * 1rem, var(--space-2xs-desktop) / 16 * 1rem)),
+    calc(var(--space-2xs-mobile) / var(--vw-min) * 100vw));
 
   --space-xs-mobile: 12;    /* TEMP */
   --space-xs-desktop: 14;   /* TEMP */
-  --space-xs: clamp(min(var(--space-xs-mobile) * 1px, var(--space-xs-desktop) * 1px),
-    calc(var(--space-xs-mobile) * 1px + (var(--space-xs-desktop) - var(--space-xs-mobile)) * var(--fluid)),
-    max(var(--space-xs-mobile) * 1px, var(--space-xs-desktop) * 1px));
+  --space-xs: min(
+    clamp(min(var(--space-xs-mobile) / 16 * 1rem, var(--space-xs-desktop) / 16 * 1rem),
+      calc(var(--space-xs-mobile) / 16 * 1rem + (var(--space-xs-desktop) - var(--space-xs-mobile)) * var(--fluid)),
+      max(var(--space-xs-mobile) / 16 * 1rem, var(--space-xs-desktop) / 16 * 1rem)),
+    calc(var(--space-xs-mobile) / var(--vw-min) * 100vw));
 
   --space-sm-mobile: 16;    /* TEMP */
   --space-sm-desktop: 18;   /* TEMP */
-  --space-sm: clamp(min(var(--space-sm-mobile) * 1px, var(--space-sm-desktop) * 1px),
-    calc(var(--space-sm-mobile) * 1px + (var(--space-sm-desktop) - var(--space-sm-mobile)) * var(--fluid)),
-    max(var(--space-sm-mobile) * 1px, var(--space-sm-desktop) * 1px));
+  --space-sm: min(
+    clamp(min(var(--space-sm-mobile) / 16 * 1rem, var(--space-sm-desktop) / 16 * 1rem),
+      calc(var(--space-sm-mobile) / 16 * 1rem + (var(--space-sm-desktop) - var(--space-sm-mobile)) * var(--fluid)),
+      max(var(--space-sm-mobile) / 16 * 1rem, var(--space-sm-desktop) / 16 * 1rem)),
+    calc(var(--space-sm-mobile) / var(--vw-min) * 100vw));
 
   --space-md-mobile: 20;    /* TEMP */
   --space-md-desktop: 26;   /* TEMP */
-  --space-md: clamp(min(var(--space-md-mobile) * 1px, var(--space-md-desktop) * 1px),
-    calc(var(--space-md-mobile) * 1px + (var(--space-md-desktop) - var(--space-md-mobile)) * var(--fluid)),
-    max(var(--space-md-mobile) * 1px, var(--space-md-desktop) * 1px));
+  --space-md: min(
+    clamp(min(var(--space-md-mobile) / 16 * 1rem, var(--space-md-desktop) / 16 * 1rem),
+      calc(var(--space-md-mobile) / 16 * 1rem + (var(--space-md-desktop) - var(--space-md-mobile)) * var(--fluid)),
+      max(var(--space-md-mobile) / 16 * 1rem, var(--space-md-desktop) / 16 * 1rem)),
+    calc(var(--space-md-mobile) / var(--vw-min) * 100vw));
 
   --space-lg-mobile: 28;    /* TEMP */
   --space-lg-desktop: 40;   /* TEMP */
-  --space-lg: clamp(min(var(--space-lg-mobile) * 1px, var(--space-lg-desktop) * 1px),
-    calc(var(--space-lg-mobile) * 1px + (var(--space-lg-desktop) - var(--space-lg-mobile)) * var(--fluid)),
-    max(var(--space-lg-mobile) * 1px, var(--space-lg-desktop) * 1px));
+  --space-lg: min(
+    clamp(min(var(--space-lg-mobile) / 16 * 1rem, var(--space-lg-desktop) / 16 * 1rem),
+      calc(var(--space-lg-mobile) / 16 * 1rem + (var(--space-lg-desktop) - var(--space-lg-mobile)) * var(--fluid)),
+      max(var(--space-lg-mobile) / 16 * 1rem, var(--space-lg-desktop) / 16 * 1rem)),
+    calc(var(--space-lg-mobile) / var(--vw-min) * 100vw));
 
   --space-xl-mobile: 40;    /* TEMP */
   --space-xl-desktop: 60;   /* TEMP */
-  --space-xl: clamp(min(var(--space-xl-mobile) * 1px, var(--space-xl-desktop) * 1px),
-    calc(var(--space-xl-mobile) * 1px + (var(--space-xl-desktop) - var(--space-xl-mobile)) * var(--fluid)),
-    max(var(--space-xl-mobile) * 1px, var(--space-xl-desktop) * 1px));
+  --space-xl: min(
+    clamp(min(var(--space-xl-mobile) / 16 * 1rem, var(--space-xl-desktop) / 16 * 1rem),
+      calc(var(--space-xl-mobile) / 16 * 1rem + (var(--space-xl-desktop) - var(--space-xl-mobile)) * var(--fluid)),
+      max(var(--space-xl-mobile) / 16 * 1rem, var(--space-xl-desktop) / 16 * 1rem)),
+    calc(var(--space-xl-mobile) / var(--vw-min) * 100vw));
 
   --space-2xl-mobile: 56;   /* TEMP */
   --space-2xl-desktop: 88;  /* TEMP */
-  --space-2xl: clamp(min(var(--space-2xl-mobile) * 1px, var(--space-2xl-desktop) * 1px),
-    calc(var(--space-2xl-mobile) * 1px + (var(--space-2xl-desktop) - var(--space-2xl-mobile)) * var(--fluid)),
-    max(var(--space-2xl-mobile) * 1px, var(--space-2xl-desktop) * 1px));
+  --space-2xl: min(
+    clamp(min(var(--space-2xl-mobile) / 16 * 1rem, var(--space-2xl-desktop) / 16 * 1rem),
+      calc(var(--space-2xl-mobile) / 16 * 1rem + (var(--space-2xl-desktop) - var(--space-2xl-mobile)) * var(--fluid)),
+      max(var(--space-2xl-mobile) / 16 * 1rem, var(--space-2xl-desktop) / 16 * 1rem)),
+    calc(var(--space-2xl-mobile) / var(--vw-min) * 100vw));
 
   /* Отступ между секциями страницы. */
   --space-section-mobile: 56;   /* TEMP */
   --space-section-desktop: 104; /* TEMP */
-  --space-section: clamp(min(var(--space-section-mobile) * 1px, var(--space-section-desktop) * 1px),
-    calc(var(--space-section-mobile) * 1px + (var(--space-section-desktop) - var(--space-section-mobile)) * var(--fluid)),
-    max(var(--space-section-mobile) * 1px, var(--space-section-desktop) * 1px));
+  --space-section: min(
+    clamp(min(var(--space-section-mobile) / 16 * 1rem, var(--space-section-desktop) / 16 * 1rem),
+      calc(var(--space-section-mobile) / 16 * 1rem + (var(--space-section-desktop) - var(--space-section-mobile)) * var(--fluid)),
+      max(var(--space-section-mobile) / 16 * 1rem, var(--space-section-desktop) / 16 * 1rem)),
+    calc(var(--space-section-mobile) / var(--vw-min) * 100vw));
 
   /* Вертикальный ритм внутри блока текста (шаг «стека»). */
   --flow-space: var(--space-sm);
 
-  /* --- Контейнер ----------------------------------------------------------- */
+  /* --- Контейнер -------------------------------------------------------------
+     Ширины — в rem (длина строки не зависит от размера шрифта пользователя),
+     поля — rem с потолком от ширины окна. */
   --container-text-mobile: 560;    /* TEMP  ширина текстовой колонки */
   --container-text-desktop: 680;   /* TEMP */
-  --container-text: clamp(min(var(--container-text-mobile) * 1px, var(--container-text-desktop) * 1px),
-    calc(var(--container-text-mobile) * 1px + (var(--container-text-desktop) - var(--container-text-mobile)) * var(--fluid)),
-    max(var(--container-text-mobile) * 1px, var(--container-text-desktop) * 1px));
+  --container-text: clamp(min(var(--container-text-mobile) / 16 * 1rem, var(--container-text-desktop) / 16 * 1rem),
+    calc(var(--container-text-mobile) / 16 * 1rem + (var(--container-text-desktop) - var(--container-text-mobile)) * var(--fluid)),
+    max(var(--container-text-mobile) / 16 * 1rem, var(--container-text-desktop) / 16 * 1rem));
 
   --container-wide-mobile: 640;    /* TEMP  широкий контейнер: галерея, две колонки */
   --container-wide-desktop: 1120;  /* TEMP */
-  --container-wide: clamp(min(var(--container-wide-mobile) * 1px, var(--container-wide-desktop) * 1px),
-    calc(var(--container-wide-mobile) * 1px + (var(--container-wide-desktop) - var(--container-wide-mobile)) * var(--fluid)),
-    max(var(--container-wide-mobile) * 1px, var(--container-wide-desktop) * 1px));
+  --container-wide: clamp(min(var(--container-wide-mobile) / 16 * 1rem, var(--container-wide-desktop) / 16 * 1rem),
+    calc(var(--container-wide-mobile) / 16 * 1rem + (var(--container-wide-desktop) - var(--container-wide-mobile)) * var(--fluid)),
+    max(var(--container-wide-mobile) / 16 * 1rem, var(--container-wide-desktop) / 16 * 1rem));
 
   --container-gutter-mobile: 16;   /* TEMP  боковые поля */
   --container-gutter-desktop: 32;  /* TEMP */
-  --container-gutter: clamp(min(var(--container-gutter-mobile) * 1px, var(--container-gutter-desktop) * 1px),
-    calc(var(--container-gutter-mobile) * 1px + (var(--container-gutter-desktop) - var(--container-gutter-mobile)) * var(--fluid)),
-    max(var(--container-gutter-mobile) * 1px, var(--container-gutter-desktop) * 1px));
+  --container-gutter: min(
+    clamp(min(var(--container-gutter-mobile) / 16 * 1rem, var(--container-gutter-desktop) / 16 * 1rem),
+      calc(var(--container-gutter-mobile) / 16 * 1rem + (var(--container-gutter-desktop) - var(--container-gutter-mobile)) * var(--fluid)),
+      max(var(--container-gutter-mobile) / 16 * 1rem, var(--container-gutter-desktop) / 16 * 1rem)),
+    calc(var(--container-gutter-mobile) / var(--vw-min) * 100vw));
 
   /* --- Сетка --------------------------------------------------------------- */
   --grid-columns-mobile: 1;    /* TEMP  переопределяется на --bp-layout */
@@ -257,17 +317,27 @@
   --gallery-columns-venue: var(--gallery-columns-venue-mobile);
 
   --countdown-columns: 4;  /* дни/часы/минуты/секунды — не стиль */
+  /* В узком контейнере (или при крупном шрифте) таймер складывается в 2×2. */
+  --countdown-columns-narrow: 2;
+  /* Ширина контейнера, с которой четыре ячейки встают в ряд. Только для
+     чтения: то же значение повторено буквально в @container (секция 5).
+     Подобрано по самой длинной подписи («секунды») при --countdown-gap-mobile. */
+  --countdown-inline-min: 19.5rem;  /* TEMP */
   --countdown-gap-mobile: 4;    /* TEMP  на 360 px четыре ячейки должны поместиться */
   --countdown-gap-desktop: 14;  /* TEMP */
-  --countdown-gap: clamp(min(var(--countdown-gap-mobile) * 1px, var(--countdown-gap-desktop) * 1px),
-    calc(var(--countdown-gap-mobile) * 1px + (var(--countdown-gap-desktop) - var(--countdown-gap-mobile)) * var(--fluid)),
-    max(var(--countdown-gap-mobile) * 1px, var(--countdown-gap-desktop) * 1px));
+  --countdown-gap: min(
+    clamp(min(var(--countdown-gap-mobile) / 16 * 1rem, var(--countdown-gap-desktop) / 16 * 1rem),
+      calc(var(--countdown-gap-mobile) / 16 * 1rem + (var(--countdown-gap-desktop) - var(--countdown-gap-mobile)) * var(--fluid)),
+      max(var(--countdown-gap-mobile) / 16 * 1rem, var(--countdown-gap-desktop) / 16 * 1rem)),
+    calc(var(--countdown-gap-mobile) / var(--vw-min) * 100vw));
 
   --grid-gap-mobile: 16;   /* TEMP */
   --grid-gap-desktop: 28;  /* TEMP */
-  --grid-gap: clamp(min(var(--grid-gap-mobile) * 1px, var(--grid-gap-desktop) * 1px),
-    calc(var(--grid-gap-mobile) * 1px + (var(--grid-gap-desktop) - var(--grid-gap-mobile)) * var(--fluid)),
-    max(var(--grid-gap-mobile) * 1px, var(--grid-gap-desktop) * 1px));
+  --grid-gap: min(
+    clamp(min(var(--grid-gap-mobile) / 16 * 1rem, var(--grid-gap-desktop) / 16 * 1rem),
+      calc(var(--grid-gap-mobile) / 16 * 1rem + (var(--grid-gap-desktop) - var(--grid-gap-mobile)) * var(--fluid)),
+      max(var(--grid-gap-mobile) / 16 * 1rem, var(--grid-gap-desktop) / 16 * 1rem)),
+    calc(var(--grid-gap-mobile) / var(--vw-min) * 100vw));
 
   /* --- Радиусы, тени, линии ------------------------------------------------ */
   --radius-sm: 4px;      /* TEMP */
@@ -389,18 +459,23 @@
 
   --icon-size-mobile: 20;    /* TEMP  размер иконки в кнопке */
   --icon-size-desktop: 22;   /* TEMP */
-  --icon-size: clamp(min(var(--icon-size-mobile) * 1px, var(--icon-size-desktop) * 1px),
-    calc(var(--icon-size-mobile) * 1px + (var(--icon-size-desktop) - var(--icon-size-mobile)) * var(--fluid)),
-    max(var(--icon-size-mobile) * 1px, var(--icon-size-desktop) * 1px));
+  --icon-size: clamp(min(var(--icon-size-mobile) / 16 * 1rem, var(--icon-size-desktop) / 16 * 1rem),
+    calc(var(--icon-size-mobile) / 16 * 1rem + (var(--icon-size-desktop) - var(--icon-size-mobile)) * var(--fluid)),
+    max(var(--icon-size-mobile) / 16 * 1rem, var(--icon-size-desktop) / 16 * 1rem));
 
   --countdown-cell-min: var(--tap-min);
   /* Предел ширины ячейки таймера: на широком экране таймер не растягивается
      на всю текстовую колонку (ширина таймера = ячейки + зазоры). */
   --countdown-cell-max-mobile: 96;    /* TEMP */
   --countdown-cell-max-desktop: 128;  /* TEMP */
-  --countdown-cell-max: clamp(min(var(--countdown-cell-max-mobile) * 1px, var(--countdown-cell-max-desktop) * 1px),
-    calc(var(--countdown-cell-max-mobile) * 1px + (var(--countdown-cell-max-desktop) - var(--countdown-cell-max-mobile)) * var(--fluid)),
-    max(var(--countdown-cell-max-mobile) * 1px, var(--countdown-cell-max-desktop) * 1px));
+  --countdown-cell-max: clamp(min(var(--countdown-cell-max-mobile) / 16 * 1rem, var(--countdown-cell-max-desktop) / 16 * 1rem),
+    calc(var(--countdown-cell-max-mobile) / 16 * 1rem + (var(--countdown-cell-max-desktop) - var(--countdown-cell-max-mobile)) * var(--fluid)),
+    max(var(--countdown-cell-max-mobile) / 16 * 1rem, var(--countdown-cell-max-desktop) / 16 * 1rem));
+  /* Программа дня: колонка времени не шире этой доли списка (длинная метка
+     переносится); в контейнере уже порога время встаёт над описанием.
+     Порог — только для чтения: повторён буквально в @container (секция 6). */
+  --schedule-time-max: 45%;          /* TEMP */
+  --schedule-inline-min: 18.5rem;    /* TEMP */
   --divider-thickness: var(--line-width-hairline);
   --card-padding: var(--space-md);
   --btn-padding-block: var(--space-xs);
@@ -409,8 +484,8 @@
 
 /* Граница раскладки: переопределяются ТОЛЬКО раскладочные токены,
    визуальный стиль компонентов не меняется.
-   Значение должно совпадать с --bp-layout = 768px. */
-@media (min-width: 768px) {
+   Значение должно совпадать с --bp-layout = 48em. */
+@media (min-width: 48em) {
   :root {
     --grid-columns: var(--grid-columns-desktop);
     --gallery-columns: var(--gallery-columns-desktop);
@@ -603,6 +678,12 @@ textarea {
   letter-spacing: inherit;
 }
 
+/* Атрибут hidden сильнее display компонентов (таймер скрыт, пока его не
+   запустит скрипт). */
+[hidden] {
+  display: none !important;
+}
+
 /* Фокус с клавиатуры виден всегда и одинаково на обоих форматах.
    .is-focus — демонстрационный класс витрины: только показывает то же
    оформление статически, собственных значений не задаёт. */
@@ -658,6 +739,15 @@ hr {
     max(var(--container-gutter), var(--safe-inset-right));
 }
 
+/* Контейнер и элементы сетки — контейнеры для @container: вложенные
+   компоненты (таймер, программа дня) выбирают раскладку по ширине места, в
+   котором стоят, а не по ширине окна. Сам контейнер по своему запросу не
+   стилизуется — только его потомки. */
+.container,
+.grid > * {
+  container-type: inline-size;
+}
+
 .container--wide {
   max-width: calc(var(--container-wide) + var(--container-gutter) + var(--container-gutter));
 }
@@ -692,10 +782,12 @@ hr {
 }
 
 /* Медиа с фиксированными пропорциями: рамка задаёт пропорцию, содержимое
-   кадрируется по --image-focus. Высота ограничена --media-max-height; чтобы
+   кадрируется по --image-focus (--media-fit: cover) либо вписывается целиком
+   (contain). Рамкой может быть и ссылка на полный файл. Высота ограничена --media-max-height; чтобы
    пропорция при этом сохранялась, ограничивается ширина (высота × пропорция). */
 .media {
   --media-ratio: var(--ratio-photo);
+  --media-fit: cover;
   display: block;
   width: 100%;
   max-inline-size: calc(var(--media-max-height) * var(--media-ratio));
@@ -711,7 +803,7 @@ hr {
 .media > picture > img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: var(--media-fit);
   object-position: var(--image-focus);
 }
 
@@ -727,7 +819,12 @@ hr {
 
 .media--video { --media-ratio: var(--ratio-video); }
 .media--gallery { --media-ratio: var(--ratio-gallery); }
-.media--scheme { --media-ratio: var(--ratio-scheme); }
+/* Схема проезда показывается целиком, без кадрирования: пропорция рамки может
+   не совпадать с пропорцией файла. */
+.media--scheme {
+  --media-ratio: var(--ratio-scheme);
+  --media-fit: contain;
+}
 
 /* Скрыто визуально, доступно скринридеру (подписи кнопок плеера и т.п.). */
 .visually-hidden {
@@ -1066,10 +1163,15 @@ a.btn[aria-disabled="true"] {
   color: var(--color-text-muted);
 }
 
-/* --- Таймер обратного отсчёта --------------------------------------------- */
+/* --- Таймер обратного отсчёта ---------------------------------------------
+   Раскладка — по ширине ближайшего контейнера (.container, элемент .grid):
+   2×2, пока четыре ячейки с подписями не помещаются в ряд, иначе 4 в ряд.
+   Порог в rem, поэтому при увеличенном шрифте 2×2 держится дольше. Браузер
+   без @container всегда показывает 2×2 — без переполнений. */
 .countdown {
+  --countdown-columns-used: var(--countdown-columns-narrow);
   display: grid;
-  grid-template-columns: repeat(var(--countdown-columns), minmax(0, 1fr));
+  grid-template-columns: repeat(var(--countdown-columns-used), minmax(0, 1fr));
   gap: var(--countdown-gap);
   margin: 0;
   padding: 0;
@@ -1098,6 +1200,13 @@ a.btn[aria-disabled="true"] {
   font-variant-numeric: tabular-nums;
   color: var(--color-text);
   white-space: nowrap;
+}
+
+/* Значение должно совпадать с --countdown-inline-min = 19.5rem. */
+@container (min-width: 19.5rem) {
+  .countdown {
+    --countdown-columns-used: var(--countdown-columns);
+  }
 }
 
 /* Подписи ячеек — короткие слова: рвать их посреди слова нельзя, иначе на
@@ -1290,12 +1399,6 @@ a.btn[aria-disabled="true"] {
    телефона блок растёт вместе с содержимым, ничего не обрезается.
    ========================================================================== */
 
-/* Атрибут hidden сильнее display компонентов (таймер скрыт, пока его не
-   запустит скрипт). */
-[hidden] {
-  display: none !important;
-}
-
 /* --- Страница ------------------------------------------------------------- */
 /* flow-root: отступы первой и последней секции остаются внутри страницы. */
 .page {
@@ -1348,12 +1451,12 @@ a.btn[aria-disabled="true"] {
   text-wrap: balance;
 }
 
-/* Таймер не шире четырёх ячеек предельной ширины; на узком экране — во всю
-   ширину колонки. */
+/* Таймер не шире своих ячеек предельной ширины (четырёх в ряд или двух при
+   раскладке 2×2); на узком экране — во всю ширину колонки. */
 .date__countdown {
   max-inline-size: calc(
-    var(--countdown-cell-max) * var(--countdown-columns)
-    + var(--countdown-gap) * (var(--countdown-columns) - 1)
+    var(--countdown-cell-max) * var(--countdown-columns-used)
+    + var(--countdown-gap) * (var(--countdown-columns-used) - 1)
   );
   margin-block-start: var(--space-lg);
   margin-inline: auto;
@@ -1406,7 +1509,9 @@ a.btn[aria-disabled="true"] {
 /* --- 6. Программа дня --------------------------------------------------------
    На десктопе заголовок и список стоят в две колонки (.grid). Внутри пункта
    время и описание — тоже две колонки: ширину первой задаёт самая длинная
-   метка времени. */
+   метка времени, но не больше --schedule-time-max — длинная метка
+   («15:30–16:45 (ориентировочно)») переносится, а не сжимает описание.
+   В узком контейнере и при крупном шрифте время встаёт над описанием. */
 .schedule__title {
   margin-block-end: 0;
 }
@@ -1421,14 +1526,19 @@ a.btn[aria-disabled="true"] {
 
 .schedule__item {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: fit-content(var(--schedule-time-max)) minmax(0, 1fr);
   column-gap: var(--space-sm);
+  row-gap: var(--space-2xs);
   align-items: baseline;
 }
 
+/* В списке метка времени переносится по словам, а в крайнем случае — в любом
+   месте: её минимальная ширина не распирает колонку. */
 .schedule__time {
   grid-column: 1;
   justify-self: start;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .schedule__body {
@@ -1446,13 +1556,23 @@ a.btn[aria-disabled="true"] {
    между собой; без него каждый пункт выравнивается сам по себе. */
 @supports (grid-template-columns: subgrid) {
   .schedule__list {
-    grid-template-columns: max-content minmax(0, 1fr);
+    grid-template-columns: fit-content(var(--schedule-time-max)) minmax(0, 1fr);
     column-gap: var(--space-sm);
   }
 
   .schedule__item {
     grid-column: 1 / -1;
     grid-template-columns: subgrid;
+  }
+}
+
+/* Узкий список (он сам контейнер — элемент .grid): время над описанием, оба
+   во всю ширину пункта. Значение должно совпадать с
+   --schedule-inline-min = 18.5rem. */
+@container (max-width: 18.5rem) {
+  .schedule__time,
+  .schedule__body {
+    grid-column: 1 / -1;
   }
 }
 
@@ -1512,6 +1632,12 @@ a.btn[aria-disabled="true"] {
    Лента со scroll-snap на мобильном, сетка на десктопе, лайтбокс
    ([data-gallery], [data-lightbox]): подложка --color-overlay, слой --z-lightbox.
    Пока пусто: заполняется вместе с галереей.
+
+   Лайтбокс (position: fixed) размещать ВНЕ элементов с container-type
+   (.container, элементы .grid) — прямым потомком <body> — либо делать его
+   через <dialog>.showModal() (верхний слой). В старых движках элемент с
+   container-type становится containing block для fixed-потомков, и оверлей
+   растянулся бы на контейнер, а не на окно.
    ========================================================================== */
 
 
