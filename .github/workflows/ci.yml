@@ -41,13 +41,20 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Repository hygiene (no tracked media, no tracked build output)
+      - name: Repository hygiene (no tracked media outside assets/vendor, no tracked build output)
         run: |
           set -euo pipefail
-          media="$(git ls-files | grep -Ei '\.(png|jpe?g|webp|gif|avif|mp4|mov|webm|ico|svg)$' || true)"
+          # Vendored library files under assets/vendor/ are the only exception.
+          media="$(git ls-files | grep -v '^assets/vendor/' | grep -Ei '\.(png|jpe?g|webp|gif|avif|mp4|mov|webm|ico|svg)$' || true)"
           if [ -n "$media" ]; then
             echo "Media files must not be tracked:" >&2
             echo "$media" >&2
+            exit 1
+          fi
+          vendor="$(git ls-files -- assets/vendor | grep -Ev '(\.(js|css|svg|txt|woff2)|/\.gitkeep)$' || true)"
+          if [ -n "$vendor" ]; then
+            echo "Only .js, .css, .svg, .txt and .woff2 files (and a .gitkeep placeholder) may be tracked under assets/vendor/:" >&2
+            echo "$vendor" >&2
             exit 1
           fi
           output="$(git ls-files -- dist examples/media)"

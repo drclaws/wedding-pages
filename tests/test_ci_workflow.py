@@ -113,6 +113,16 @@ class CiWorkflowTest(unittest.TestCase):
     def test_concurrency_cancels_stale_runs(self):
         self.assertRegex(self.text, r"(?m)^concurrency:\n  group: .*github\.ref.*\n  cancel-in-progress: true$")
 
+    def test_hygiene_allows_only_vendored_library_files(self):
+        hygiene = [block for block in self.runs if "git ls-files" in block]
+        self.assertEqual(len(hygiene), 1)
+        block = hygiene[0]
+        self.assertIn("git ls-files | grep -v '^assets/vendor/' | grep -Ei "
+                      "'\\.(png|jpe?g|webp|gif|avif|mp4|mov|webm|ico|svg)$'", block)
+        self.assertIn("git ls-files -- assets/vendor | grep -Ev "
+                      "'(\\.(js|css|svg|txt|woff2)|/\\.gitkeep)$'", block)
+        self.assertEqual(block.count("exit 1"), 3)
+
     def test_build_output_goes_to_runner_temp(self):
         outs = re.findall(r"--out\s+(\S+)", "\n".join(self.runs))
         self.assertGreaterEqual(len(outs), 3)
