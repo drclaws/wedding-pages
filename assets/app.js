@@ -27,6 +27,12 @@
   var modules = [];
   var started = false;
 
+  /* Только имя модуля и тип ошибки — без данных страницы. */
+  function report(name, error) {
+    console.warn('app: module "' + name + '" failed (' +
+      (error && error.name ? error.name : 'Error') + ')');
+  }
+
   /* init(document) вызывается один раз, когда DOM разобран. */
   function register(name, init) {
     modules.push({ name: name, init: init });
@@ -41,9 +47,7 @@
       try {
         module.init(document);
       } catch (error) {
-        /* Только имя модуля и тип ошибки — без данных страницы. */
-        console.warn('app: module "' + module.name + '" failed (' +
-          (error && error.name ? error.name : 'Error') + ')');
+        report(module.name, error);
       }
     });
   }
@@ -99,11 +103,15 @@
      --------------------------------------------------------------------------
      Скрытое состояние действует только под маркером reveal-on на <html>;
      маркер ставится последним шагом и снимается при любой ошибке. Показанный
-     блок получает is-revealed, наблюдение за ним снимается.
+     блок получает is-revealed, наблюдение за ним снимается; когда переход
+     появления завершён — is-settled: переход и задержка каскада больше не
+     действуют и не мешают собственным переходам элемента.
      ========================================================================== */
 
-  var REVEAL_MARGIN = '0px 0px -8% 0px'; /* блок должен немного войти в экран */
-  var REVEAL_STAGGER_MAX = 4;            /* предел каскада задержек в одной группе */
+  var REVEAL_INSET = 0.08;      /* блок должен войти в экран на эту долю высоты */
+  var REVEAL_MARGIN = '0px 0px -' + (REVEAL_INSET * 100) + '% 0px';
+  var REVEAL_STAGGER_MAX = 4;   /* предел каскада задержек в одной группе */
+  var REVEAL_SETTLE_MS = 2000;  /* страховка, если transitionend не пришёл */
 
   register('reveal', function (doc) {
     var pending = Array.prototype.slice.call(doc.querySelectorAll('[data-reveal]'));
@@ -113,9 +121,38 @@
     }
 
     var observer = null;
+    var frame = 0;
 
     function viewportHeight() {
       return window.innerHeight || root.clientHeight;
+    }
+
+    /* Появление завершено: снять переход, задержку каскада и свои слушатели. */
+    function settle(element) {
+      if (element.classList.contains('is-settled')) {
+        return;
+      }
+      element.classList.add('is-settled');
+      element.style.removeProperty('--reveal-index');
+      if (!element.getAttribute('style')) {
+        element.removeAttribute('style');
+      }
+    }
+
+    function settleLater(element) {
+      var timer = 0;
+      function done(event) {
+        if (event && event.target !== element) {
+          return; /* переход вложенного элемента */
+        }
+        clearTimeout(timer);
+        element.removeEventListener('transitionend', done);
+        element.removeEventListener('transitioncancel', done);
+        settle(element);
+      }
+      element.addEventListener('transitionend', done);
+      element.addEventListener('transitioncancel', done);
+      timer = setTimeout(done, REVEAL_SETTLE_MS);
     }
 
     /* order — место в группе появившихся одновременно; instant — без перехода. */
@@ -129,9 +166,12 @@
         observer.unobserve(element);
       }
       if (instant) {
-        element.classList.add('is-instant');
-      } else if (order > 0) {
-        element.style.setProperty('--reveal-index', String(Math.min(order, REVEAL_STAGGER_MAX)));
+        settle(element);
+      } else {
+        if (order > 0) {
+          element.style.setProperty('--reveal-index', String(Math.min(order, REVEAL_STAGGER_MAX)));
+        }
+        settleLater(element);
       }
       element.classList.add('is-revealed');
       if (!pending.length) {
@@ -144,8 +184,14 @@
         observer.disconnect();
         observer = null;
       }
+      if (frame && typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(frame);
+      }
+      frame = 0;
       doc.removeEventListener('focusin', onFocusIn);
-      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('scroll', onViewportChange);
+      window.removeEventListener('resize', onViewportChange);
+      window.removeEventListener('orientationchange', onViewportChange);
       doc.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pageshow', sweep);
     }
@@ -163,16 +209,16 @@
           handler(argument);
         } catch (error) {
           fail();
-          console.warn('app: module "reveal" failed (' +
-            (error && error.name ? error.name : 'Error') + ')');
+          report('reveal', error);
         }
       };
     }
 
     /* Показывает всё, что уже на экране или выше него (быстрая прокрутка,
-       переход к концу страницы, возврат из фоновой вкладки). */
-    var sweep = guarded(function () {
-      var limit = viewportHeight();
+       переход к концу страницы, возврат из фоновой вкладки). inset — доля
+       высоты экрана снизу, в которую блок ещё должен войти; без неё — 0. */
+    function sweepWithin(inset) {
+      var limit = viewportHeight() * (1 - inset);
       var order = 0;
       pending.slice().forEach(function (element) {
         var rect = element.getBoundingClientRect();
@@ -183,6 +229,10 @@
           order += 1;
         }
       });
+    }
+
+    var sweep = guarded(function () {
+      sweepWithin(0);
     });
 
     /* Фокус с клавиатуры внутри ещё скрытого блока — показать немедленно. */
@@ -196,12 +246,26 @@
       }
     });
 
-    /* У самого конца страницы блок может не дойти до границы срабатывания. */
-    var onScroll = guarded(function () {
-      if (window.innerHeight + window.pageYOffset >= root.scrollHeight - 2) {
-        sweep();
-      }
+    /* Прокрутка, смена размера или ориентации: проверка не зависит от того,
+       пришёл ли колбэк наблюдателя, и идёт не чаще кадра. Граница та же, что у
+       наблюдателя; у самого конца страницы блок может до неё не дойти — там
+       она снимается. */
+    var onFrame = guarded(function () {
+      frame = 0;
+      var atEnd = viewportHeight() + window.pageYOffset >= root.scrollHeight - 2;
+      sweepWithin(atEnd ? 0 : REVEAL_INSET);
     });
+
+    function onViewportChange() {
+      if (frame) {
+        return;
+      }
+      if (typeof window.requestAnimationFrame === 'function') {
+        frame = window.requestAnimationFrame(onFrame);
+      } else {
+        onFrame();
+      }
+    }
 
     var onVisibilityChange = guarded(function () {
       if (!doc.hidden) {
@@ -247,7 +311,9 @@
         observer.observe(element);
       });
       doc.addEventListener('focusin', onFocusIn);
-      window.addEventListener('scroll', onScroll, { passive: true });
+      window.addEventListener('scroll', onViewportChange, { passive: true });
+      window.addEventListener('resize', onViewportChange);
+      window.addEventListener('orientationchange', onViewportChange);
       doc.addEventListener('visibilitychange', onVisibilityChange);
       window.addEventListener('pageshow', sweep);
 
@@ -333,15 +399,21 @@
       }
     }
 
-    function tick() {
+    /* Таймер больше не нужен: остаётся текстовая дата. */
+    function finish() {
+      stop();
+      over = true;
+      container.hidden = true;
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pageshow', tick);
+    }
+
+    function update() {
       stop();
       var left = target - Date.now();
       if (left <= 0) {
-        /* Событие наступило: остаётся текстовая дата, нули не показываются. */
-        over = true;
-        container.hidden = true;
-        document.removeEventListener('visibilitychange', onVisibilityChange);
-        window.removeEventListener('pageshow', tick);
+        /* Событие наступило: нули не показываются. */
+        finish();
         return;
       }
 
@@ -360,6 +432,17 @@
          ошибка не накапливается. В фоновой вкладке цепочка не крутится. */
       if (!document.hidden) {
         timer = setTimeout(tick, (left % 1000) || 1000);
+      }
+    }
+
+    /* Вызывается и из таймера, и из событий — вне try/catch реестра: при
+       любой ошибке отсчёт останавливается, контейнер скрывается. */
+    function tick() {
+      try {
+        update();
+      } catch (error) {
+        finish();
+        report('countdown', error);
       }
     }
 
@@ -383,6 +466,412 @@
     Array.prototype.forEach.call(doc.querySelectorAll('[data-countdown]'), function (container) {
       startCountdown(container);
     });
+  });
+
+
+  /* ==========================================================================
+     Модуль gallery — лайтбокс для ссылок a[data-lightbox]
+     --------------------------------------------------------------------------
+     Ссылка ведёт на файл изображения и без скрипта открывает его как обычно.
+     Ссылки внутри одного [data-gallery] листаются как группа; ссылка вне
+     [data-gallery] — одиночное изображение без стрелок и счётчика.
+
+     Окно — нативный <dialog>, открытый через showModal(): верхний слой,
+     фокус внутри окна и закрытие по Esc (и кнопкой «Назад» на Android) даёт
+     браузер; история не меняется. Нет showModal — модуль не включается.
+     Окно создаётся при первом открытии; при любой ошибке модуль отключается,
+     а переход по ссылке не отменяется.
+     ========================================================================== */
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  var LIGHTBOX_ICONS = {
+    close: 'M6 6 18 18M18 6 6 18',
+    prev: 'M15 5 8 12 15 19',
+    next: 'M9 5 16 12 9 19'
+  };
+  var LIGHTBOX_TEXT = {
+    gallery: 'Просмотр фотографий',
+    single: 'Просмотр изображения',
+    close: 'Закрыть',
+    prev: 'Предыдущая фотография',
+    next: 'Следующая фотография',
+    loading: 'Загрузка…',
+    error: 'Не удалось загрузить изображение.'
+  };
+  var SWIPE_MIN = 48;         /* px по горизонтали, чтобы жест стал листанием */
+  var SWIPE_RATIO = 1.5;      /* горизонталь должна преобладать над вертикалью */
+  var SWIPE_CLICK_MS = 400;   /* клик сразу после жеста окно не закрывает */
+  var LOADING_NOTE_MS = 300;  /* «Загрузка…» — только если файл не из кэша */
+  var ZOOMED_SCALE = 1.01;    /* страница увеличена щипком */
+
+  function createElement(tag, className) {
+    var node = document.createElement(tag);
+    if (className) {
+      node.className = className;
+    }
+    return node;
+  }
+
+  function createIconButton(kind) {
+    var button = createElement('button', 'lightbox__button lightbox__button--' + kind);
+    button.type = 'button';
+    button.setAttribute('aria-label', LIGHTBOX_TEXT[kind]);
+    var icon = document.createElementNS(SVG_NS, 'svg');
+    icon.setAttribute('class', 'lightbox__icon');
+    icon.setAttribute('viewBox', '0 0 24 24');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.setAttribute('focusable', 'false');
+    var path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', LIGHTBOX_ICONS[kind]);
+    icon.appendChild(path);
+    button.appendChild(icon);
+    return button;
+  }
+
+  /* Лента галереи: ссылка, получившая фокус, показывается целиком. Частично
+     видимый элемент браузер сам не доводит; двигается только лента. */
+  function revealInRibbon(event) {
+    var link = event.target;
+    var ribbon = link && typeof link.closest === 'function' &&
+      link.hasAttribute('data-lightbox') ? link.closest('[data-gallery]') : null;
+    if (!ribbon) {
+      return;
+    }
+    var frame = ribbon.getBoundingClientRect();
+    var box = (link.parentElement || link).getBoundingClientRect();
+    if (box.left < frame.left) {
+      ribbon.scrollLeft -= frame.left - box.left;
+    } else if (box.right > frame.right) {
+      ribbon.scrollLeft += box.right - frame.right;
+    }
+  }
+
+  register('gallery', function (doc) {
+    if (!doc.querySelector('a[data-lightbox]')) {
+      return;
+    }
+    doc.addEventListener('focusin', revealInRibbon);
+
+    var Dialog = window.HTMLDialogElement;
+    if (typeof Dialog !== 'function' || typeof Dialog.prototype.showModal !== 'function') {
+      return; /* ссылки остаются обычными ссылками на файлы */
+    }
+
+    var ui = null;      /* элементы окна; создаются при первом открытии */
+    var items = [];     /* [{ href, alt }] открытой группы */
+    var index = 0;
+    var opener = null;  /* ссылка, которой вернётся фокус */
+    var loadingTimer = 0;
+    var preloaded = [];
+    var touches = 0;
+    var swipe = null;   /* { id, x, y } — начало жеста одним пальцем */
+    var swipedAt = 0;
+
+    function lockScroll(on) {
+      if (on) {
+        /* Место исчезнувшей полосы прокрутки занимает отступ: страница под
+           окном не сдвигается. */
+        var gap = window.innerWidth - root.clientWidth;
+        if (gap > 0) {
+          root.style.setProperty('--lightbox-scroll-gap', gap + 'px');
+        }
+        root.classList.add('is-lightbox-open');
+      } else {
+        root.classList.remove('is-lightbox-open');
+        root.style.removeProperty('--lightbox-scroll-gap');
+        if (!root.getAttribute('style')) {
+          root.removeAttribute('style');
+        }
+      }
+    }
+
+    function fail(error) {
+      doc.removeEventListener('click', onLinkClick);
+      try {
+        if (ui && ui.dialog.open) {
+          ui.dialog.close();
+        }
+      } catch (ignored) { /* окно уже недоступно */ }
+      lockScroll(false);
+      report('gallery', error);
+    }
+
+    function guarded(handler) {
+      return function (event) {
+        try {
+          handler(event);
+        } catch (error) {
+          fail(error);
+        }
+      };
+    }
+
+    function setDisabled(button, disabled) {
+      if (disabled) {
+        button.setAttribute('aria-disabled', 'true');
+      } else {
+        button.removeAttribute('aria-disabled');
+      }
+    }
+
+    function preload(at) {
+      if (at < 0 || at >= items.length || preloaded.indexOf(items[at].href) !== -1) {
+        return;
+      }
+      preloaded.push(items[at].href);
+      var image = new window.Image();
+      image.decoding = 'async';
+      image.src = items[at].href;
+    }
+
+    function show(at) {
+      index = Math.max(0, Math.min(at, items.length - 1));
+      var item = items[index];
+      clearTimeout(loadingTimer);
+      ui.dialog.classList.remove('is-error');
+      ui.dialog.classList.add('is-loading');
+      setText(ui.status, '');
+      ui.image.alt = item.alt;
+      ui.image.setAttribute('src', item.href);
+      setText(ui.count, (index + 1) + ' / ' + items.length);
+      setText(ui.live, 'Фотография ' + (index + 1) + ' из ' + items.length);
+      setDisabled(ui.prev, index === 0);
+      setDisabled(ui.next, index === items.length - 1);
+      if (ui.image.complete && ui.image.naturalWidth > 0) {
+        onImageLoad();
+      } else {
+        loadingTimer = setTimeout(function () {
+          if (ui.dialog.classList.contains('is-loading')) {
+            setText(ui.status, LIGHTBOX_TEXT.loading);
+          }
+        }, LOADING_NOTE_MS);
+      }
+    }
+
+    function step(delta) {
+      var at = index + delta;
+      if (items.length > 1 && at >= 0 && at < items.length) {
+        show(at);
+      }
+    }
+
+    function onImageLoad() {
+      clearTimeout(loadingTimer);
+      ui.dialog.classList.remove('is-loading');
+      setText(ui.status, '');
+      preload(index + 1);
+      preload(index - 1);
+    }
+
+    function onImageError() {
+      clearTimeout(loadingTimer);
+      ui.dialog.classList.remove('is-loading');
+      ui.dialog.classList.add('is-error');
+      setText(ui.status, LIGHTBOX_TEXT.error);
+    }
+
+    function isZoomed() {
+      return !!window.visualViewport && window.visualViewport.scale > ZOOMED_SCALE;
+    }
+
+    /* Пока страница увеличена щипком, жесты принадлежат браузеру: иначе
+       увеличенное изображение нельзя было бы сдвинуть. */
+    var onZoom = guarded(function () {
+      ui.dialog.classList.toggle('is-zoomed', isZoomed());
+    });
+
+    function onKeyDown(event) {
+      if (event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+      var key = event.key;
+      if (key === 'Tab') {
+        /* Круг по кнопкам окна — и там, где браузер выпускает фокус в свою
+           панель. */
+        var stops = [ui.close, ui.prev, ui.next].filter(function (button) {
+          return !button.hidden;
+        });
+        var at = stops.indexOf(doc.activeElement);
+        var last = stops.length - 1;
+        if (at === -1 || (event.shiftKey ? at === 0 : at === last)) {
+          event.preventDefault();
+          stops[event.shiftKey ? last : 0].focus();
+        }
+        return;
+      }
+      if (event.shiftKey || items.length < 2) {
+        return;
+      }
+      if (key === 'ArrowLeft' || key === 'ArrowRight') {
+        step(key === 'ArrowLeft' ? -1 : 1);
+      } else if (key === 'Home' || key === 'End') {
+        show(key === 'Home' ? 0 : items.length - 1);
+      } else {
+        return;
+      }
+      event.preventDefault();
+    }
+
+    function onPointerDown(event) {
+      if (event.pointerType === 'mouse') {
+        return;
+      }
+      touches += 1;
+      swipe = touches === 1 ?
+        { id: event.pointerId, x: event.clientX, y: event.clientY } : null;
+    }
+
+    function onPointerEnd(event) {
+      if (event.pointerType === 'mouse') {
+        return;
+      }
+      touches = Math.max(0, touches - 1);
+      var from = swipe;
+      if (!from || from.id !== event.pointerId) {
+        return;
+      }
+      swipe = null;
+      var dx = event.clientX - from.x;
+      var dy = event.clientY - from.y;
+      /* Вертикальный жест и жест на увеличенной странице — не листание. */
+      if (event.type !== 'pointerup' || isZoomed() ||
+          Math.abs(dx) < SWIPE_MIN || Math.abs(dx) < Math.abs(dy) * SWIPE_RATIO) {
+        return;
+      }
+      swipedAt = Date.now();
+      step(dx < 0 ? 1 : -1);
+    }
+
+    /* Клик мимо изображения и кнопок — по подложке. */
+    function onDialogClick(event) {
+      var target = event.target;
+      if (Date.now() - swipedAt > SWIPE_CLICK_MS &&
+          (target === ui.dialog || target === ui.bar || target === ui.stage)) {
+        ui.dialog.close();
+      }
+    }
+
+    function onClose() {
+      clearTimeout(loadingTimer);
+      lockScroll(false);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', onZoom);
+      }
+      ui.dialog.classList.remove('is-zoomed');
+      var link = opener;
+      opener = null;
+      if (link && typeof link.focus === 'function') {
+        link.focus({ preventScroll: true });
+      }
+    }
+
+    function build() {
+      var dialog = createElement('dialog', 'lightbox on-overlay');
+      var bar = createElement('div', 'lightbox__bar');
+      var counter = createElement('p', 'lightbox__counter');
+      var count = createElement('span');
+      var live = createElement('span', 'visually-hidden');
+      var close = createIconButton('close');
+      var stage = createElement('div', 'lightbox__stage');
+      var image = createElement('img', 'lightbox__image');
+      var status = createElement('p', 'lightbox__status');
+      var prev = createIconButton('prev');
+      var next = createIconButton('next');
+
+      count.setAttribute('aria-hidden', 'true');
+      live.setAttribute('aria-live', 'polite');
+      status.setAttribute('role', 'status');
+      image.alt = '';
+      image.decoding = 'async';
+      image.draggable = false;
+
+      counter.appendChild(count);
+      counter.appendChild(live);
+      bar.appendChild(counter);
+      bar.appendChild(close);
+      stage.appendChild(image);
+      stage.appendChild(status);
+      stage.appendChild(prev);
+      stage.appendChild(next);
+      dialog.appendChild(bar);
+      dialog.appendChild(stage);
+
+      image.addEventListener('load', guarded(onImageLoad));
+      image.addEventListener('error', guarded(onImageError));
+      close.addEventListener('click', guarded(function () {
+        dialog.close();
+      }));
+      prev.addEventListener('click', guarded(function () {
+        step(-1);
+      }));
+      next.addEventListener('click', guarded(function () {
+        step(1);
+      }));
+      dialog.addEventListener('click', guarded(onDialogClick));
+      dialog.addEventListener('keydown', guarded(onKeyDown));
+      dialog.addEventListener('pointerdown', guarded(onPointerDown));
+      dialog.addEventListener('pointerup', guarded(onPointerEnd));
+      dialog.addEventListener('pointercancel', guarded(onPointerEnd));
+      dialog.addEventListener('close', guarded(onClose));
+
+      doc.body.appendChild(dialog);
+      return {
+        dialog: dialog, bar: bar, counter: counter, count: count, live: live,
+        close: close, stage: stage, image: image, status: status, prev: prev, next: next
+      };
+    }
+
+    function open(link) {
+      var scope = link.closest('[data-gallery]');
+      var links = scope ?
+        Array.prototype.slice.call(scope.querySelectorAll('a[data-lightbox]')) : [link];
+      if (!ui) {
+        ui = build();
+      }
+      items = links.map(function (node) {
+        var thumb = node.getElementsByTagName('img')[0];
+        return { href: node.getAttribute('href'), alt: thumb ? thumb.alt : '' };
+      });
+      preloaded = [];
+      touches = 0;
+      swipe = null;
+      opener = link;
+
+      var single = items.length < 2;
+      ui.counter.hidden = single;
+      ui.prev.hidden = single;
+      ui.next.hidden = single;
+      ui.dialog.setAttribute('aria-label', LIGHTBOX_TEXT[single ? 'single' : 'gallery']);
+
+      lockScroll(true);
+      ui.dialog.showModal();
+      /* Счётчик меняется уже в открытом окне — экранный диктор его объявит. */
+      show(links.indexOf(link));
+      ui.close.focus();
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', onZoom);
+      }
+    }
+
+    function onLinkClick(event) {
+      if (event.defaultPrevented || event.button !== 0 || event.altKey ||
+          event.ctrlKey || event.metaKey || event.shiftKey ||
+          !event.target || typeof event.target.closest !== 'function') {
+        return; /* открытие в новой вкладке и т.п. — как у обычной ссылки */
+      }
+      var link = event.target.closest('a[data-lightbox]');
+      if (!link || !link.getAttribute('href') || (ui && ui.dialog.open)) {
+        return;
+      }
+      try {
+        open(link);
+        event.preventDefault();
+      } catch (error) {
+        fail(error); /* переход по ссылке не отменён: файл откроется как обычно */
+      }
+    }
+
+    doc.addEventListener('click', onLinkClick);
   });
 
 
