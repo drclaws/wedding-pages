@@ -144,6 +144,34 @@ class InvitationValidationTests(TempDirTestCase):
         errors = self.errors(invitations)
         self.assertTrue(any("must be a boolean" in error for error in errors), errors)
 
+    def test_greeting_must_be_a_single_line(self):
+        invitations = invitations_data()
+        invitations[0]["greeting"] = "Дорогая\n\nЕва!"
+        invitations[0]["note"] = "first\n\nsecond"  # notes may have paragraphs
+        errors = self.errors(invitations)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("invitation #1 (EveT…): field 'greeting' must be a single line", errors[0])
+
+    def test_out_of_town_section_without_text_is_a_warning(self):
+        report = build.Report()
+        site = site_data(outOfTownText="  ")
+        build.warn_empty_out_of_town(site, invitations_data(), report)
+        self.assertEqual(report.warnings, [])  # the only such guest has a travel note
+        invitations = invitations_data()
+        invitations[2]["travelNote"] = ""
+        invitations[1]["outOfTown"] = True
+        build.warn_empty_out_of_town(site, invitations, report)
+        self.assertEqual(len(report.warnings), 2)
+        self.assertIn("invitation #2 (Karl…): 'outOfTown' is true", report.warnings[0])
+        self.assertIn("invitation #3 (Gosh…)", report.warnings[1])
+        self.assertEqual(report.errors, [])
+        for secret in support.PRIVATE_STRINGS:
+            self.assertNotIn(secret, " ".join(report.warnings))
+        # with a shared text the section is never empty
+        report = build.Report()
+        build.warn_empty_out_of_town(site_data(), invitations, report)
+        self.assertEqual(report.warnings, [])
+
     def test_optional_notes(self):
         invitations = invitations_data(1)
         invitations[0]["note"] = None
@@ -253,6 +281,76 @@ class SiteValidationTests(TempDirTestCase):
                 self.assertTrue(
                     any("venue.photos[0]" in error for error in errors), errors
                 )
+
+    def test_media_file_types(self):
+        self.assertIsNone(build.check_media_name("photo.JPG"))
+        self.assertIsNone(build.check_media_name("scheme.svg", build.IMAGE_EXTENSIONS))
+        self.assertIn("unsupported file type", build.check_media_name("photo.heic"))
+        self.assertIn("unsupported file type", build.check_media_name("no-extension"))
+        self.assertIn(
+            "unsupported file type", build.check_media_name("clip.mp4", build.IMAGE_EXTENSIONS)
+        )
+        self.assertIn("reserved", build.check_media_name("EVENT.ics"))
+        # a video where an image is expected, and the other way round
+        errors = self.errors(site_data(video={"file": "poster.jpg", "poster": "clip.mp4"}))
+        self.assertTrue(any("'video.file' has an unsupported" in e for e in errors), errors)
+        self.assertTrue(any("'video.poster' has an unsupported" in e for e in errors), errors)
+        # everything the data may refer to can be published
+        self.assertLessEqual(
+            build.IMAGE_EXTENSIONS | build.VIDEO_EXTENSIONS, build.ASSET_EXTENSIONS
+        )
+
+    def test_media_dir_must_not_shadow_an_asset(self):
+        assets = self.tmp / "assets"
+        (assets / "Fonts-And-Vendor-Files").mkdir(parents=True)
+        report = build.Report()
+        build.check_media_dir_collision(
+            site_data(mediaDir="fonts-and-vendor-files"), assets, report
+        )
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("'mediaDir' collides with 'Fonts-And-Vendor-Files'", report.errors[0])
+        report = build.Report()
+        build.check_media_dir_collision(site_data(), assets, report)
+        build.check_media_dir_collision(site_data(), self.tmp / "no-assets", report)
+        self.assertEqual(report.errors, [])
+
+    def test_single_line_fields(self):
+        for key in ("coupleNames", "dateText", "rsvpDeadline"):
+            errors = self.errors(site_data(**{key: "first\n\nsecond"}))
+            self.assertTrue(
+                any(f"'{key}' must be a single line" in e for e in errors), (key, errors)
+            )
+        site = site_data()
+        site["venue"]["name"] = "first\nsecond"
+        site["venue"]["address"] = "first\r\nsecond"
+        site["schedule"][0]["time"] = "16:00\n"
+        site["schedule"][1]["title"] = "first\nsecond"
+        errors = self.errors(site)
+        for name in ("venue.name", "venue.address", "schedule[0].time", "schedule[1].title"):
+            self.assertTrue(any(f"'{name}' must be a single line" in e for e in errors), (name, errors))
+        self.assertFalse(any("second" in e for e in errors), errors)
+
+    def test_multi_line_fields(self):
+        site = site_data(outOfTownText="first\n\nsecond")
+        site["venue"]["description"] = "first\n\nsecond"
+        site["schedule"][0]["text"] = "first\nsecond"
+        self.assertEqual(self.errors(site), [])
+
+    def test_map_identifiers(self):
+        site = site_data()
+        site["venue"]["maps"] = {"googlePlaceId": " ChIJ_example-ID123 ", "yandexOrgId": "1234567890"}
+        self.assertEqual(self.errors(site), [])
+        site["venue"]["maps"] = {"googlePlaceId": None, "yandexOrgId": ""}
+        self.assertEqual(self.errors(site), [])
+        site["venue"]["maps"] = {
+            "googlePlaceId": "https://maps.example.invalid/?q=place",
+            "yandexOrgId": "org/1234567890",
+        }
+        errors = self.errors(site)
+        self.assertEqual(len(errors), 2, errors)
+        self.assertIn("field 'venue.maps.googlePlaceId' may only contain", errors[0])
+        self.assertIn("field 'venue.maps.yandexOrgId' may only contain digits", errors[1])
+        self.assertNotIn("1234567890", " ".join(errors))
 
     def test_media_case_sensitivity(self):
         site = site_data()
@@ -431,14 +529,19 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(context["travelNote"], "")
         self.assertEqual(build.render("<!-- if:note -->{{note}}<!-- endif -->", context), "")
 
-    def test_video_is_none_when_absent(self):
-        site = site_data()
-        del site["video"]
-        context = build.build_context(site, invitations_data(1)[0])
-        self.assertIsNone(context["video"])
-        self.assertEqual(
-            build.render("<!-- if:video.file -->x<!-- endif -->", context), ""
-        )
+    def test_video_is_an_empty_object_when_absent(self):
+        absent = site_data()
+        del absent["video"]
+        for site in (absent, site_data(video=None)):
+            context = build.build_context(site, invitations_data(1)[0])
+            self.assertEqual(
+                context["video"], {"file": "", "poster": "", "src": "", "posterSrc": ""}
+            )
+            self.assertEqual(
+                build.render("<!-- if:video.file -->x<!-- endif -->", context), ""
+            )
+            # the fields resolve even outside of a condition
+            self.assertEqual(build.render("[{{video.src}}]", context), "[]")
 
     def test_venue_is_fully_normalised(self):
         site = site_data()

@@ -7,7 +7,10 @@ media files inside the working tree.  All data below is obviously fictional.
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import hashlib
+import io
 import json
 import os
 import shutil
@@ -16,6 +19,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -32,6 +37,10 @@ COUPLE_NAMES = "Алиса и Боб"
 DATE_TEXT = "1 июня 2030 года"
 RSVP_DEADLINE = "1 мая 2030 года"
 OUT_OF_TOWN_TEXT = "Из Энска ходит автобус.\n\nПодскажем, где остановиться."
+
+VENUE_NAME = "Усадьба в Энске"
+VENUE_ADDRESS = "Энск, Вымышленная улица, 1"
+MEDIA_DIR = "m3d1a-f1xtur3-dir"
 
 GREETING_TY = "Дорогая Ева!"
 GREETING_VY = "Дорогие Карл и Клара!"
@@ -55,6 +64,8 @@ PRIVATE_STRINGS = (
     TRAVEL_NOTE,
     OUT_OF_TOWN_TEXT.splitlines()[0],
     DATE_TEXT,
+    VENUE_NAME,
+    VENUE_ADDRESS,
     TOKEN_A,
     TOKEN_B,
     TOKEN_C,
@@ -65,7 +76,7 @@ SITE: dict = {
     "dateISO": "2030-06-01T16:00:00+03:00",
     "dateText": DATE_TEXT,
     "rsvpDeadline": RSVP_DEADLINE,
-    "mediaDir": "m3d1a-f1xtur3-dir",
+    "mediaDir": MEDIA_DIR,
     "outOfTownText": OUT_OF_TOWN_TEXT,
     "video": {"file": "clip.mp4", "poster": "poster.jpg"},
     "schedule": [
@@ -74,9 +85,9 @@ SITE: dict = {
     ],
     "venue": {
         "ready": True,
-        "name": "Усадьба в Энске",
+        "name": VENUE_NAME,
         "description": "Описание площадки.",
-        "address": "Энск, Вымышленная улица, 1",
+        "address": VENUE_ADDRESS,
         "photos": ["venue-1.webp", "venue-2.webp"],
         "directionsImage": "route.png",
         "geo": {"lat": 10.5, "lng": 20.25},
@@ -115,10 +126,18 @@ INVITATIONS: list = [
     },
 ]
 
-#: Fixture template: exercises values, conditions and loops, nothing else.
+#: Fixture template: uses every field of the template contract (values,
+#: conditions, loops and all the computed fields) and passes the output checks.
 TEMPLATE = """<!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><title>Приглашение</title></head>
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>Приглашение</title>
+<!-- a note for whoever edits the template: never published -->
+<link rel="stylesheet" href="/assets/app.css">
+<script src="/assets/vendor/lib.js" defer></script>
+</head>
 <body>
 <h1>{{coupleNames}}</h1>
 <p class="greeting">{{greeting}}</p>
@@ -130,7 +149,8 @@ TEMPLATE = """<!doctype html>
 <p>{{outOfTownText}}</p>
 <!-- if:travelNote --><p>{{travelNote}}</p><!-- endif -->
 <!-- endif -->
-<p>{{dateText}} / {{dateISO}} / {{rsvpDeadline}}</p>
+<p data-countdown="{{dateISO}}">{{dateText}} / {{rsvpDeadline}}</p>
+<p><a href="{{icsPath}}" download>Добавить в календарь</a></p>
 <ul>
 <!-- each:schedule -->
 <li>{{.time}} {{.title}}<!-- if:.text --> - {{.text}}<!-- endif --></li>
@@ -138,13 +158,37 @@ TEMPLATE = """<!doctype html>
 </ul>
 <!-- if:venue.ready -->
 <h2>{{venue.name}}</h2>
+<p>{{venue.description}}</p>
 <p>{{venue.address}}</p>
-<!-- each:venue.photos --><img src="/assets/{{mediaDir}}/{{.}}" alt=""><!-- endeach -->
+<div data-media="{{mediaPath}}">
+<!-- each:venue.photos --><img src="{{.src}}" alt="" loading="lazy"><!-- endeach -->
+</div>
+<!-- if:venue.directionsSrc --><img src="{{venue.directionsSrc}}" alt="Схема проезда"><!-- endif -->
+<!-- if:venue.hasMapLinks --><p>На карте:</p><!-- endif -->
+<!-- if:venue.mapLinks.google --><a href="{{venue.mapLinks.google}}" target="_blank" rel="noopener noreferrer">Google</a><!-- endif -->
+<!-- if:venue.mapLinks.yandex --><a href="{{venue.mapLinks.yandex}}" target="_blank" rel="noopener noreferrer">Яндекс</a><!-- endif -->
+<!-- if:venue.mapLinks.apple --><a href="{{venue.mapLinks.apple}}" target="_blank" rel="noopener noreferrer">Apple</a><!-- endif -->
 <!-- endif -->
 <!-- if:!venue.ready --><p>Подробности сообщим позже</p><!-- endif -->
 <!-- if:video.file -->
-<video src="/assets/{{mediaDir}}/{{video.file}}" poster="/assets/{{mediaDir}}/{{video.poster}}"></video>
+<video src="{{video.src}}" poster="{{video.posterSrc}}" controls playsinline preload="none"></video>
 <!-- endif -->
+</body>
+</html>
+"""
+
+#: Fixture stub: neutral, the same for every wrong address.
+STUB = """<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>Страница не найдена</title>
+<!-- a note for whoever edits the stub: never published -->
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<p>Такой страницы нет.</p>
 </body>
 </html>
 """
@@ -206,12 +250,15 @@ def write_assets(directory: Path) -> Path:
     return directory
 
 
-def make_code_dir(parent: Path, template: str = TEMPLATE, assets: bool = True) -> Path:
-    """A throwaway copy of `build.py` with its own template and assets."""
+def make_code_dir(
+    parent: Path, template: str = TEMPLATE, assets: bool = True, stub: str = STUB
+) -> Path:
+    """A throwaway copy of `build.py` with its own template, stub and assets."""
     code_dir = Path(parent) / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "build.py", code_dir / "build.py")
     (code_dir / "template.html").write_text(template, encoding="utf-8")
+    (code_dir / "stub.html").write_text(stub, encoding="utf-8")
     if assets:
         write_assets(code_dir / "assets")
     return code_dir
@@ -220,8 +267,11 @@ def make_code_dir(parent: Path, template: str = TEMPLATE, assets: bool = True) -
 def run_cli(code_dir: Path, *args: str, cwd: Path, env: dict | None = None):
     """Run `python build.py …` from the throwaway code directory."""
     environ = dict(os.environ)
-    environ.pop("BUILD_DEBUG", None)
+    # the tests must behave the same on a developer machine and in CI
+    for name in ("BUILD_DEBUG", "CI", "GITHUB_ACTIONS"):
+        environ.pop(name, None)
     environ["PYTHONIOENCODING"] = "utf-8"
+    environ["PYTHONDONTWRITEBYTECODE"] = "1"
     if env:
         environ.update(env)
     return subprocess.run(
@@ -248,3 +298,102 @@ class TempDirTestCase(unittest.TestCase):
             for secret in PRIVATE_STRINGS:
                 self.assertNotIn(secret, output, f"{secret!r} leaked into the output")
             self.assertNotIn("Traceback", output)
+
+
+def run_main(code_dir: Path, *args: str, env: dict | None = None):
+    """Run `build.main()` in-process as if `build.py` lived in `code_dir`.
+
+    Much faster than a subprocess and lets a test patch module constants.
+    Returns an object with `returncode`, `stdout` and `stderr`.
+    """
+    environ = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in ("BUILD_DEBUG", "CI", "GITHUB_ACTIONS")
+    }
+    environ.update(env or {})
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with mock.patch.object(build, "CODE_DIR", Path(code_dir)), mock.patch.dict(
+        os.environ, environ, clear=True
+    ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        try:
+            code = build.main([str(arg) for arg in args])
+        except SystemExit as exc:  # argparse: usage errors
+            code = exc.code if isinstance(exc.code, int) else 2
+    return SimpleNamespace(
+        returncode=code, stdout=stdout.getvalue(), stderr=stderr.getvalue()
+    )
+
+
+def tree_files(root: Path) -> list[str]:
+    """Every file below `root` as a sorted list of relative '/' paths.
+
+    Directories are listed as well (with a trailing '/') when they are empty,
+    so that a snapshot also proves that no empty directory was created.
+    """
+    root = Path(root)
+    found = []
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        if path.is_dir() and not path.is_symlink():
+            if not any(path.iterdir()):
+                found.append(relative + "/")
+        else:
+            found.append(relative)
+    return sorted(found)
+
+
+def tree_digest(root: Path) -> dict[str, str]:
+    """Relative path -> SHA-256 of the content, for every file below `root`."""
+    root = Path(root)
+    return {
+        name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+        for name in tree_files(root)
+        if not name.endswith("/")
+    }
+
+
+class CliTestCase(TempDirTestCase):
+    """Fixture: code directory, data directory and placeholder media."""
+
+    template = TEMPLATE
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.work = self.tmp / "work"
+        self.work.mkdir()
+        self.code = make_code_dir(self.tmp, template=self.template)
+        self.data = write_data(self.tmp / "data")
+        self.media = write_media(self.tmp / "media")
+        self.out = self.work / "dist"
+
+    def build_args(self, *extra: str) -> list[str]:
+        return [
+            "build",
+            "--data",
+            str(self.data),
+            "--media",
+            str(self.media),
+            "--out",
+            str(self.out),
+            *extra,
+        ]
+
+    def run_build(self, *extra: str, cwd: Path | None = None, env: dict | None = None):
+        return run_cli(self.code, *self.build_args(*extra), cwd=cwd or self.work, env=env)
+
+    def run_validate(self, *extra: str):
+        return run_cli(
+            self.code,
+            "validate",
+            "--data",
+            str(self.data),
+            "--media",
+            str(self.media),
+            *extra,
+            cwd=self.work,
+        )
+
+    def build_in_process(self, *extra: str, env: dict | None = None):
+        """The same build through `run_main` (no subprocess)."""
+        return run_main(self.code, *self.build_args(*extra), env=env)

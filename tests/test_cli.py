@@ -8,58 +8,15 @@ from pathlib import Path
 
 from tests import support
 from tests.support import (
-    TempDirTestCase,
+    CliTestCase,
     build,
     invitations_data,
-    make_code_dir,
     run_cli,
     site_data,
     write_data,
     write_json,
     write_media,
 )
-
-
-class CliTestCase(TempDirTestCase):
-    """Fixture: code directory, data directory and placeholder media."""
-
-    template = support.TEMPLATE
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.work = self.tmp / "work"
-        self.work.mkdir()
-        self.code = make_code_dir(self.tmp, template=self.template)
-        self.data = write_data(self.tmp / "data")
-        self.media = write_media(self.tmp / "media")
-        self.out = self.work / "dist"
-
-    def run_build(self, *extra: str, cwd: Path | None = None, env: dict | None = None):
-        return run_cli(
-            self.code,
-            "build",
-            "--data",
-            str(self.data),
-            "--media",
-            str(self.media),
-            "--out",
-            str(self.out),
-            *extra,
-            cwd=cwd or self.work,
-            env=env,
-        )
-
-    def run_validate(self, *extra: str):
-        return run_cli(
-            self.code,
-            "validate",
-            "--data",
-            str(self.data),
-            "--media",
-            str(self.media),
-            *extra,
-            cwd=self.work,
-        )
 
 
 class TokenCommandTests(CliTestCase):
@@ -136,6 +93,15 @@ class ValidateCommandTests(CliTestCase):
         self.assertIn("invitation #1 (ZZZZ…): 'token' is too long", result.stderr)
         self.assertNotIn("Z" * 10, result.stderr)
 
+    def test_empty_out_of_town_section_is_a_warning(self):
+        invitations = invitations_data()
+        invitations[2]["travelNote"] = None
+        write_data(self.data, site=site_data(outOfTownText=""), invitations=invitations)
+        result = self.run_validate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("warning: invitation #3 (Gosh…): 'outOfTown' is true", result.stderr)
+        self.assertNoPrivateData(result.stdout, result.stderr)
+
     def test_unknown_field_warning_goes_to_stderr(self):
         invitations = invitations_data()
         invitations[0]["surpriseField"] = "VALUE-MUST-NOT-LEAK"
@@ -195,7 +161,9 @@ class BuildCommandTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(stale_page.parent.exists())
         self.assertFalse((self.out / "assets" / "stale.css").exists())
-        self.assertFalse((self.out / "robots.txt").exists())
+        for name in ("index.html", "404.html", "_headers", "robots.txt"):
+            self.assertNotEqual((self.out / name).read_text(encoding="utf-8"), "old", name)
+        self.assertFalse((self.out / ".DS_Store").exists())
         self.assertTrue((self.out / "i" / support.TOKEN_A / "index.html").is_file())
 
     def test_empty_output_directory_is_replaced(self):
@@ -445,12 +413,6 @@ class ExitCodeTests(CliTestCase):
         for command in ("build", "validate", "token", "links"):
             self.assertIn(command, result.stdout)
 
-    def test_links_is_registered_but_not_implemented(self):
-        result = run_cli(self.code, "links", "--base", "https://example.invalid", cwd=self.work)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("not implemented yet", result.stderr)
-        self.assertEqual(result.stdout, "")
-
     def test_links_requires_base(self):
         self.assertEqual(run_cli(self.code, "links", cwd=self.work).returncode, 2)
 
@@ -477,6 +439,39 @@ class NoPersonalDataInLogsTests(CliTestCase):
         for result in cases:
             self.assertEqual(result.returncode, 1, result.stdout)
             self.assertNoPrivateData(result.stdout, result.stderr)
+
+    def test_successful_runs_stay_clean(self):
+        invitations = invitations_data()
+        invitations[0]["unknownField"] = support.NOTE  # a warning, not an error
+        write_data(self.data, invitations=invitations)
+        for result in (self.run_build(), self.run_validate()):
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("unknownField", result.stderr)
+            self.assertNoPrivateData(result.stdout, result.stderr)
+
+    def test_failed_output_checks_stay_clean(self):
+        # the broken links carry the venue name and guest data in their URLs
+        (self.code / "template.html").write_text(
+            support.TEMPLATE.replace(' rel="noopener noreferrer"', "").replace(
+                "</body>",
+                '<img src="https://cdn.example.invalid/{{greeting}}.png" alt="">\n'
+                '<img src="{{greeting}}.png" alt="">\n'
+                '<img src="/assets/{{note}}" alt="">\n'
+                '<img src="//{{greeting}}/x.png" alt="">\n'
+                '<a href="mailto:{{coupleNames}}@example.invalid">x</a>\n</body>',
+            ),
+            encoding="utf-8",
+        )
+        result = self.run_build()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("needs rel=", result.stderr)
+        self.assertIn("external URL 'https://cdn.example.invalid/…'", result.stderr)
+        self.assertIn("'mailto:…'", result.stderr)
+        self.assertIn("relative path '….png'", result.stderr)
+        self.assertNoPrivateData(result.stdout, result.stderr)
+        for fragment in ("%D0%", "Ева", "Алиса"):
+            self.assertNotIn(fragment, result.stderr)
+        self.assertFalse(self.out.exists())
 
 
 if __name__ == "__main__":  # pragma: no cover

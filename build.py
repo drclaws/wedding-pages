@@ -8,6 +8,12 @@
 
 Only the Python 3 standard library is used (Python >= 3.10).
 
+`build` writes the pages (`i/<token>/index.html`), the stub (`index.html` and
+`404.html`), `assets/` (including `assets/<mediaDir>/` with the referenced media
+and `event.ics`), `_headers` and `robots.txt`, and then checks the finished
+output: nothing but the expected files, no external resources, no inline
+scripts, every local link resolves, no file above the hosting size limit.
+
 Importing this module has no side effects: everything happens inside `main()`,
 so other tools (tests, preview scripts) can reuse the public helpers:
 
@@ -15,6 +21,8 @@ so other tools (tests, preview scripts) can reuse the public helpers:
     build_context(site, invitation)    -> dict
     render(template_source, context)   -> str
     parse_template(source).render(ctx) -> str
+    build_ics(site)                    -> bytes
+    check_output(out_dir, tokens)      -> OutputStats
 
 Exit codes: 0 - success, 1 - data/build error, 2 - bad command line.
 """
@@ -23,18 +31,24 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import hashlib
 import html
 import json
 import math
 import os
+import posixpath
 import re
 import secrets
 import shutil
+import stat
 import sys
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, NamedTuple, Sequence
+from urllib.parse import quote, unquote, urlsplit
 
 # --------------------------------------------------------------------------
 # Layout constants
@@ -45,9 +59,20 @@ from typing import Any, Callable, Iterable, Sequence
 CODE_DIR = Path(__file__).resolve().parent
 
 TEMPLATE_FILE = "template.html"
+STUB_FILE = "stub.html"
 ASSETS_DIRNAME = "assets"
 SITE_FILE = "site.json"
 INVITATIONS_FILE = "invitations.json"
+
+#: Output layout.
+PAGES_DIRNAME = "i"
+PAGE_FILE = "index.html"
+#: The stub is published under both names, byte for byte the same.
+STUB_OUTPUTS = ("index.html", "404.html")
+HEADERS_FILE = "_headers"
+ROBOTS_FILE = "robots.txt"
+#: Calendar file inside `assets/<mediaDir>/`: one for everybody, neutral name.
+ICS_FILE = "event.ics"
 
 #: Defaults relative to CODE_DIR.
 DEFAULT_DATA_DIR = Path("examples") / "data"
@@ -65,13 +90,61 @@ MIN_MEDIA_DIR_LENGTH = 16
 MAX_NAME_LENGTH = 200
 
 #: Everything a build may put at the top level of the output directory.  It is
-#: used to recognise a previous build before replacing `--out`, and is meant to
-#: be the allow-list for the contents of the finished output as well.
+#: used to recognise a previous build before replacing `--out`, and it is the
+#: allow-list that the finished output is checked against.
 OUTPUT_TOP_LEVEL = frozenset(
-    {"i", ASSETS_DIRNAME, "index.html", "404.html", "_headers", "robots.txt"}
+    {PAGES_DIRNAME, ASSETS_DIRNAME, *STUB_OUTPUTS, HEADERS_FILE, ROBOTS_FILE}
 )
+#: The entries of `OUTPUT_TOP_LEVEL` that are directories (the rest are files).
+OUTPUT_TOP_LEVEL_DIRS = frozenset({PAGES_DIRNAME, ASSETS_DIRNAME})
 #: Files created by the operating system; ignored when `--out` is inspected.
 OS_JUNK_FILES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
+
+#: Hosting limit for a single file.
+MAX_FILE_BYTES = 25 * 1024 * 1024
+#: Media files the data may refer to, by role.
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".avif", ".gif", ".svg"})
+VIDEO_EXTENSIONS = frozenset({".mp4", ".webm"})
+#: Everything that may live below `assets/` in the output (`.txt` is meant for
+#: the licences of vendored libraries).
+ASSET_EXTENSIONS = frozenset(
+    {".css", ".js", ".woff2", ".ico", ".ics", ".txt"} | IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+)
+#: Never published, wherever they turn up in the output.
+FORBIDDEN_OUTPUT_EXTENSIONS = frozenset({".json", ".map", ".py", ".md"})
+#: Asset files that belong to the style guide and are not part of the site.
+STYLEGUIDE_PREFIX = "styleguide."
+
+#: `_headers` (Cloudflare Pages syntax) and `robots.txt`, written verbatim.
+HEADERS_TEXT = """\
+/*
+  X-Robots-Tag: noindex, nofollow
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+/i/*
+  Cache-Control: private, no-cache
+"""
+ROBOTS_TEXT = "User-agent: *\nDisallow: /\n"
+
+#: Calendar entry: neutral on purpose (no names, nothing about the occasion).
+ICS_SUMMARY = "Приглашение"
+ICS_DEFAULT_DURATION = timedelta(hours=6)
+ICS_PRODID = "-//invitation//static site build//RU"
+ICS_UID_DOMAIN = "invitation"
+#: `DTSTAMP` is a constant so that equal inputs give a byte-identical output.
+ICS_DTSTAMP = "20000101T000000Z"
+ICS_LINE_OCTETS = 75
+
+#: The only external links a page may contain: map services, opened on click.
+#: (host, required path prefix); the scheme is always https.
+MAP_LINK_TARGETS = (
+    ("www.google.com", "/maps/"),
+    ("yandex.ru", "/maps/"),
+    ("maps.apple.com", "/"),
+)
+YANDEX_MAPS_ZOOM = 16
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -306,7 +379,11 @@ def render(template_source: str, context: dict, name: str = "template") -> str:
     return Template(template_source, name).render(context)
 
 
-def check_rendered(output: str, name: str = "template") -> None:
+def check_rendered(
+    output: str,
+    name: str = "template",
+    problem: str = "rendered output still contains template syntax",
+) -> None:
     """Fail if the rendered page still contains template syntax."""
     problems: list[str] = []
     newlines = [m.start() for m in re.finditer("\n", output)]
@@ -316,11 +393,7 @@ def check_rendered(output: str, name: str = "template") -> None:
         if len(problems) == 5:
             break
     if problems:
-        raise TemplateError(
-            "rendered output still contains template syntax: " + "; ".join(problems),
-            None,
-            name,
-        )
+        raise TemplateError(f"{problem}: " + "; ".join(problems), None, name)
 
 
 def _parse(source: str, name: str) -> list[Any]:
@@ -638,8 +711,27 @@ def parse_date_iso(value: str) -> datetime:
     return parsed
 
 
-def check_media_name(name: Any) -> str | None:
-    """Problem description for a media file reference, or None when it is fine."""
+def format_size(size: int) -> str:
+    """A byte count for the log: `512 B`, `1.5 KiB`, `25.0 MiB`."""
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KiB"
+    return f"{size / (1024 * 1024):.1f} MiB"
+
+
+def _extension_list(extensions: Iterable[str]) -> str:
+    return ", ".join(sorted(extensions))
+
+
+def check_media_name(
+    name: Any, extensions: Iterable[str] = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+) -> str | None:
+    """Problem description for a media file reference, or None when it is fine.
+
+    `extensions` are the file types accepted for the field (compared without
+    regard to letter case); only types that may be published are accepted.
+    """
     if not isinstance(name, str):
         return f"must be a string, got {json_type(name)}"
     if not name.strip():
@@ -654,7 +746,16 @@ def check_media_name(name: Any) -> str | None:
         return "must not start with a dot"
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
         return "contains control characters"
+    if name.lower() == ICS_FILE:
+        return f"must not be '{ICS_FILE}' (the name is reserved for the calendar file)"
+    if os.path.splitext(name)[1].lower() not in extensions:
+        return f"has an unsupported file type (allowed: {_extension_list(extensions)})"
     return None
+
+
+def _media_extensions(field: str) -> frozenset[str]:
+    """File types accepted for a media field (`video.file` is the only video)."""
+    return VIDEO_EXTENSIONS if field == "video.file" else IMAGE_EXTENSIONS
 
 
 def _quote_key(key: Any) -> str:
@@ -679,6 +780,7 @@ def _field(
     required: bool = True,
     nullable: bool = False,
     nonempty: bool = False,
+    single_line: bool = False,
 ) -> Any:
     """Type-checked field access; reports problems and returns MISSING on error."""
     description, matches = _KINDS[kind]
@@ -695,6 +797,11 @@ def _field(
         report.error(
             f"{where}: field '{name}' must be {description}{suffix}, got {json_type(value)}"
         )
+        return MISSING
+    if single_line and kind == "string" and ("\n" in value or "\r" in value):
+        # the template puts these fields into headings and similar elements,
+        # where the paragraphs made from line breaks would be invalid markup
+        report.error(f"{where}: field '{name}' must be a single line (no line breaks)")
         return MISSING
     if nonempty and kind == "string" and not value.strip():
         report.error(f"{where}: field '{name}' must not be empty")
@@ -749,7 +856,9 @@ def check_invitations(
                 else:
                     seen[key] = index
 
-        _field(invitation, "greeting", "string", label, report, nonempty=True)
+        _field(
+            invitation, "greeting", "string", label, report, nonempty=True, single_line=True
+        )
         flags = {
             key: _field(invitation, key, "boolean", label, report)
             for key in ("ty", "vy", "plusOne", "outOfTown")
@@ -776,7 +885,7 @@ def check_site(site: Any, report: Report, where: str = SITE_FILE) -> None:
         return
 
     for key in ("coupleNames", "dateText", "rsvpDeadline"):
-        _field(site, key, "string", where, report, nonempty=True)
+        _field(site, key, "string", where, report, nonempty=True, single_line=True)
     _field(site, "outOfTownText", "string", where, report)
 
     date_iso = _field(site, "dateISO", "string", where, report, nonempty=True)
@@ -809,7 +918,7 @@ def _check_video(site: dict, report: Report, where: str) -> None:
             video, key, "string", where, report, prefix="video.", nonempty=True
         )
         if isinstance(name, str):
-            problem = check_media_name(name)
+            problem = check_media_name(name, _media_extensions(f"video.{key}"))
             if problem:
                 report.error(f"{where}: field 'video.{key}' {problem}")
     _warn_unknown(video, VIDEO_FIELDS, f"{where}: video", report)
@@ -826,13 +935,25 @@ def _check_schedule(site: dict, report: Report, where: str) -> None:
                 f"{where}: schedule[{index}] must be an object, got {json_type(entry)}"
             )
             continue
-        _field(entry, "time", "string", where, report, prefix=prefix)
-        _field(entry, "title", "string", where, report, prefix=prefix, nonempty=True)
+        _field(entry, "time", "string", where, report, prefix=prefix, single_line=True)
+        _field(
+            entry, "title", "string", where, report, prefix=prefix, nonempty=True,
+            single_line=True,
+        )
         _field(
             entry, "text", "string", where, report, prefix=prefix, required=False,
             nullable=True,
         )
         _warn_unknown(entry, SCHEDULE_FIELDS, f"{where}: schedule[{index}]", report)
+
+
+_MAP_ID_RULES = {
+    "googlePlaceId": (
+        re.compile(r"[A-Za-z0-9_-]+\Z"),
+        "may only contain A-Z, a-z, 0-9, '_' and '-'",
+    ),
+    "yandexOrgId": (re.compile(r"[0-9]+\Z"), "may only contain digits"),
+}
 
 
 def _check_venue(site: dict, report: Report, where: str) -> None:
@@ -842,7 +963,7 @@ def _check_venue(site: dict, report: Report, where: str) -> None:
     ready = _field(venue, "ready", "boolean", where, report, prefix="venue.")
     name = _field(
         venue, "name", "string", where, report, prefix="venue.", required=False,
-        nullable=True,
+        nullable=True, single_line=True,
     )
     if ready is True and not (isinstance(name, str) and name.strip()):
         if "name" not in venue or name is None or isinstance(name, str):
@@ -852,7 +973,7 @@ def _check_venue(site: dict, report: Report, where: str) -> None:
     for key in ("description", "address"):
         _field(
             venue, key, "string", where, report, prefix="venue.", required=False,
-            nullable=True,
+            nullable=True, single_line=key == "address",
         )
 
     photos = _field(
@@ -863,7 +984,7 @@ def _check_venue(site: dict, report: Report, where: str) -> None:
         for index, photo in enumerate(photos):
             if isinstance(photo, str) and not photo.strip():
                 continue  # empty entry means "not set"
-            problem = check_media_name(photo)
+            problem = check_media_name(photo, IMAGE_EXTENSIONS)
             if problem:
                 report.error(f"{where}: field 'venue.photos[{index}]' {problem}")
 
@@ -872,7 +993,7 @@ def _check_venue(site: dict, report: Report, where: str) -> None:
         required=False, nullable=True,
     )
     if isinstance(directions, str) and directions.strip():
-        problem = check_media_name(directions)
+        problem = check_media_name(directions, IMAGE_EXTENSIONS)
         if problem:
             report.error(f"{where}: field 'venue.directionsImage' {problem}")
 
@@ -897,10 +1018,17 @@ def _check_venue(site: dict, report: Report, where: str) -> None:
     )
     if isinstance(maps, dict):
         for key in MAPS_FIELDS:
-            _field(
+            value = _field(
                 maps, key, "string", where, report, prefix="venue.maps.",
                 required=False, nullable=True,
             )
+            if isinstance(value, str) and value.strip():
+                pattern, expected = _MAP_ID_RULES[key]
+                if not pattern.match(value.strip()):
+                    report.error(
+                        f"{where}: field 'venue.maps.{key}' {expected} "
+                        "(use the identifier, not a link)"
+                    )
         _warn_unknown(maps, MAPS_FIELDS, f"{where}: venue.maps", report)
 
     _warn_unknown(venue, VENUE_FIELDS, f"{where}: venue", report)
@@ -930,7 +1058,11 @@ def media_references(site: Any) -> list[tuple[str, str]]:
         directions = venue.get("directionsImage")
         if isinstance(directions, str) and directions.strip():
             references.append(("venue.directionsImage", directions))
-    return [(path, name) for path, name in references if check_media_name(name) is None]
+    return [
+        (path, name)
+        for path, name in references
+        if check_media_name(name, _media_extensions(path)) is None
+    ]
 
 
 def check_media(
@@ -967,12 +1099,72 @@ def check_media(
                 f"{where}: field '{path}': file '{name}' not found in "
                 f"{display_path(media_dir)}{hint}"
             )
+        elif entry.is_symlink():
+            report.error(
+                f"{where}: field '{path}': {display_path(media_dir / name)} is a "
+                "symbolic link; media must be regular files"
+            )
         elif not entry.is_file():
             report.error(
                 f"{where}: field '{path}': '{name}' in {display_path(media_dir)} "
                 "is not a regular file"
             )
+        else:
+            try:
+                size = entry.stat().st_size
+            except OSError:
+                continue  # reported when the file is copied
+            if size > MAX_FILE_BYTES:
+                report.error(
+                    f"{where}: field '{path}': {display_path(media_dir / name)} is "
+                    f"{format_size(size)}, the limit for a single file is "
+                    f"{format_size(MAX_FILE_BYTES)}"
+                )
     return len({name for _, name in references})
+
+
+def check_media_dir_collision(
+    site: Any, assets_dir: Path | str, report: Report, where: str = SITE_FILE
+) -> None:
+    """`mediaDir` becomes `assets/<mediaDir>/`: it must not shadow an asset.
+
+    Names are compared without regard to letter case, because the output may
+    be written to (or served from) a case-insensitive file system.
+    """
+    media_dir = site.get("mediaDir") if isinstance(site, dict) else None
+    if not isinstance(media_dir, str) or not media_dir:
+        return
+    try:
+        with os.scandir(assets_dir) as entries:
+            names = [entry.name for entry in entries]
+    except OSError:
+        return  # a missing assets directory is reported by the build itself
+    for name in names:
+        if name.lower() == media_dir.lower():
+            report.error(
+                f"{where}: field 'mediaDir' collides with '{name}' in "
+                f"{display_path(assets_dir)}; the media directory needs a name of its own"
+            )
+            return
+
+
+def warn_empty_out_of_town(site: Any, invitations: Any, report: Report) -> None:
+    """Warn about `outOfTown` invitations whose section would have no text."""
+    if not isinstance(site, dict) or not isinstance(invitations, list):
+        return
+    if _optional_text(site.get("outOfTownText")):
+        return
+    for index, invitation in enumerate(invitations, start=1):
+        if (
+            isinstance(invitation, dict)
+            and invitation.get("outOfTown") is True
+            and not _optional_text(invitation.get("travelNote"))
+        ):
+            report.warn(
+                f"{invitation_label(index, invitation.get('token'))}: 'outOfTown' is true, "
+                "but 'outOfTownText' and 'travelNote' are both empty (the section "
+                "will have no text)"
+            )
 
 
 def _reject_constant(name: str) -> Any:
@@ -1011,11 +1203,13 @@ def load_data(
     data_dir: Path | str,
     media_dir: Path | str | None = None,
     report: Report | None = None,
+    assets_dir: Path | str | None = None,
 ) -> tuple[dict, list]:
     """Load and validate `site.json` and `invitations.json`.
 
-    Media files are checked as well when `media_dir` is given.  All problems are
-    collected and raised together as a `ValidationError`.
+    Media files are checked as well when `media_dir` is given, and `mediaDir`
+    is compared with the contents of `assets_dir` when that is given.  All
+    problems are collected and raised together as a `ValidationError`.
     """
     report = report if report is not None else Report()
     data_path = Path(data_dir)
@@ -1029,8 +1223,12 @@ def load_data(
         check_site(site, report)
         if media_dir is not None:
             report.media_files = check_media(site, media_dir, report)
+        if assets_dir is not None:
+            check_media_dir_collision(site, assets_dir, report)
     if invitations is not MISSING:
         check_invitations(invitations, report)
+    if site is not MISSING and invitations is not MISSING:
+        warn_empty_out_of_town(site, invitations, report)
     report.raise_if_failed()
     return site, invitations
 
@@ -1045,18 +1243,113 @@ def _optional_text(value: Any) -> str:
     return value if isinstance(value, str) and value.strip() else ""
 
 
+def format_coordinate(value: int | float) -> str:
+    """Decimal notation without an exponent: 1e-05 -> '0.00001', 10.0 -> '10'."""
+    text = format(Decimal(repr(float(value))), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in ("-0", "") else text
+
+
+def venue_coordinates(geo: Any) -> tuple[str, str] | None:
+    """(`lat`, `lng`) as text, or None when the coordinates are not set.
+
+    `lat = 0, lng = 0` is the placeholder of the data schema, not a location.
+    """
+    if not isinstance(geo, dict):
+        return None
+    lat, lng = geo.get("lat"), geo.get("lng")
+    for value, limit in ((lat, 90.0), (lng, 180.0)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if not _is_finite(value) or abs(value) > limit:
+            return None
+    if lat == 0 and lng == 0:
+        return None
+    return format_coordinate(lat), format_coordinate(lng)
+
+
+def _url_component(text: str) -> str:
+    """Percent-encode text for a URL (UTF-8; a space becomes %20)."""
+    return quote(text, safe="")
+
+
+def map_links(name: str, address: str, geo: Any, maps: Any) -> dict[str, str]:
+    """Ready-made map URLs; "" when there is no data for a service.
+
+    * Google: the place id when it is set (`query` is required by the URL
+      format and only used as a fallback: the name, else the coordinates, else
+      the address), otherwise the coordinates;
+    * Yandex: the organisation id when it is set, otherwise the coordinates
+      (longitude first);
+    * Apple: the coordinates, labelled with the name.
+    """
+    maps = maps if isinstance(maps, dict) else {}
+    name = name.strip()
+    place_id = _optional_text(maps.get("googlePlaceId")).strip()
+    org_id = _optional_text(maps.get("yandexOrgId")).strip()
+    coordinates = venue_coordinates(geo)
+    lat, lng = coordinates if coordinates else ("", "")
+
+    google = yandex = apple = ""
+    if place_id:
+        query = (
+            _url_component(name)
+            if name
+            else f"{lat},{lng}"
+            if coordinates
+            else _url_component(address.strip())
+        )
+        if query:
+            google = (
+                "https://www.google.com/maps/search/?api=1"
+                f"&query={query}&query_place_id={_url_component(place_id)}"
+            )
+    elif coordinates:
+        google = f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
+
+    if org_id:
+        yandex = f"https://yandex.ru/maps/org/{_url_component(org_id)}"
+    elif coordinates:
+        yandex = f"https://yandex.ru/maps/?pt={lng},{lat}&z={YANDEX_MAPS_ZOOM}"
+
+    if coordinates:
+        apple = f"https://maps.apple.com/?ll={lat},{lng}"
+        if name:
+            apple += f"&q={_url_component(name)}"
+    return {"google": google, "yandex": yandex, "apple": apple}
+
+
+def has_map_links(links: dict[str, str]) -> bool:
+    return any(links.values())
+
+
+def media_url(media_path: str, name: str) -> str:
+    """Root-absolute URL of a media file; "" when the file is not set."""
+    return f"{media_path}/{_url_component(name)}" if name else ""
+
+
 def site_context(site: dict) -> dict:
     """Template-ready copy of `site.json` (the shared part of every page).
 
     Every optional field is normalised so that `{{field}}` inside
     `<!-- if:field -->` always resolves.  Expects data that passed validation.
 
-    Extension point for the full build (computed fields such as `mediaPath`,
-    `icsPath`, `video.src`/`posterSrc`, `venue.photos[] -> {src}`,
-    `venue.directionsSrc`, `venue.mapLinks.*`) - add them here so that the
-    template sees them as ordinary fields.
+    Computed fields, available to the template like any other field:
+
+    * `mediaPath` - `/assets/<mediaDir>`; `icsPath` - the calendar file;
+    * `video.src`, `video.posterSrc` - URLs of the video and its poster; `video`
+      is always an object (all strings empty when the data has no video), so
+      `<!-- if:video.file -->` works either way;
+    * `venue.photos` - a list of `{src}` objects (`{{.src}}` inside `each`);
+    * `venue.directionsSrc` - URL of the directions image or "";
+    * `venue.mapLinks.google` / `.yandex` / `.apple` - see `map_links`;
+      `venue.hasMapLinks` - true when at least one of them is set.
+
+    File names are percent-encoded in the URLs.
     """
     video = site.get("video")
+    video = video if isinstance(video, dict) else {}
     schedule = site.get("schedule")
     venue = site.get("venue")
     venue = venue if isinstance(venue, dict) else {}
@@ -1065,21 +1358,30 @@ def site_context(site: dict) -> dict:
     maps = maps if isinstance(maps, dict) else {}
     photos = venue.get("photos")
 
+    media_dir = _optional_text(site.get("mediaDir"))
+    media_path = f"/{ASSETS_DIRNAME}/{media_dir}"
+    video_file = _optional_text(video.get("file"))
+    video_poster = _optional_text(video.get("poster"))
+    venue_name = _optional_text(venue.get("name"))
+    venue_address = _optional_text(venue.get("address"))
+    directions = _optional_text(venue.get("directionsImage"))
+    links = map_links(venue_name, venue_address, geo, maps)
+
     return {
         "coupleNames": _optional_text(site.get("coupleNames")),
         "dateISO": _optional_text(site.get("dateISO")),
         "dateText": _optional_text(site.get("dateText")),
         "rsvpDeadline": _optional_text(site.get("rsvpDeadline")),
         "outOfTownText": _optional_text(site.get("outOfTownText")),
-        "mediaDir": _optional_text(site.get("mediaDir")),
-        "video": (
-            {
-                "file": _optional_text(video.get("file")),
-                "poster": _optional_text(video.get("poster")),
-            }
-            if isinstance(video, dict)
-            else None
-        ),
+        "mediaDir": media_dir,
+        "mediaPath": media_path,
+        "icsPath": f"{media_path}/{ICS_FILE}",
+        "video": {
+            "file": video_file,
+            "poster": video_poster,
+            "src": media_url(media_path, video_file),
+            "posterSrc": media_url(media_path, video_poster),
+        },
         "schedule": [
             {
                 "time": _optional_text(entry.get("time")),
@@ -1091,15 +1393,16 @@ def site_context(site: dict) -> dict:
         ],
         "venue": {
             "ready": venue.get("ready") is True,
-            "name": _optional_text(venue.get("name")),
+            "name": venue_name,
             "description": _optional_text(venue.get("description")),
-            "address": _optional_text(venue.get("address")),
+            "address": venue_address,
             "photos": [
-                photo
+                {"src": media_url(media_path, photo)}
                 for photo in (photos if isinstance(photos, list) else [])
                 if isinstance(photo, str) and photo.strip()
             ],
-            "directionsImage": _optional_text(venue.get("directionsImage")),
+            "directionsImage": directions,
+            "directionsSrc": media_url(media_path, directions),
             "geo": (
                 {"lat": geo.get("lat"), "lng": geo.get("lng")}
                 if isinstance(geo, dict)
@@ -1109,6 +1412,8 @@ def site_context(site: dict) -> dict:
                 "googlePlaceId": _optional_text(maps.get("googlePlaceId")),
                 "yandexOrgId": _optional_text(maps.get("yandexOrgId")),
             },
+            "mapLinks": links,
+            "hasMapLinks": has_map_links(links),
         },
     }
 
@@ -1138,6 +1443,984 @@ def build_context(site: dict, invitation: dict) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Calendar file
+# --------------------------------------------------------------------------
+
+_ICS_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def ics_escape(text: str) -> str:
+    """Escape a TEXT value (RFC 5545, 3.3.11): `\\`, `;`, `,` and line breaks."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _ICS_CONTROL_RE.sub(" ", text)
+    return (
+        text.replace("\\", "\\\\")
+        .replace(";", "\\;")
+        .replace(",", "\\,")
+        .replace("\n", "\\n")
+    )
+
+
+def ics_fold(line: str, limit: int = ICS_LINE_OCTETS) -> str:
+    """Fold a content line longer than `limit` octets (RFC 5545, 3.1).
+
+    Continuation lines start with a space, which counts towards the limit.  A
+    line is only ever split between characters, never inside a UTF-8 sequence.
+    """
+    chunks: list[str] = []
+    current: list[str] = []
+    size = 0
+    for char in line:
+        octets = len(char.encode("utf-8"))
+        if size + octets > limit and current:
+            chunks.append("".join(current))
+            current, size = [" "], 1
+        current.append(char)
+        size += octets
+    chunks.append("".join(current))
+    return "\r\n".join(chunks)
+
+
+def _ics_timestamp(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def build_ics(site: dict) -> bytes:
+    """The calendar file: one event in UTC, without names or guest data.
+
+    The result depends on the data only (no clock, no random values), so equal
+    inputs give identical bytes.  The location is included once the venue is
+    announced (`venue.ready`).
+    """
+    date_iso = _optional_text(site.get("dateISO"))
+    try:
+        start = parse_date_iso(date_iso)
+    except ValueError as exc:  # pragma: no cover - the data is validated first
+        raise BuildError(f"{SITE_FILE}: field 'dateISO' {exc}") from None
+    media_dir = _optional_text(site.get("mediaDir"))
+    uid = hashlib.sha256(f"{media_dir}\n{date_iso}".encode("utf-8")).hexdigest()[:32]
+
+    venue = site.get("venue")
+    venue = venue if isinstance(venue, dict) else {}
+    location = ""
+    if venue.get("ready") is True:
+        parts = (_optional_text(venue.get(key)).strip() for key in ("name", "address"))
+        location = ", ".join(part for part in parts if part)
+
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        f"PRODID:{ICS_PRODID}",
+        "CALSCALE:GREGORIAN",
+        "BEGIN:VEVENT",
+        f"UID:{uid}@{ICS_UID_DOMAIN}",
+        f"DTSTAMP:{ICS_DTSTAMP}",
+        f"DTSTART:{_ics_timestamp(start)}",
+        f"DTEND:{_ics_timestamp(start + ICS_DEFAULT_DURATION)}",
+        # the revision grows when the location is announced, so that importing
+        # the file again updates an event that was saved without it
+        f"SEQUENCE:{1 if location else 0}",
+        f"SUMMARY:{ics_escape(ICS_SUMMARY)}",
+    ]
+    if location:
+        lines.append(f"LOCATION:{ics_escape(location)}")
+    lines += ["END:VEVENT", "END:VCALENDAR"]
+    return "".join(ics_fold(line) + "\r\n" for line in lines).encode("utf-8")
+
+
+# --------------------------------------------------------------------------
+# HTML comments
+# --------------------------------------------------------------------------
+
+#: What may follow the text of a comment: `-->`, `--!>`, or the `>` / `->` of an
+#: abruptly closed `<!-->` / `<!--->`.
+_COMMENT_END_RE = re.compile(r"-{0,2}!?\s*>")
+
+
+class _CommentLocator(HTMLParser):
+    """Finds the HTML comments of a document (never the `<!--` inside scripts,
+    styles or attribute values, which is why this is not a regular expression).
+    """
+
+    def __init__(self, document: str):
+        super().__init__(convert_charrefs=False)
+        self.document = document
+        self.spans: list[tuple[int, int]] = []
+        self._line_starts = [0] + [m.end() for m in re.finditer("\n", document)]
+
+    def handle_comment(self, data: str) -> None:
+        line, column = self.getpos()
+        start = self._line_starts[line - 1] + column
+        document = self.document
+        if document.startswith("<!--", start):
+            end = start + 4 + len(data)
+            closing = _COMMENT_END_RE.match(document, end)
+            end = closing.end() if closing else len(document)
+        else:  # a "bogus comment" such as <!x> or </ x>: it ends at the next '>'
+            closing_at = document.find(">", start)
+            end = closing_at + 1 if closing_at >= 0 else len(document)
+        self.spans.append((start, end))
+
+
+#: Markup that `html.parser` and browsers read differently (a browser ends
+#: `<![CDATA[ … ]]>` and `<? … ?>` at the first `>`, the parser may not).
+_UNSAFE_MARKUP_RE = re.compile(r"<!\[|<\?")
+
+
+def find_unsafe_markup(document: str) -> tuple[int, str] | None:
+    """(line, message) for the first `<![…` or `<?…`, which are not allowed."""
+    match = _UNSAFE_MARKUP_RE.search(document)
+    if match is None:
+        return None
+    line = document.count("\n", 0, match.start()) + 1
+    return line, f"'{match.group(0)}…' (CDATA sections, processing instructions) is not allowed"
+
+
+def strip_html_comments(document: str, name: str = "template") -> str:
+    """Remove every HTML comment, so that template notes are never published."""
+    unsafe = find_unsafe_markup(document)
+    if unsafe:
+        raise TemplateError(unsafe[1], unsafe[0], name)
+    if "<!" not in document and "</" not in document:
+        return document
+    locator = _CommentLocator(document)
+    locator.feed(document)
+    locator.close()
+    if not locator.spans:
+        return document
+    parts: list[str] = []
+    position = 0
+    for start, end in locator.spans:
+        if start < position:  # pragma: no cover - spans never overlap
+            continue
+        parts.append(document[position:start])
+        position = end
+    parts.append(document[position:])
+    return "".join(parts)
+
+
+# --------------------------------------------------------------------------
+# Checks on the finished output
+# --------------------------------------------------------------------------
+
+
+class OutputError(ValidationError):
+    """The finished output failed one or more checks (all of them are listed)."""
+
+
+class OutputStats(NamedTuple):
+    """What `check_output` counted."""
+
+    files: int
+    size: int
+
+
+#: Attributes whose value is a URL that the browser fetches (or submits to).
+_URL_ATTRIBUTES = frozenset(
+    {
+        "src",
+        "poster",
+        "href",
+        "xlink:href",
+        "action",
+        "formaction",
+        "background",
+        "manifest",
+        "ping",
+    }
+)
+_SRCSET_ATTRIBUTES = frozenset({"srcset", "imagesrcset"})
+#: Elements that embed foreign documents (or redirect every URL of the page).
+_FORBIDDEN_ELEMENTS = frozenset(
+    {"iframe", "frame", "frameset", "object", "embed", "applet", "base"}
+)
+_LINK_ELEMENTS = frozenset({"a", "area"})
+_SVG_ANIMATION_ELEMENTS = frozenset(
+    {"set", "animate", "animatemotion", "animatetransform", "animatecolor"}
+)
+#: `<meta>` entries whose `content` is a URL.
+_META_URL_KEYS = frozenset(
+    {
+        "og:image",
+        "og:image:url",
+        "og:image:secure_url",
+        "og:url",
+        "og:video",
+        "og:video:url",
+        "og:audio",
+        "twitter:image",
+        "twitter:image:src",
+        "twitter:player",
+        "msapplication-tileimage",
+    }
+)
+_SCHEME_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*):")
+#: Schemes that are named in messages; anything else before a ':' may be text.
+_KNOWN_SCHEMES = frozenset(
+    {"http", "https", "mailto", "tel", "sms", "ftp", "blob", "file", "javascript",
+     "vbscript", "data", "about", "ws", "wss"}
+)
+#: Text that a browser may read as markup where the parser sees plain text
+#: (`<svg><title><img …>`): a '<' followed by a letter, '/', '!' or '?'.
+_MARKUP_LIKE_RE = re.compile(r"<[A-Za-z/!?]")
+_EXTERNAL_TEXT_RE = re.compile(r"(?:https?:)?//[A-Za-z0-9\[]", re.IGNORECASE)
+_URL_WHITESPACE_RE = re.compile(r"[\t\n\r]")
+_URL_TRIM = "".join(map(chr, range(33)))  # C0 control characters and space
+#: URLs made of these characters only are quoted in messages; anything else may
+#: be text that a template put into a URL by mistake, and is not echoed.
+_PLAIN_URL_RE = re.compile(r"[A-Za-z0-9/._~%?=&#+,:;@-]*\Z")
+_HTML_SPACE = " \t\n\f\r"
+
+
+def _clean_url(value: str) -> str:
+    """The URL as a browser reads it: trimmed, without tabs and line breaks."""
+    return _URL_WHITESPACE_RE.sub("", value.strip(_URL_TRIM))
+
+
+def _show_url(url: str) -> str:
+    """A URL for an error message: external URLs are cut down to the host (the
+    rest may carry data), everything else is shortened."""
+    url = _clean_url(url)
+    if url.lower().startswith("data:"):
+        return _shorten(re.split(r"[;,]", url, maxsplit=1)[0], 40) + ",…"
+    scheme = _SCHEME_RE.match(url)
+    if scheme and scheme.group(1).lower() not in ("http", "https"):
+        # e.g. mailto: - the rest is data, and so is an unknown "scheme"
+        name = scheme.group(1).lower()
+        return f"{name}:…" if name in _KNOWN_SCHEMES else "…:"
+    if scheme or url.replace("\\", "/").startswith("//"):
+        head = re.match(r"[^/\\?#]*[/\\]{0,2}[^/\\?#]*", url)
+        shown = head.group(0) if head else url
+        if not _PLAIN_URL_RE.match(shown):
+            return f"{scheme.group(0) if scheme else ''}//…"
+        return _shorten(shown, 60) + ("/…" if len(shown) < len(url) else "")
+    return _shorten(url, 80) if _PLAIN_URL_RE.match(url) else "…"
+
+
+def _classify_url(value: str) -> tuple[str, str]:
+    """(kind, cleaned URL); kind is one of `empty`, `fragment`, `local`,
+    `relative`, `external`, `data`, `script`, `scheme` or `malformed`."""
+    url = _clean_url(value)
+    if not url:
+        return "empty", url
+    if url.startswith("#"):
+        return "fragment", url
+    scheme = _SCHEME_RE.match(url)
+    if scheme:
+        name = scheme.group(1).lower()
+        if name in ("http", "https"):
+            return "external", url
+        if name == "data":
+            return "data", url
+        if name in ("javascript", "vbscript"):
+            return "script", url
+        return "scheme", url
+    if "\\" in url:
+        return "malformed", url  # browsers read '\' as '/': "/\host" is external
+    if url.startswith("//"):
+        return "external", url
+    if url.startswith("/"):
+        return "local", url
+    return "relative", url
+
+
+def _local_file(url: str) -> str | None:
+    """Output file that a root-absolute URL points at; None if it is not plain."""
+    path = unquote(url.split("#", 1)[0].split("?", 1)[0])
+    if path.endswith("/"):
+        path += PAGE_FILE
+    segments = path.split("/")[1:]
+    if any(segment in ("", ".", "..") for segment in segments) or "\\" in path:
+        return None
+    return "/".join(segments)
+
+
+def _data_url_type(url: str) -> str:
+    return re.split(r"[;,]", url[5:], maxsplit=1)[0].strip().lower()
+
+
+def _is_map_link(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme.lower() != "https":
+        return False
+    host = parts.netloc.lower()  # with user info or a port it is not the host
+    path = parts.path.lower()
+    if "\\" in url or any(code in path for code in ("%2e", "%2f", "%5c")):
+        return False  # nothing that a browser may normalise into another path
+    if any(segment in (".", "..") for segment in path.split("/")):
+        return False
+    return any(
+        host == allowed and parts.path.startswith(prefix)
+        for allowed, prefix in MAP_LINK_TARGETS
+    )
+
+
+def _srcset_urls(value: str) -> list[str]:
+    """The URLs of a `srcset` (a URL may contain commas, e.g. `data:` URLs)."""
+    urls: list[str] = []
+    position, length = 0, len(value)
+    while position < length:
+        while position < length and (
+            value[position] in _HTML_SPACE or value[position] == ","
+        ):
+            position += 1
+        start = position
+        while position < length and value[position] not in _HTML_SPACE:
+            position += 1
+        url = value[start:position]
+        if url.endswith(","):
+            url = url.rstrip(",")
+        else:  # skip the descriptors up to the next candidate
+            depth = 0
+            while position < length:
+                char = value[position]
+                position += 1
+                if char == "(":
+                    depth += 1
+                elif char == ")" and depth:
+                    depth -= 1
+                elif char == "," and not depth:
+                    break
+        if url:
+            urls.append(url)
+    return urls
+
+
+class _UrlPolicy:
+    """Shared URL rules of the HTML and CSS checks; collects (line, problem)."""
+
+    def __init__(
+        self,
+        exists: Callable[[str], bool],
+        is_dir: Callable[[str], bool] | None = None,
+        base: str | None = None,
+    ):
+        self.exists = exists
+        self.is_dir = is_dir if is_dir is not None else (lambda _path: False)
+        #: Directory of the style sheet being checked ("" is the root); None
+        #: for HTML, where relative URLs are not allowed at all.
+        self.base = base
+        self.problems: list[tuple[int, str]] = []
+
+    def show_path(self, url: str) -> str:
+        """A local or relative URL for a message.
+
+        Only the directories that exist in the output and a known file
+        extension are shown: the rest may be text that a template put into a
+        path by mistake.
+        """
+        path = _clean_url(url).split("#", 1)[0].split("?", 1)[0]
+        absolute = path.startswith("/")
+        segments = [segment for segment in path.split("/") if segment]
+        kept: list[str] = []
+        if absolute:
+            for segment in segments:
+                candidate = "/".join([*kept, unquote(segment)])
+                if not _PLAIN_URL_RE.match(segment) or not self.is_dir(candidate):
+                    break
+                kept.append(segment)
+        lead = "/" if absolute else ""
+        if len(kept) == len(segments):
+            return lead + "/".join(kept) + ("/" if kept else "")
+        extension = os.path.splitext(segments[-1])[1].lower()
+        if extension not in ASSET_EXTENSIONS and extension != ".html":
+            extension = ""
+        return lead + "/".join([*kept, "…"]) + extension
+
+    def _relative_to_stylesheet(self, line: int, where: str, url: str) -> None:
+        """A relative `url()` of a CSS file: resolved against the file itself."""
+        path = unquote(url.split("#", 1)[0].split("?", 1)[0])
+        target = posixpath.normpath(posixpath.join(self.base or "", path))
+        if target == ".." or target.startswith(("../", "/")):
+            self.problem(line, f"{where}: '{self.show_path(url)}' points outside the output")
+        elif not self.exists(target):
+            self.problem(
+                line,
+                f"{where}: '{self.show_path(url)}' (relative to the style sheet) "
+                "does not exist in the output",
+            )
+
+    def problem(self, line: int, message: str) -> None:
+        self.problems.append((line, message))
+
+    def _common(self, line: int, where: str, kind: str, url: str, what: str) -> bool:
+        """Rules shared by resources and links; True when the URL is settled."""
+        if kind == "fragment":
+            return True
+        if kind == "local":
+            target = _local_file(url)
+            if target is None:
+                self.problem(
+                    line, f"{where}: '{self.show_path(url)}' is not a plain absolute path"
+                )
+            elif not self.exists(target):
+                self.problem(
+                    line, f"{where}: '{self.show_path(url)}' does not exist in the output"
+                )
+        elif kind == "empty":
+            self.problem(line, f"{where}: the URL is empty")
+        elif kind == "relative" and self.base is not None:
+            self._relative_to_stylesheet(line, where, url)
+        elif kind == "relative":
+            self.problem(
+                line,
+                f"{where}: relative path '{self.show_path(url)}'; {what} must be "
+                "absolute from the site root (start with '/')",
+            )
+        elif kind == "script":
+            self.problem(line, f"{where}: script URL '{_show_url(url)}' is not allowed")
+        else:
+            return False
+        return True
+
+    def check_resource(
+        self,
+        line: int,
+        where: str,
+        value: str,
+        *,
+        data_images: bool = True,
+        empty_data: bool = False,
+    ) -> None:
+        """A URL that is fetched when the page loads: local files only."""
+        kind, url = _classify_url(value)
+        if self._common(line, where, kind, url, "resource paths"):
+            return
+        if kind == "external":
+            self.problem(
+                line,
+                f"{where}: external URL '{_show_url(url)}'; every resource must be "
+                "a local file",
+            )
+        elif kind == "data":
+            allowed = data_images and _data_url_type(url).startswith("image/")
+            if empty_data and url.lower() == "data:,":
+                allowed = True
+            if not allowed:
+                self.problem(
+                    line,
+                    f"{where}: '{_show_url(url)}' - data: URLs are only allowed "
+                    "for images and icons",
+                )
+        else:
+            shown = _show_url(url) if kind == "scheme" else self.show_path(url)
+            self.problem(line, f"{where}: URL '{shown}' is not allowed")
+
+    def check_link(self, line: int, where: str, value: str, attrs: dict) -> None:
+        """`<a href>`: a local page, a fragment, or a link to a map service."""
+        kind, url = _classify_url(value)
+        if self._common(line, where, kind, url, "links"):
+            return
+        if kind == "external" and _is_map_link(url):
+            if (attrs.get("target") or "").strip().lower() != "_blank":
+                self.problem(
+                    line,
+                    f"{where}: external link '{_show_url(url)}' needs target=\"_blank\"",
+                )
+            rel = set((attrs.get("rel") or "").lower().split())
+            if not {"noopener", "noreferrer"} <= rel:
+                self.problem(
+                    line,
+                    f"{where}: external link '{_show_url(url)}' needs "
+                    'rel="noopener noreferrer"',
+                )
+        elif kind == "external":
+            self.problem(
+                line,
+                f"{where}: external link '{_show_url(url)}'; only https links to the "
+                "map services are allowed",
+            )
+        else:  # mailto:, tel:, data: and other schemes
+            shown = _show_url(url) if kind in ("scheme", "data") else self.show_path(url)
+            self.problem(line, f"{where}: link '{shown}' is not allowed")
+
+
+_CSS_STRING = r'"(?:[^"\\\n]|\\.)*"' + "|" + r"'(?:[^'\\\n]|\\.)*'"
+_CSS_COMMENT_OR_STRING_RE = re.compile(rf"/\*.*?(?:\*/|\Z)|{_CSS_STRING}", re.DOTALL)
+_CSS_NAMESPACE_RE = re.compile(r"@namespace\b[^;{}]*;?", re.IGNORECASE)
+_CSS_URL_RE = re.compile(
+    rf"(?<![\w-])url\(\s*({_CSS_STRING}|[^)]*?)\s*(?:\)|\Z)", re.IGNORECASE
+)
+_CSS_IMPORT_RE = re.compile(rf"@import\s*({_CSS_STRING})", re.IGNORECASE)
+_CSS_IMPORT_BEFORE_RE = re.compile(r"@import\s*\Z", re.IGNORECASE)
+_CSS_STRING_RE = re.compile(_CSS_STRING)
+
+
+def _blank(match: re.Match) -> str:
+    """Replacement that keeps the line numbers of the rest of the text."""
+    return "\n" * match.group(0).count("\n") or " "
+
+
+def strip_css_comments(text: str) -> str:
+    """CSS without comments (strings are left alone, line numbers are kept)."""
+    return _CSS_COMMENT_OR_STRING_RE.sub(
+        lambda match: _blank(match) if match.group(0).startswith("/*") else match.group(0),
+        text,
+    )
+
+
+def _css_string_value(token: str) -> str:
+    return token[1:-1] if len(token) >= 2 and token[0] in "\"'" else token
+
+
+_CSS_CONTINUATION_RE = re.compile(r"\\[\n\r\f]")
+#: A string that starts with a URL scheme (`image-set('http:host/x')`); "12:30"
+#: and "Note: text" are not URLs, `data:` is judged where it is used.
+_CSS_SCHEME_STRING_RE = re.compile(r"(?!data:)[a-z][a-z0-9+.-]*:(?=\S)", re.IGNORECASE)
+_CSS_ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6})\s?|\\([^\n])")
+_CSS_NAME = r"(?:[\w-]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n0-9a-fA-F])+"
+_CSS_FUNCTION_RE = re.compile(rf"({_CSS_NAME})\(")
+_CSS_AT_RULE_RE = re.compile(rf"@({_CSS_NAME})")
+_CSS_PLAIN_NAME_RE = re.compile(r"[\w-]+\Z")
+
+
+def _css_unescape(text: str) -> str:
+    def decode(match: re.Match) -> str:
+        if match.group(1):
+            code = int(match.group(1), 16)
+            return chr(code) if 0 < code <= 0x10FFFF else "\ufffd"
+        return match.group(2)
+
+    return _CSS_ESCAPE_RE.sub(decode, text)
+
+
+def check_css(
+    text: str, policy: _UrlPolicy, where: str = "CSS", first_line: int = 1
+) -> None:
+    """`url()`, `@import` and URL-like strings of a style sheet (or of a
+    `style` attribute) must point at local files.
+
+    A browser decodes CSS escapes (`u\\72l(…)` is `url(…)`), so escapes are
+    refused wherever they could hide a URL: in function and at-rule names and
+    inside `url()` / `@import`; other strings are checked decoded as well.
+    """
+    # first of all: a backslash before a line break continues a string, which
+    # would split a URL across lines and hide it from everything below
+    continuation = _CSS_CONTINUATION_RE.search(text)
+    if continuation:
+        policy.problem(
+            first_line + text.count("\n", 0, continuation.start()),
+            f"{where}: a backslash before a line break is not allowed in CSS",
+        )
+        return
+    text = _CSS_NAMESPACE_RE.sub(_blank, strip_css_comments(text))
+
+    def line_at(offset: int) -> int:
+        return first_line + text.count("\n", 0, offset)
+
+    def check_url(offset: int, what: str, value: str, images: bool) -> None:
+        if "\\" in value and not _clean_url(value).lower().startswith("data:"):
+            policy.problem(
+                line_at(offset), f"{where} {what}: CSS escapes are not allowed in URLs"
+            )
+        else:
+            policy.check_resource(line_at(offset), f"{where} {what}", value, data_images=images)
+
+    without_strings = _CSS_STRING_RE.sub(lambda match: " " * len(match.group(0)), text)
+    for match in _CSS_AT_RULE_RE.finditer(without_strings):
+        if "\\" in match.group(1):
+            policy.problem(
+                line_at(match.start()), f"{where}: CSS escapes are not allowed in at-rule names"
+            )
+    for match in _CSS_FUNCTION_RE.finditer(without_strings):
+        name = match.group(1)
+        if "\\" in name and _CSS_PLAIN_NAME_RE.match(_css_unescape(name)):
+            policy.problem(
+                line_at(match.start()),
+                f"{where}: CSS escapes are not allowed in function names",
+            )
+
+    covered: list[tuple[int, int]] = []
+    for match in _CSS_IMPORT_RE.finditer(text):
+        covered.append(match.span())
+        check_url(match.start(), "@import", _css_string_value(match.group(1)), False)
+    for match in _CSS_URL_RE.finditer(text):
+        covered.append(match.span())
+        before = text[max(0, match.start() - 40) : match.start()]
+        is_import = _CSS_IMPORT_BEFORE_RE.search(before) is not None
+        check_url(
+            match.start(),
+            "@import" if is_import else "url()",
+            _css_string_value(match.group(1)),
+            not is_import,
+        )
+    for match in _CSS_STRING_RE.finditer(text):
+        if any(start <= match.start() < end for start, end in covered):
+            continue
+        value = _css_string_value(match.group(0))
+        if any(
+            _EXTERNAL_TEXT_RE.match(candidate.strip())
+            or _CSS_SCHEME_STRING_RE.match(candidate.strip())
+            for candidate in (value, _css_unescape(value))
+        ):
+            policy.problem(
+                line_at(match.start()),
+                f"{where}: external URL '{_show_url(_css_unescape(value))}' in a string; "
+                "every resource must be a local file",
+            )
+
+
+class _HtmlChecker(HTMLParser):
+    """Walks one HTML document and applies the URL and script rules."""
+
+    def __init__(self, policy: _UrlPolicy):
+        # text is reported as written: an escaped "&lt;!--" in a guest's note
+        # is text, not the start of a comment (attribute values are decoded)
+        super().__init__(convert_charrefs=False)
+        self.policy = policy
+        self._in_script = False
+
+    @property
+    def line(self) -> int:
+        return self.getpos()[0]
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        policy, line = self.policy, self.line
+        values: dict[str, str] = {}
+        for name, value in attrs:  # a repeated attribute: the first one wins
+            values.setdefault(name, value or "")
+        if tag in _FORBIDDEN_ELEMENTS:
+            policy.problem(line, f"<{tag}> is not allowed")
+            return
+        if tag == "style":
+            # also closes a gap: inside <svg> a browser parses the content of
+            # <style> as markup, while the parser takes it for text
+            policy.problem(
+                line, "<style> elements are not allowed; styles must be files in /assets/"
+            )
+        if tag == "script":
+            self._in_script = bool(values.get("src", "").strip())
+            if not self._in_script:
+                policy.problem(
+                    line, "inline <script> is not allowed; scripts must be files in /assets/"
+                )
+            if "href" in values or "xlink:href" in values:
+                policy.problem(line, "<script href> (an SVG script) is not allowed")
+        if tag in _SVG_ANIMATION_ELEMENTS and values.get(
+            "attributename", ""
+        ).strip().lower() in ("href", "xlink:href"):
+            policy.problem(line, f"<{tag}>: animating 'href' is not allowed")
+
+        for name, value in values.items():
+            where = f"<{tag} {name}>"
+            if name.startswith("on") and len(name) > 2:
+                policy.problem(line, f"{where}: inline event handlers are not allowed")
+            elif name in _SRCSET_ATTRIBUTES:
+                urls = _srcset_urls(value)
+                if not urls:
+                    policy.problem(line, f"{where}: the URL is empty")
+                for url in urls:
+                    policy.check_resource(line, where, url)
+            elif name in _URL_ATTRIBUTES:
+                if tag in _LINK_ELEMENTS and name == "href":
+                    policy.check_link(line, where, value, values)
+                else:
+                    rel = values.get("rel", "").lower().split()
+                    is_icon = tag == "link" and "icon" in rel
+                    policy.check_resource(
+                        line,
+                        where,
+                        value,
+                        data_images=is_icon or tag not in ("script", "a", "area", "link"),
+                        empty_data=is_icon,
+                    )
+            elif name == "style":
+                check_css(value, policy, f"<{tag} style>", line)
+
+        if tag == "meta":
+            self._check_meta(values, line)
+
+    def _check_meta(self, values: dict, line: int) -> None:
+        content = values.get("content", "")
+        key = (values.get("property") or values.get("name") or "").strip().lower()
+        if values.get("http-equiv", "").strip().lower() == "refresh":
+            self.policy.problem(line, '<meta http-equiv="refresh"> is not allowed')
+            return
+        if key in _META_URL_KEYS:
+            self.policy.check_resource(line, f"<meta {key}>", content)
+            return
+        external = _EXTERNAL_TEXT_RE.search(content)
+        if external:
+            shown = _show_url(content[external.start() :].split()[0])
+            self.policy.problem(
+                line, f"<meta content>: external URL '{shown}' is not allowed"
+            )
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script":
+            self._in_script = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_script:
+            # a browser may read this as markup (inside <svg>), the parser does not
+            if data.strip():
+                self.policy.problem(self.line, "<script src> must be empty")
+        elif _MARKUP_LIKE_RE.search(data):
+            # Escaped text ("&lt;img") never gets here as '<'.  A literal '<'
+            # in text means that the parser took something for text - the
+            # content of <title>/<textarea> inside <svg>, an unterminated
+            # comment - which a browser may read as elements.
+            self.policy.problem(
+                self.line, "markup-like text is not allowed (write '<' as '&lt;')"
+            )
+
+    def handle_decl(self, decl: str) -> None:
+        if not decl.strip().lower().startswith("doctype"):
+            self.policy.problem(self.line, "'<!…>' declarations are not allowed")
+
+    def handle_comment(self, data: str) -> None:
+        self.policy.problem(self.line, "HTML comment left in the output")
+
+
+def check_html(
+    document: str,
+    exists: Callable[[str], bool],
+    is_dir: Callable[[str], bool] | None = None,
+) -> list[tuple[int, str]]:
+    """Problems of one HTML document as (line, message) pairs.
+
+    `exists` tells whether a file (relative path with '/') is in the output,
+    `is_dir` does the same for directories (only used to word the messages).
+    Whatever the parser may read differently from a browser is an error.
+    """
+    policy = _UrlPolicy(exists, is_dir)
+    leftover = _LEFTOVER_RE.search(document)
+    if leftover:
+        policy.problem(
+            document.count("\n", 0, leftover.start()) + 1,
+            f"template syntax left in the output: '{_shorten(leftover.group(0), 20)}'",
+        )
+    unsafe = find_unsafe_markup(document)
+    if unsafe:
+        policy.problem(*unsafe)
+    checker = _HtmlChecker(policy)
+    checker.feed(document)
+    checker.close()
+    return policy.problems
+
+
+def check_stylesheet(
+    text: str,
+    exists: Callable[[str], bool],
+    is_dir: Callable[[str], bool] | None = None,
+    base: str = "",
+) -> list[tuple[int, str]]:
+    """Problems of one CSS file as (line, message) pairs.
+
+    `base` is the directory of the file inside the output: relative `url()`s
+    are resolved against it and must stay inside the output.
+    """
+    policy = _UrlPolicy(exists, is_dir, base)
+    check_css(text, policy)
+    return policy.problems
+
+
+class _SvgChecker(HTMLParser):
+    """A cheap look at an SVG file: nothing active, nothing external."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.problems: list[tuple[int, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        line = self.getpos()[0]
+        if tag in ("script", "foreignobject"):
+            self.problems.append((line, f"<{tag}> is not allowed in SVG files"))
+        for name, value in attrs:
+            if name.startswith("on") and len(name) > 2:
+                self.problems.append((line, f"<{tag} {name}>: event handlers are not allowed"))
+            elif name in ("href", "xlink:href", "src"):
+                kind, url = _classify_url(value or "")
+                if kind in ("external", "script", "malformed"):
+                    self.problems.append(
+                        (line, f"<{tag} {name}>: external URL '{_show_url(url)}' is not allowed")
+                    )
+
+
+def check_svg(text: str) -> list[tuple[int, str]]:
+    """Problems of one SVG file: scripts, event handlers, `<foreignObject>`
+    and external references (namespace URIs in `xmlns` are not references)."""
+    checker = _SvgChecker()
+    checker.feed(text)
+    checker.close()
+    return checker.problems
+
+
+#: At most this many problems are listed (a problem that repeats on every page
+#: is reported once).
+MAX_REPORTED_PROBLEMS = 25
+
+
+def _scan_output(root: Path) -> tuple[dict[str, int], list[str], list[str]]:
+    """(files -> size, directories, problems) of an output tree; paths are
+    relative and use '/'.  Symbolic links are reported, never followed."""
+    files: dict[str, int] = {}
+    directories: list[str] = []
+    problems: list[str] = []
+
+    def walk(directory: Path, prefix: str) -> None:
+        with os.scandir(directory) as iterator:
+            entries = sorted(iterator, key=lambda entry: entry.name)
+        for entry in entries:
+            relative = f"{prefix}{entry.name}"
+            if entry.is_symlink():
+                problems.append(f"{relative}: symbolic links are not allowed in the output")
+            elif entry.is_dir(follow_symlinks=False):
+                directories.append(relative)
+                walk(Path(entry.path), f"{relative}/")
+            elif entry.is_file(follow_symlinks=False):
+                files[relative] = entry.stat(follow_symlinks=False).st_size
+            else:
+                problems.append(f"{relative}: not a regular file")
+
+    walk(root, "")
+    return files, directories, problems
+
+
+def _check_output_tree(
+    files: dict[str, int],
+    directories: Sequence[str],
+    tokens: Sequence[str],
+    media_dir: str,
+) -> list[str]:
+    """Allow-list of the output: only what the site needs is published."""
+    problems: list[str] = []
+    expected_pages = {f"{PAGES_DIRNAME}/{token}/{PAGE_FILE}" for token in tokens}
+    expected_dirs = {f"{PAGES_DIRNAME}/{token}" for token in tokens}
+
+    for relative in directories:
+        parts = relative.split("/")
+        if parts[-1].startswith("."):
+            problems.append(f"{relative}: dot-directories must not be published")
+        elif len(parts) == 1:
+            if relative not in OUTPUT_TOP_LEVEL_DIRS:
+                problems.append(
+                    f"{relative}: unexpected directory at the top of the output"
+                )
+        elif parts[0] == PAGES_DIRNAME and relative not in expected_dirs:
+            problems.append(
+                f"{relative}: unexpected directory (only one directory per invitation "
+                f"is allowed in {PAGES_DIRNAME}/)"
+            )
+
+    for relative, size in files.items():
+        parts = relative.split("/")
+        name = parts[-1]
+        extension = os.path.splitext(name)[1].lower()
+        if name.startswith("."):
+            problems.append(f"{relative}: dot-files must not be published")
+        elif extension in FORBIDDEN_OUTPUT_EXTENSIONS:
+            problems.append(f"{relative}: '{extension}' files must not be published")
+        elif len(parts) == 1:
+            if relative not in OUTPUT_TOP_LEVEL or relative in OUTPUT_TOP_LEVEL_DIRS:
+                problems.append(f"{relative}: unexpected file at the top of the output")
+        elif parts[0] == PAGES_DIRNAME:
+            if relative not in expected_pages:
+                problems.append(
+                    f"{relative}: unexpected file (only <token>/{PAGE_FILE} is allowed "
+                    f"in {PAGES_DIRNAME}/)"
+                )
+        elif parts[0] == ASSETS_DIRNAME:
+            if extension not in ASSET_EXTENSIONS:
+                problems.append(
+                    f"{relative}: file type '{extension or name}' is not allowed in "
+                    f"{ASSETS_DIRNAME}/ (allowed: {_extension_list(ASSET_EXTENSIONS)})"
+                )
+        else:
+            problems.append(f"{relative}: unexpected file")
+        if size > MAX_FILE_BYTES:
+            problems.append(
+                f"{relative}: {format_size(size)} is larger than the limit of "
+                f"{format_size(MAX_FILE_BYTES)} for a single file"
+            )
+
+    required = [*STUB_OUTPUTS, HEADERS_FILE, ROBOTS_FILE, *sorted(expected_pages)]
+    if media_dir:
+        required.append(f"{ASSETS_DIRNAME}/{media_dir}/{ICS_FILE}")
+    for relative in required:
+        if relative not in files:
+            problems.append(f"{relative}: missing from the output")
+    return problems
+
+
+def check_output(
+    out_dir: Path | str, tokens: Sequence[str], media_dir: str = ""
+) -> OutputStats:
+    """Check a finished output directory; raises `OutputError` with every problem.
+
+    * only the expected files are present (see `_check_output_tree`), none of
+      them larger than `MAX_FILE_BYTES`;
+    * HTML: no template syntax or comments left, no external resources, no
+      inline scripts or event handlers, no embedded documents; external links
+      only to the map services and with `target`/`rel`; every local URL
+      resolves to a file of the output;
+    * CSS: `url()` and `@import` point at local files that exist (relative
+      URLs of a CSS file are resolved against that file); no CSS escapes that
+      could hide a URL;
+    * SVG: no scripts, event handlers, `<foreignObject>` or external references.
+
+    Messages never quote page text, and tokens in paths are shortened.
+    """
+    root = Path(out_dir)
+    try:
+        files, directories, problems = _scan_output(root)
+    except OSError as exc:
+        raise BuildError(
+            f"cannot read the output directory {display_path(root)}: {exc.strerror}"
+        ) from None
+    problems += _check_output_tree(files, directories, tokens, media_dir)
+    problems = [_redact_paths(problem) for problem in problems]
+
+    known_dirs = set(directories)
+    # problem -> [(file, line)], in order of appearance
+    found: dict[str, list[tuple[str, int]]] = {}
+    for relative, size in files.items():
+        extension = os.path.splitext(relative)[1].lower()
+        if extension not in (".html", ".css", ".svg") or size > MAX_FILE_BYTES:
+            continue
+        shown = _redact_paths(relative)
+        try:
+            text = (root / relative).read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            problems.append(f"{shown}: not valid UTF-8 (at byte {exc.start})")
+            continue
+        except OSError as exc:
+            raise BuildError(f"cannot read {shown}: {exc.strerror}") from None
+        if extension == ".html":
+            file_problems = check_html(text, files.__contains__, known_dirs.__contains__)
+        elif extension == ".css":
+            file_problems = check_stylesheet(
+                text, files.__contains__, known_dirs.__contains__, posixpath.dirname(relative)
+            )
+        else:
+            file_problems = check_svg(text)
+        for line, message in file_problems:
+            found.setdefault(_redact_paths(message), []).append((shown, line))
+
+    for message, places in found.items():
+        first_file, first_line = places[0]
+        distinct = len({name for name, _line in places})
+        if distinct == 1:
+            problems.append(f"{first_file} line {first_line}: {message}")
+        else:
+            problems.append(
+                f"{distinct} files: {message}; first: {first_file} line {first_line}"
+            )
+
+    if problems:
+        hidden = len(problems) - MAX_REPORTED_PROBLEMS
+        if hidden > 0:
+            problems = problems[:MAX_REPORTED_PROBLEMS] + [
+                f"… and {hidden} more problem(s) in the output"
+            ]
+        raise OutputError(problems)
+    return OutputStats(files=len(files), size=sum(files.values()))
+
+
+# --------------------------------------------------------------------------
 # Output directory handling
 # --------------------------------------------------------------------------
 
@@ -1151,11 +2434,27 @@ def display_path(path: Path | str) -> str:
         return str(path)
 
 
-def _redact_paths(text: str) -> str:
+#: `i/<token>`: both are whole path components, `i` may start the path, and a
+#: name with a dot (`i/index.html`) is a file, not a token.
+_TOKEN_IN_PATH_RE = re.compile(
+    rf"(?<![A-Za-z0-9_.-])({PAGES_DIRNAME}[/\\])([A-Za-z0-9_-]{{4}})[A-Za-z0-9_-]+"
+    r"(?![A-Za-z0-9_.-])"
+)
+#: A name that may be an invitation token or a media directory.
+_SECRET_LIKE_RE = re.compile(rf"[A-Za-z0-9_-]{{{MIN_MEDIA_DIR_LENGTH},}}\Z")
+
+
+def _redact_paths(text: Any) -> str:
     """Hide invitation tokens that may appear inside file system paths."""
-    return re.sub(
-        r"([/\\]i[/\\])([A-Za-z0-9_-]{4})[A-Za-z0-9_-]+", r"\1\2…", str(text)
-    )
+    return _TOKEN_IN_PATH_RE.sub(r"\1\2…", str(text))
+
+
+def _mask_name(name: str) -> str:
+    """A directory entry for an error message: names that look like a token or
+    a media directory are cut down to their first four characters."""
+    if _SECRET_LIKE_RE.match(name):
+        return f"{name[:4]}…"
+    return _shorten(name, 40)
 
 
 def _same_path(first: Path, second: Path) -> bool:
@@ -1244,30 +2543,47 @@ def check_replaceable(out_dir: Path | str) -> None:
     """Allow replacing an existing directory only if it is a previous build.
 
     A directory qualifies when it is empty or when every top-level entry is one
-    of `OUTPUT_TOP_LEVEL` (files created by the operating system are ignored).
-    No marker file is written into the output: its contents stay limited to
-    what the site needs.
+    of `OUTPUT_TOP_LEVEL` and has the expected type: `i` and `assets` are real
+    directories, everything else is a regular file, nothing is a symbolic link
+    (files created by the operating system are ignored).  No marker file is
+    written into the output: its contents stay limited to what the site needs.
+
+    The message never shows a name in full if it looks like a token or a media
+    directory (`--out` may point inside a previous build by mistake).
     """
     out = Path(out_dir)
     try:
-        names = sorted(entry.name for entry in os.scandir(out))
+        with os.scandir(out) as iterator:
+            entries = sorted(iterator, key=lambda entry: entry.name)
     except FileNotFoundError:
         return
     except OSError as exc:
         raise BuildError(
             f"cannot read the output directory {display_path(out)}: {exc.strerror}"
         ) from None
-    unexpected = [
-        name for name in names if name not in OUTPUT_TOP_LEVEL and name not in OS_JUNK_FILES
-    ]
+    entries = [entry for entry in entries if entry.name not in OS_JUNK_FILES]
+    advice = "remove it manually or choose another --out"
+    unexpected = [entry.name for entry in entries if entry.name not in OUTPUT_TOP_LEVEL]
     if unexpected:
-        listed = ", ".join(f"'{_shorten(name, 40)}'" for name in unexpected[:3])
+        listed = ", ".join(f"'{_mask_name(name)}'" for name in unexpected[:3])
         more = f" and {len(unexpected) - 3} more" if len(unexpected) > 3 else ""
         raise BuildError(
             f"refusing to replace {display_path(out)}: it does not look like a "
-            f"previous build output (unexpected: {listed}{more}); "
-            "remove it manually or choose another --out"
+            f"previous build output (unexpected: {listed}{more}); {advice}"
         )
+    for entry in entries:
+        is_directory = entry.name in OUTPUT_TOP_LEVEL_DIRS
+        matches = (
+            entry.is_dir(follow_symlinks=False)
+            if is_directory
+            else entry.is_file(follow_symlinks=False)
+        )
+        if not matches:
+            expected = "a directory" if is_directory else "a regular file"
+            raise BuildError(
+                f"refusing to replace {display_path(out)}: it does not look like a "
+                f"previous build output ('{entry.name}' is not {expected}); {advice}"
+            )
 
 
 def _remove_tree(path: Path) -> bool:
@@ -1354,29 +2670,54 @@ class _StagedOutput:
             self._discard(previous)
 
 
+def is_styleguide_asset(relative: str) -> bool:
+    """`styleguide.*` files document the design system; they are not published."""
+    return relative.rsplit("/", 1)[-1].lower().startswith(STYLEGUIDE_PREFIX)
+
+
 def copy_assets(
     source: Path,
     destination: Path,
     ignore: Callable[[str], bool] | None = None,
 ) -> int:
-    """Copy `assets/` into the output, skipping dot-files; returns file count.
+    """Copy `assets/` into the output; returns the number of files.
 
-    `ignore` receives a file or directory name and returns True for entries
-    that must not reach the output (extension point for later build steps).
+    Dot-files and dot-directories are skipped.  `ignore` receives the path of a
+    file or directory relative to `source` (with '/') and returns True for
+    entries that must not reach the output.  Symbolic links are an error (they
+    are never followed), and directories that end up empty are not created.
     """
+    source = Path(source)
+    if source.is_symlink():
+        raise BuildError(
+            f"the assets directory must not be a symbolic link: {display_path(source)}"
+        )
     if not source.is_dir():
         raise BuildError(f"assets directory not found: {display_path(source)}")
 
-    def skip(_directory: str, names: list[str]) -> set[str]:
-        return {
-            name
-            for name in names
-            if name.startswith(".") or (ignore is not None and ignore(name))
-        }
+    def skip(directory: str, names: list[str]) -> set[str]:
+        skipped: set[str] = set()
+        for name in names:
+            path = os.path.join(directory, name)
+            relative = os.path.relpath(path, source).replace(os.sep, "/")
+            if name.startswith(".") or (ignore is not None and ignore(relative)):
+                skipped.add(name)
+                continue
+            mode = os.lstat(path).st_mode
+            if stat.S_ISLNK(mode):
+                raise BuildError(
+                    f"symbolic links are not allowed in assets: {display_path(path)}"
+                )
+            if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+                raise BuildError(f"not a regular file in assets: {display_path(path)}")
+        return skipped
 
     shown = display_path(source)
     try:
         shutil.copytree(source, destination, ignore=skip)
+        for directory, _dirs, _files in os.walk(destination, topdown=False):
+            if Path(directory) != Path(destination) and not os.listdir(directory):
+                os.rmdir(directory)
     except shutil.Error as exc:  # a list of (source, destination, reason)
         failures = exc.args[0] if exc.args and isinstance(exc.args[0], list) else []
         detail = f"{len(failures)} file(s) could not be copied"
@@ -1392,26 +2733,78 @@ def copy_assets(
     return sum(len(files) for _root, _dirs, files in os.walk(destination))
 
 
+def copy_media(site: dict, media_dir: Path | str, destination: Path) -> int:
+    """Copy the media files the data refers to - and nothing else - into
+    `assets/<mediaDir>/`; returns the number of files."""
+    names = sorted({name for _field, name in media_references(site)})
+    try:
+        destination.mkdir(parents=True)
+    except FileExistsError:
+        raise BuildError(
+            f"{SITE_FILE}: field 'mediaDir' collides with an entry of "
+            f"{ASSETS_DIRNAME}/; the media directory needs a name of its own"
+        ) from None
+    except OSError as exc:
+        raise BuildError(f"cannot create the media directory: {exc.strerror}") from None
+    for name in names:
+        source = Path(media_dir) / name
+        if source.is_symlink():
+            raise BuildError(
+                f"symbolic links are not allowed in media: {display_path(source)}"
+            )
+        try:
+            shutil.copyfile(source, destination / name)
+        except OSError as exc:
+            raise BuildError(
+                f"cannot copy the media file {display_path(source)}: "
+                f"{exc.strerror or type(exc).__name__}"
+            ) from None
+    return len(names)
+
+
 # --------------------------------------------------------------------------
 # Build
 # --------------------------------------------------------------------------
 
 
-def load_template(path: Path) -> Template:
-    """Read and parse the page template."""
+def _read_source(path: Path, what: str) -> str:
+    if path.is_symlink():
+        raise BuildError(
+            f"the {what} must not be a symbolic link: {display_path(path)}"
+        )
     try:
-        source = path.read_text(encoding="utf-8-sig")
+        return path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
-        raise BuildError(f"template not found: {display_path(path)}") from None
+        raise BuildError(f"{what} not found: {display_path(path)}") from None
     except UnicodeDecodeError as exc:
         raise BuildError(
             f"{display_path(path)}: not valid UTF-8 (at byte {exc.start})"
         ) from None
     except OSError as exc:
         raise BuildError(
-            f"cannot read the template {display_path(path)}: {exc.strerror}"
+            f"cannot read the {what} {display_path(path)}: {exc.strerror}"
         ) from None
-    return parse_template(source, path.name)
+
+
+def load_template(path: Path) -> Template:
+    """Read and parse the page template."""
+    return parse_template(_read_source(path, "template"), path.name)
+
+
+def load_stub(path: Path) -> str:
+    """Read the stub page (published as `index.html` and `404.html`).
+
+    The stub is the same for everybody and gets no data at all, so template
+    syntax in it is an error rather than something to render.  HTML comments
+    are removed, as on the pages.
+    """
+    source = _read_source(path, "stub page")
+    check_rendered(
+        source,
+        path.name,
+        problem="must not contain template syntax (the stub gets no data)",
+    )
+    return strip_html_comments(source, path.name)
 
 
 def render_pages(
@@ -1420,16 +2813,16 @@ def render_pages(
     """Render every invitation; returns (token, html) pairs.
 
     Rendering happens entirely in memory: a broken template must not leave a
-    half-written output directory behind.
+    half-written output directory behind.  HTML comments are removed from the
+    result, so that notes in the template are never published.
     """
     pages: list[tuple[str, str]] = []
     failures: dict[str, list[str]] = {}  # message -> labels, in order of appearance
     for index, invitation in enumerate(invitations, start=1):
         label = invitation_label(index, invitation.get("token"))
         try:
-            pages.append(
-                (invitation["token"], template.render(build_context(site, invitation)))
-            )
+            page = template.render(build_context(site, invitation))
+            pages.append((invitation["token"], strip_html_comments(page, template.name)))
         except TemplateError as exc:
             failures.setdefault(str(exc), []).append(label)
     if failures:
@@ -1447,7 +2840,7 @@ def write_pages(stage: Path, pages: Iterable[tuple[str, str]]) -> int:
     """Write `i/<token>/index.html` for every rendered page."""
     count = 0
     for token, page in pages:
-        path = stage / "i" / token / "index.html"
+        path = stage / PAGES_DIRNAME / token / PAGE_FILE
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "w", encoding="utf-8", newline="\n") as handle:
@@ -1458,6 +2851,16 @@ def write_pages(stage: Path, pages: Iterable[tuple[str, str]]) -> int:
     return count
 
 
+def _write_file(path: Path, content: bytes) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    except OSError as exc:
+        raise BuildError(
+            f"cannot write {_redact_paths(path.name)}: {exc.strerror}"
+        ) from None
+
+
 def build_site(
     data_dir: Path,
     media_dir: Path,
@@ -1465,31 +2868,51 @@ def build_site(
     code_dir: Path = CODE_DIR,
     report: Report | None = None,
     log: Callable[[str], None] = print,
-) -> None:
-    """Validate the data and write the output directory."""
+) -> OutputStats:
+    """Validate the data, write the output directory and check the result.
+
+    The output is assembled in a temporary directory and only replaces
+    `out_dir` when every check has passed.  The log gets counters and paths,
+    never data.
+    """
     report = report if report is not None else Report()
+    assets_dir = code_dir / ASSETS_DIRNAME
     check_out_dir(out_dir, code_dir=code_dir, data_dir=data_dir, media_dir=media_dir)
 
-    site, invitations = load_data(data_dir, media_dir, report)
+    site, invitations = load_data(data_dir, media_dir, report, assets_dir=assets_dir)
     log(
         f"build: {len(invitations)} invitation(s), {report.media_files} media file(s) "
         f"validated (data: {display_path(data_dir)}, media: {display_path(media_dir)})"
     )
 
     template = load_template(code_dir / TEMPLATE_FILE)
+    stub = load_stub(code_dir / STUB_FILE).encode("utf-8")
     pages = render_pages(template, site, invitations)
+    media_name = site["mediaDir"]
 
     with _StagedOutput(out_dir, warn=report.warn) as stage:
         written = write_pages(stage, pages)
-        assets = copy_assets(code_dir / ASSETS_DIRNAME, stage / ASSETS_DIRNAME)
-        # Extension point for the full build: stub pages (index.html, 404.html),
-        # the .ics file, _headers, robots.txt, the media copy into
-        # assets/<mediaDir>/ and the checks on the finished output.
+        for name in STUB_OUTPUTS:
+            _write_file(stage / name, stub)
+        assets = copy_assets(assets_dir, stage / ASSETS_DIRNAME, ignore=is_styleguide_asset)
+        media = copy_media(site, media_dir, stage / ASSETS_DIRNAME / media_name)
+        _write_file(stage / ASSETS_DIRNAME / media_name / ICS_FILE, build_ics(site))
+        _write_file(stage / HEADERS_FILE, HEADERS_TEXT.encode("utf-8"))
+        _write_file(stage / ROBOTS_FILE, ROBOTS_TEXT.encode("utf-8"))
+        stats = check_output(stage, [token for token, _page in pages], media_name)
 
     out_shown = display_path(out_dir)
-    log(f"build: wrote {written} page(s) to {out_shown}/i/")
+    log(f"build: wrote {written} page(s) to {out_shown}/{PAGES_DIRNAME}/")
     log(f"build: copied {assets} asset file(s) to {out_shown}/{ASSETS_DIRNAME}/")
-    log(f"build: OK -> {out_shown}")
+    log(
+        f"build: copied {media} media file(s) and wrote {ICS_FILE} to "
+        f"{out_shown}/{ASSETS_DIRNAME}/<mediaDir>/"
+    )
+    log(
+        f"build: OK -> {out_shown} ({written} page(s), {media} media file(s), "
+        f"{stats.files} file(s) in total, {format_size(stats.size)})"
+    )
+    return stats
 
 
 # --------------------------------------------------------------------------
@@ -1536,7 +2959,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
     data_dir = _data_dir(args, code_dir)
     media_dir = _media_dir(args, code_dir)
     report = _cli_report()
-    _site, invitations = load_data(data_dir, media_dir, report)
+    _site, invitations = load_data(
+        data_dir, media_dir, report, assets_dir=code_dir / ASSETS_DIRNAME
+    )
     _stdout(
         f"validate: OK - {len(invitations)} invitation(s), "
         f"{report.media_files} media file(s) (data: {display_path(data_dir)}, "
@@ -1550,11 +2975,65 @@ def cmd_token(_args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def cmd_links(_args: argparse.Namespace) -> int:
-    # Implemented by a later build stage; the subcommand exists so that the
-    # command line stays stable.
-    _stderr("links: not implemented yet")
-    return EXIT_ERROR
+#: Environment variables that mark an automated run; `links` refuses to work
+#: there, because it is the one command that prints personal data.
+CI_ENVIRONMENT_VARIABLES = ("CI", "GITHUB_ACTIONS")
+
+
+def running_in_ci(environ: Any = None) -> bool:
+    """True when `CI` or `GITHUB_ACTIONS` is set (and is not empty, 0 or false)."""
+    environ = os.environ if environ is None else environ
+    return any(
+        environ.get(name, "").strip().lower() not in ("", "0", "false")
+        for name in CI_ENVIRONMENT_VARIABLES
+    )
+
+
+def parse_base_url(value: str) -> str:
+    """`--base`: an http(s) URL of the site; the trailing '/' is dropped."""
+    value = value.strip()
+    try:
+        parts = urlsplit(value)
+        parts.port  # noqa: B018 - raises ValueError for a malformed port
+    except ValueError:
+        parts = None
+    if (
+        parts is None
+        or parts.scheme.lower() not in ("http", "https")
+        or not parts.hostname
+        or parts.query
+        or parts.fragment
+        or "?" in value
+        or "#" in value
+        or any(char.isspace() for char in value)
+    ):
+        raise argparse.ArgumentTypeError(
+            "expected the site address, e.g. https://example.org "
+            "(http or https, no query string or fragment)"
+        )
+    return value.rstrip("/")
+
+
+def invitation_links(base: str, invitations: Sequence[dict]) -> list[str]:
+    """`<greeting><TAB><base>/i/<token>/` for every invitation."""
+    return [
+        f"{' '.join(invitation['greeting'].split())}\t"
+        f"{base}/{PAGES_DIRNAME}/{invitation['token']}/"
+        for invitation in invitations
+    ]
+
+
+def cmd_links(args: argparse.Namespace) -> int:
+    if running_in_ci():
+        raise BuildError(
+            "this command prints personal data and is meant for local use only; "
+            f"it does not run in CI ({' or '.join(CI_ENVIRONMENT_VARIABLES)} is set)"
+        )
+    _site, invitations = load_data(_data_dir(args, CODE_DIR), report=_cli_report())
+    # Nothing is printed unless the whole data set is valid.
+    for line in invitation_links(args.base, invitations):
+        _stdout(line)
+    return EXIT_OK
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1600,7 +3079,13 @@ def build_parser() -> argparse.ArgumentParser:
     links_cmd = subparsers.add_parser(
         "links", help="print invitation links for manual sending (local use only)"
     )
-    links_cmd.add_argument("--base", metavar="URL", required=True, help="site base URL")
+    links_cmd.add_argument(
+        "--base",
+        metavar="URL",
+        required=True,
+        type=parse_base_url,
+        help="address of the published site, e.g. https://example.org",
+    )
     add_data_options(links_cmd, media=False)
     links_cmd.set_defaults(func=cmd_links)
 
@@ -1620,7 +3105,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(args.func(args))
     except ValidationError as exc:
         for message in exc.errors:
-            _stderr(f"error: {message}")
+            _stderr(f"error: {_redact_paths(message)}")
         _stderr(f"{command}: failed with {len(exc.errors)} error(s)")
         return EXIT_ERROR
     except BuildError as exc:
