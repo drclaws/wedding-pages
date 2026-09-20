@@ -24,13 +24,13 @@
     ['Типографическая шкала', /^--text-/],
     ['Отступы', /^--(space-|flow-)/],
     ['Контейнер', /^--container-/],
-    ['Сетка', /^--(grid-|gallery-columns|countdown-columns|countdown-gap)/],
+    ['Сетка', /^--(grid-|gallery-columns|countdown-columns|countdown-gap|countdown-inline-)/],
     ['Радиусы, тени, линии', /^--(radius-|shadow-|line-width|focus-ring|opacity-)/],
     ['Пропорции изображений и кадр', /^--(ratio-|image-focus)/],
     ['Высота экрана, обложка, предел медиа', /^--(viewport-|cover-height-|cover-min-|media-max-)/],
     ['Движение', /^--(duration-|ease-|reveal-|cover-distance|hover-scale)/],
     ['Доступность и слои', /^--(tap-|z-|safe-inset-)/],
-    ['Токены компонентов', /^--(player-|icon-|countdown-cell|divider-|card-|btn-)/]
+    ['Токены компонентов', /^--(player-|icon-|countdown-cell|schedule-|divider-|card-|btn-)/]
   ];
   var OTHER = 'Прочее';
 
@@ -41,8 +41,14 @@
      значение, длина измеряется скрытым пробником: свойству width назначается
      var(--токен) и читается уже разрешённая ширина. Единицы, зависящие от шрифта
      конкретного элемента (ch, em), не разрешаются: у пробника свой шрифт, и
-     число получилось бы не тем, что в компоненте, — показывается исходная запись. */
+     число получилось бы не тем, что в компоненте, — показывается исходная запись.
+     Исключение — пороги медиазапросов (--bp-*) в em: там em — размер шрифта
+     браузера по умолчанию, и пробник измеряет их при font-size: medium. */
   var LENGTH_RE = /^(calc|clamp|min|max|env)\(|^-?[0-9.]+(px|rem|vw|vh|svh|dvh|lvh|vmin|vmax)$/;
+  var MEDIA_EM_RE = /^--bp-/;
+  var EM_RE = /^-?[0-9.]+em$/;
+  /* Короткая запись в rem/em показывается вместе с пикселями: «48em = 768px». */
+  var RELATIVE_RE = /^-?[0-9.]+(rem|em)$/;
   var probe = null;
 
   function probeElement() {
@@ -62,6 +68,7 @@
   function resolveLength(name) {
     var node = probeElement();
     node.style.removeProperty('width');
+    node.style.setProperty('font-size', MEDIA_EM_RE.test(name) ? 'medium' : 'inherit');
     node.style.setProperty('width', 'var(' + name + ')');
     var resolved = getComputedStyle(node).width;
     node.style.removeProperty('width');
@@ -73,10 +80,10 @@
     var raw = css.getPropertyValue(name).trim().replace(/\s+/g, ' ');
     var shown = raw;
     var title = '';
-    if (LENGTH_RE.test(raw)) {
+    if (LENGTH_RE.test(raw) || (MEDIA_EM_RE.test(name) && EM_RE.test(raw))) {
       var resolved = resolveLength(name);
       if (resolved && resolved !== raw) {
-        shown = resolved;
+        shown = RELATIVE_RE.test(raw) ? raw + ' = ' + resolved : resolved;
         title = raw;
       }
     }
@@ -213,6 +220,31 @@
     }
   }
 
+  /* Переключатель «Проверка масштаба шрифта»: ставит на <html> атрибут, по
+     которому таблица стилей витрины меняет размер шрифта корневого элемента. */
+  function initFontScale(onChange) {
+    var group = document.querySelector('[data-font-scale]');
+    if (!group) return;
+    var buttons = group.querySelectorAll('[data-font-scale-value]');
+    group.addEventListener('click', function (event) {
+      var button = event.target.closest('[data-font-scale-value]');
+      if (!button) return;
+      var scale = button.getAttribute('data-font-scale-value');
+      if (scale === '100') {
+        document.documentElement.removeAttribute('data-sg-font-scale');
+      } else {
+        document.documentElement.setAttribute('data-sg-font-scale', scale);
+      }
+      for (var i = 0; i < buttons.length; i++) {
+        var pressed = buttons[i] === button;
+        buttons[i].setAttribute('aria-pressed', pressed ? 'true' : 'false');
+        buttons[i].classList.toggle('btn--primary', pressed);
+        buttons[i].classList.toggle('btn--secondary', !pressed);
+      }
+      onChange();
+    });
+  }
+
   function init() {
     var container = document.querySelector('[data-token-table]');
     if (!container) return;
@@ -226,6 +258,8 @@
     }
     var rows = build(container, names);
     refresh(rows, meta);
+
+    initFontScale(function () { refresh(rows, meta); });
 
     var pending = false;
     window.addEventListener('resize', function () {

@@ -14,10 +14,29 @@
   --sg-value-width: 22ch;
   --sg-swatch-size: var(--space-lg);
   --sg-header-gap: var(--space-sm);
-  --sg-demo-min: 240px;
+  --sg-demo-min: 15rem;
   --sg-scale-label-width: 14ch;
   --sg-progress-demo: 40%;   /* показательная позиция воспроизведения */
   --sg-plate-angle: 45deg;   /* наклон штриховки плашек */
+  /* Проверка масштаба шрифта: размер шрифта корневого элемента. */
+  --sg-font-scale-125: 125%;
+  --sg-font-scale-150: 150%;
+  --sg-font-scale-200: 200%;
+}
+
+/* --- Проверка масштаба шрифта ---------------------------------------------
+   Атрибут на <html> ставит скрипт витрины; всё, что задано в rem, следует за
+   размером шрифта корневого элемента. Без скрипта переключатель скрыт. */
+html[data-sg-font-scale="125"] { font-size: var(--sg-font-scale-125); }
+html[data-sg-font-scale="150"] { font-size: var(--sg-font-scale-150); }
+html[data-sg-font-scale="200"] { font-size: var(--sg-font-scale-200); }
+
+.sg-fontscale {
+  display: none;
+}
+
+.js .sg-fontscale {
+  display: block;
 }
 
 /* --- Каркас страницы ------------------------------------------------------ */
@@ -77,7 +96,10 @@
   font-size: var(--text-sm);
 }
 
+/* Рамка — контейнер для @container: компоненты внутри (таймер) раскладываются
+   по её ширине, как на странице — по ширине .container. */
 .sg-demo {
+  container-type: inline-size;
   margin-block-start: var(--space-md);
   padding: var(--space-md);
   border: var(--line-width-hairline) dashed var(--color-line-strong);
@@ -224,8 +246,12 @@
   color: var(--color-text-muted);
 }
 
+/* Плашка может сжиматься и переноситься: при крупном шрифте на узком экране
+   она шире строки таблицы. */
 .sg-token__badge {
-  flex: none;
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
   padding: var(--space-3xs) var(--space-2xs);
   border-radius: var(--radius-pill);
   background-color: var(--color-surface-sunken);
