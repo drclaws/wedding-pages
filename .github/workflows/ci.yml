@@ -1,0 +1,143 @@
+# Builds the site from the bundled example data and runs every check.
+# No secrets, no deployment, nothing is uploaded.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  build:
+    name: Build on examples (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Repository hygiene (no tracked media, no tracked build output)
+        run: |
+          set -euo pipefail
+          media="$(git ls-files | grep -Ei '\.(png|jpe?g|webp|gif|avif|mp4|mov|webm|ico|svg)$' || true)"
+          if [ -n "$media" ]; then
+            echo "Media files must not be tracked:" >&2
+            echo "$media" >&2
+            exit 1
+          fi
+          output="$(git ls-files -- dist examples/media)"
+          if [ -n "$output" ]; then
+            echo "Generated files must not be tracked:" >&2
+            echo "$output" >&2
+            exit 1
+          fi
+          echo "OK: no tracked media or build output"
+
+      - name: Unit tests
+        run: |
+          set -euo pipefail
+          python -m unittest
+
+      - name: Ensure ffmpeg is available
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+          ffmpeg -version | sed -n 1p
+
+      - name: Generate example media
+        run: |
+          set -euo pipefail
+          python tools/gen_example_media.py
+
+      - name: Validate and build the main example set
+        run: |
+          set -euo pipefail
+          python build.py validate
+          python build.py build --out "$RUNNER_TEMP/dist"
+
+      - name: Validate and build the set without a venue and media
+        run: |
+          set -euo pipefail
+          python build.py validate --data examples/data-venue-pending --media examples/media-none
+          python build.py build --data examples/data-venue-pending --media examples/media-none --out "$RUNNER_TEMP/dist-pending"
+
+      - name: Check the built site
+        run: |
+          set -euo pipefail
+          check_site() {
+            local data="$1" out="$2" extra expected actual required
+            cmp "$out/index.html" "$out/404.html"
+            for required in _headers robots.txt; do
+              if [ ! -s "$out/$required" ]; then
+                echo "Missing or empty $required in $out" >&2
+                return 1
+              fi
+            done
+            extra="$(find "$out" \( -iname '*.json' -o -iname '*.map' -o -iname 'styleguide*' \) -print)"
+            if [ -n "$extra" ]; then
+              echo "Files that must not be published:" >&2
+              echo "$extra" >&2
+              return 1
+            fi
+            expected="$(python -c 'import json, sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))))' "$data/invitations.json")"
+            actual="$(find "$out/i" -mindepth 2 -maxdepth 2 -type f -name index.html | wc -l | tr -d '[:space:]')"
+            if [ "$expected" != "$actual" ]; then
+              echo "Expected $expected page(s) in $out, found $actual" >&2
+              return 1
+            fi
+            echo "OK: $out ($actual page(s))"
+          }
+          check_site examples/data "$RUNNER_TEMP/dist"
+          check_site examples/data-venue-pending "$RUNNER_TEMP/dist-pending"
+
+      - name: Reproducible build
+        run: |
+          set -euo pipefail
+          python build.py build --out "$RUNNER_TEMP/dist2"
+          tree_hash() {
+            (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum)
+          }
+          tree_hash "$RUNNER_TEMP/dist" > "$RUNNER_TEMP/dist.sha256"
+          tree_hash "$RUNNER_TEMP/dist2" > "$RUNNER_TEMP/dist2.sha256"
+          test -s "$RUNNER_TEMP/dist.sha256"
+          diff "$RUNNER_TEMP/dist.sha256" "$RUNNER_TEMP/dist2.sha256"
+          echo "OK: two builds are identical"
+
+      - name: Working tree stays clean
+        run: |
+          set -euo pipefail
+          status="$(git status --porcelain)"
+          if [ -n "$status" ]; then
+            echo "The build left untracked or modified files:" >&2
+            echo "$status" >&2
+            exit 1
+          fi
+          echo "OK: working tree is clean"
