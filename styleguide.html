@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="only light">
+  <meta name="text-scale" content="scale">
   <meta name="robots" content="noindex, nofollow">
   <meta name="referrer" content="no-referrer">
   <title>Дизайн-система</title>
@@ -48,7 +49,33 @@
         (<code>getComputedStyle</code>), поэтому таблица показывает то, что
         реально применилось на текущей ширине, и пересчитывается при изменении
         размера окна. Пометка «mobile/desktop» — у производных токенов, для
-        которых заданы отдельные опорные значения для двух форматов.
+        которых заданы отдельные опорные значения для двух форматов. У токенов,
+        записанных в <code>rem</code> или <code>em</code>, показаны и исходная
+        запись, и пиксели; полная формула — во всплывающей подсказке значения.
+      </p>
+
+      <div class="sg-demo sg-fontscale" data-font-scale>
+        <p class="sg-demo__label">Проверка масштаба шрифта</p>
+        <div class="sg-row" role="group" aria-label="Размер шрифта страницы">
+          <button type="button" class="btn btn--primary" data-font-scale-value="100" aria-pressed="true">100 %</button>
+          <button type="button" class="btn btn--secondary" data-font-scale-value="125" aria-pressed="false">125 %</button>
+          <button type="button" class="btn btn--secondary" data-font-scale-value="150" aria-pressed="false">150 %</button>
+          <button type="button" class="btn btn--secondary" data-font-scale-value="200" aria-pressed="false">200 %</button>
+        </div>
+      </div>
+      <p class="sg-note">
+        Страница следует размеру шрифта пользователя: шрифты, ширины контейнеров
+        и иконки заданы в <code>rem</code>, отступы — в <code>rem</code> с
+        потолком от ширины окна, пороги раскладки компонентов — в
+        <code>rem</code> по ширине контейнера. Кнопки выше (нужен скрипт) меняют
+        размер шрифта корневого элемента этой страницы — так же, как его меняет
+        системная настройка на телефоне. Проверять на ширине 360 px при 150 % и
+        200 %: без горизонтальной прокрутки, таймер складывается в 2×2, подписи
+        не выходят из ячеек. Граница раскладки <code>--bp-layout</code> задана в
+        <code>em</code> медиазапроса и зависит от размера шрифта в настройках
+        браузера, а не от корневого элемента: её проверяют настройкой браузера
+        «Размер шрифта» — при «очень крупном» две колонки включаются на более
+        широком окне.
       </p>
 
       <div class="sg-demo">
@@ -134,7 +161,8 @@
       <h2 class="section__title">Раскладка</h2>
       <p class="prose prose--muted">
         Один контейнер в двух ширинах, одна сетка, один вертикальный ритм и одно
-        медиа с фиксированными пропорциями. На границе раскладки (768&nbsp;px)
+        медиа с фиксированными пропорциями. На границе раскладки
+        (<code>48em</code> — 768&nbsp;px при размере шрифта по умолчанию)
         переопределяются только раскладочные токены: число колонок и пропорции
         изображений; визуальный стиль компонентов не меняется.
       </p>
@@ -264,6 +292,11 @@
 
       <div class="sg-demo">
         <p class="sg-demo__label">Таймер: .countdown / .countdown__cell</p>
+        <p class="sg-note">
+          Раскладка зависит от ширины контейнера, а не окна: четыре ячейки в
+          ряд, если контейнер не уже <code>--countdown-inline-min</code>, иначе
+          2×2. Здесь контейнер — рамка демонстрационного блока.
+        </p>
         <ul class="countdown">
           <li class="countdown__cell">
             <span class="countdown__value">128</span>

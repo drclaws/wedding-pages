@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="only light">
+  <meta name="text-scale" content="scale">
   <meta name="robots" content="noindex, nofollow">
   <meta name="referrer" content="no-referrer">
   <title>Приглашение</title>
@@ -125,7 +126,7 @@
             <p>{{venue.description}}</p>
           </div>
           <!-- endif -->
-          <ul class="venue__maps" aria-label="Открыть на карте">
+          <ul class="venue__maps" role="list" aria-label="Открыть на карте">
             <!-- if:venue.mapLinks.google -->
             <li class="venue__map"><a class="btn btn--secondary" href="{{venue.mapLinks.google}}" target="_blank" rel="noopener noreferrer">Google Карты</a></li>
             <!-- endif -->
@@ -138,15 +139,15 @@
           </ul>
           <!-- if:venue.directionsSrc -->
           <figure class="venue__scheme">
-            <div class="media media--scheme">
+            <a class="media media--scheme" href="{{venue.directionsSrc}}">
               <img src="{{venue.directionsSrc}}" alt="Схема проезда" loading="lazy" decoding="async">
-            </div>
+            </a>
             <figcaption class="gallery__caption">Схема проезда</figcaption>
           </figure>
           <!-- endif -->
         </div>
         <!-- if:venue.photos -->
-        <ul class="gallery venue__gallery" data-gallery data-reveal>
+        <ul class="gallery venue__gallery" role="list" data-gallery data-reveal>
           <!-- each:venue.photos -->
           <li class="gallery__item"><a class="gallery__link" href="{{.src}}" data-lightbox><img src="{{.src}}" alt="Фотография места проведения" loading="lazy" decoding="async"></a></li>
           <!-- endeach -->
@@ -215,7 +216,7 @@
       <h2 class="section__title" id="video-title">Видео</h2>
       <div class="player" data-player>
         <video class="player__media" controls playsinline preload="none" poster="{{video.posterSrc}}">
-          <source src="{{video.src}}" type="video/mp4">
+          <source src="{{video.src}}">
         </video>
       </div>
     </div>
