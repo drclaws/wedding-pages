@@ -9,7 +9,8 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 CI = WORKFLOWS / "ci.yml"
 
 ALLOWED_ACTIONS = {"actions/checkout", "actions/setup-python"}
-ALLOWED_EXPRESSIONS = re.compile(r"^(matrix\.[\w-]+|github\.ref|github\.workflow)$")
+ALLOWED_EXPRESSIONS = re.compile(
+    r"^(matrix\.[\w-]+|github\.ref|github\.workflow|github\.ref != 'refs/heads/main')$")
 
 
 def strip_comments(text):
@@ -72,7 +73,7 @@ class CiWorkflowTest(unittest.TestCase):
         )
 
     def test_triggers(self):
-        self.assertRegex(self.text, r"(?m)^on:\n  push:\n  pull_request:\n")
+        self.assertRegex(self.text, r"(?m)^on:\n  push:\n    branches: \[main\]\n  pull_request:\n")
         self.assertNotIn("pull_request_target", self.raw)
         self.assertNotIn("workflow_run", self.raw)
 
@@ -111,17 +112,34 @@ class CiWorkflowTest(unittest.TestCase):
         self.assertRegex(self.text, r"(?m)^\s+timeout-minutes:\s*\d+$")
 
     def test_concurrency_cancels_stale_runs(self):
-        self.assertRegex(self.text, r"(?m)^concurrency:\n  group: .*github\.ref.*\n  cancel-in-progress: true$")
+        self.assertRegex(
+            self.text,
+            r"(?m)^concurrency:\n  group: .*github\.ref.*\n"
+            r"  cancel-in-progress: \$\{\{ github\.ref != 'refs/heads/main' \}\}$",
+        )
 
     def test_hygiene_allows_only_vendored_library_files(self):
-        hygiene = [block for block in self.runs if "git ls-files" in block]
+        hygiene = [block for block in self.runs if "ls-files" in block]
         self.assertEqual(len(hygiene), 1)
         block = hygiene[0]
-        self.assertIn("git ls-files | grep -v '^assets/vendor/' | grep -Ei "
+        listings = re.findall(r"git\b.*?\bls-files\b[^|)]*", block)
+        self.assertGreaterEqual(len(listings), 2)
+        for listing in listings:
+            self.assertRegex(listing, r"^git -c core\.quotePath=false ls-files -z\b")
+        self.assertIn("must not contain line breaks", block)
+        self.assertIn("tracked | grep -av '^assets/vendor/' | grep -aEi "
                       "'\\.(png|jpe?g|webp|gif|avif|mp4|mov|webm|ico|svg)$'", block)
-        self.assertIn("git ls-files -- assets/vendor | grep -Ev "
+        self.assertIn("tracked assets/vendor | grep -aEv "
                       "'(\\.(js|css|svg|txt|woff2)|/\\.gitkeep)$'", block)
-        self.assertEqual(block.count("exit 1"), 3)
+        self.assertIn('tracked dist examples/media', block)
+        self.assertEqual(block.count("exit 1"), 4)
+
+    def test_absolute_site_address_build_is_checked(self):
+        blocks = [block for block in self.runs if "--base-url" in block]
+        self.assertEqual(len(blocks), 1)
+        self.assertIn('--base-url https://example.invalid --out "$RUNNER_TEMP/dist-abs"', blocks[0])
+        self.assertIn("og:image", blocks[0])
+        self.assertIn('"$RUNNER_TEMP/dist-abs/index.html"', blocks[0])
 
     def test_build_output_goes_to_runner_temp(self):
         outs = re.findall(r"--out\s+(\S+)", "\n".join(self.runs))

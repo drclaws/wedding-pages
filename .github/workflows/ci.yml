@@ -4,6 +4,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -12,7 +13,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 defaults:
   run:
@@ -32,32 +33,42 @@ jobs:
         python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - name: Check out the repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Python ${{ matrix.python }}
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
 
       - name: Repository hygiene (no tracked media outside assets/vendor, no tracked build output)
         run: |
           set -euo pipefail
+          # Names are read NUL-separated and unquoted, so non-ASCII names are matched as is.
+          tracked() {
+            git -c core.quotePath=false ls-files -z -- "$@" | tr '\0' '\n'
+          }
+          names="$(git -c core.quotePath=false ls-files -z | tr -d '\n' | tr '\0' '\n' | wc -l)"
+          lines="$(tracked | wc -l)"
+          if [ "$names" -ne "$lines" ]; then
+            echo "Tracked file names must not contain line breaks" >&2
+            exit 1
+          fi
           # Vendored library files under assets/vendor/ are the only exception.
-          media="$(git ls-files | grep -v '^assets/vendor/' | grep -Ei '\.(png|jpe?g|webp|gif|avif|mp4|mov|webm|ico|svg)$' || true)"
+          media="$(tracked | grep -av '^assets/vendor/' | grep -aEi '\.(png|jpe?g|webp|gif|avif|mp4|mov|webm|ico|svg)$' || true)"
           if [ -n "$media" ]; then
             echo "Media files must not be tracked:" >&2
             echo "$media" >&2
             exit 1
           fi
-          vendor="$(git ls-files -- assets/vendor | grep -Ev '(\.(js|css|svg|txt|woff2)|/\.gitkeep)$' || true)"
+          vendor="$(tracked assets/vendor | grep -aEv '(\.(js|css|svg|txt|woff2)|/\.gitkeep)$' || true)"
           if [ -n "$vendor" ]; then
             echo "Only .js, .css, .svg, .txt and .woff2 files (and a .gitkeep placeholder) may be tracked under assets/vendor/:" >&2
             echo "$vendor" >&2
             exit 1
           fi
-          output="$(git ls-files -- dist examples/media)"
+          output="$(tracked dist examples/media)"
           if [ -n "$output" ]; then
             echo "Generated files must not be tracked:" >&2
             echo "$output" >&2
@@ -96,6 +107,22 @@ jobs:
           python build.py validate --data examples/data-venue-pending --media examples/media-none
           python build.py build --data examples/data-venue-pending --media examples/media-none --out "$RUNNER_TEMP/dist-pending"
 
+      - name: Build with an absolute site address
+        run: |
+          set -euo pipefail
+          python build.py build --base-url https://example.invalid --out "$RUNNER_TEMP/dist-abs"
+          page="$(find "$RUNNER_TEMP/dist-abs/i" -mindepth 2 -maxdepth 2 -type f -name index.html | LC_ALL=C sort | sed -n 1p)"
+          test -n "$page"
+          if ! grep -Eq '<meta property="og:image" content="https://example\.invalid/assets/[^"]+">' "$page"; then
+            echo "og:image on $page does not start with https://example.invalid/assets/" >&2
+            exit 1
+          fi
+          if grep -q 'example\.invalid' "$RUNNER_TEMP/dist-abs/index.html" "$RUNNER_TEMP/dist-abs/404.html"; then
+            echo "The stub page must not contain the site address" >&2
+            exit 1
+          fi
+          echo "OK: absolute link preview image on invitation pages, no address in the stub"
+
       - name: Check the built site
         run: |
           set -euo pipefail
@@ -123,6 +150,7 @@ jobs:
             echo "OK: $out ($actual page(s))"
           }
           check_site examples/data "$RUNNER_TEMP/dist"
+          check_site examples/data "$RUNNER_TEMP/dist-abs"
           check_site examples/data-venue-pending "$RUNNER_TEMP/dist-pending"
 
       - name: Reproducible build
