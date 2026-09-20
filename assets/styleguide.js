@@ -24,7 +24,7 @@
     ['Типографическая шкала', /^--text-/],
     ['Отступы', /^--(space-|flow-)/],
     ['Контейнер', /^--container-/],
-    ['Сетка', /^--(grid-|gallery-columns|countdown-columns|countdown-gap|countdown-inline-)/],
+    ['Сетка', /^--(grid-|gallery-columns|countdown-columns|countdown-gap|countdown-inline-|countdown-stack-)/],
     ['Радиусы, тени, линии', /^--(radius-|shadow-|line-width|focus-ring|opacity-)/],
     ['Пропорции изображений и кадр', /^--(ratio-|image-focus)/],
     ['Высота экрана, обложка, предел медиа', /^--(viewport-|cover-height-|cover-min-|media-max-)/],
