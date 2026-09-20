@@ -18,6 +18,10 @@ import unittest
 import zlib
 from pathlib import Path
 
+# the generator is imported by path, which must not leave `__pycache__`
+# directories in the working tree
+sys.dont_write_bytecode = True
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tools" / "gen_example_media.py"
 EXAMPLES_DATA = REPO_ROOT / "examples" / "data"
@@ -128,14 +132,21 @@ class PlanMediaTest(unittest.TestCase):
         self.assertEqual(gen.plan_media(site), [])
 
     def test_unsafe_names_are_rejected(self):
-        for name in ("../escape.png", "sub/dir.png", "sub\\dir.png", "..", "a..b.png"):
+        """The same rules as in the build: a plain, visible, clean file name."""
+        names = (
+            "../escape.png", "sub/dir.png", "sub\\dir.png", "..", "a..b.png",
+            ".hidden.png", " padded.png", "padded.png ", "tab\there.png", "c:drive.png",
+            "event.ics", 7,
+        )  # fmt: skip
+        for name in names:
             with self.subTest(name=name):
                 with self.assertRaises(gen.GenerationError):
                     gen.plan_media({"venue": {"photos": [name]}})
 
     def test_unsupported_extensions_are_rejected(self):
-        with self.assertRaises(gen.GenerationError):
-            gen.plan_media({"venue": {"photos": ["photo.gif"]}})
+        for name in ("photo.gif", "photo.webp", "photo.svg"):
+            with self.subTest(name=name), self.assertRaises(gen.GenerationError):
+                gen.plan_media({"venue": {"photos": [name]}})
         with self.assertRaises(gen.GenerationError):
             gen.plan_media({"video": {"file": "clip.mkv"}})
 
@@ -148,6 +159,16 @@ class PlanMediaTest(unittest.TestCase):
             gen.plan_media({"venue": {"photos": "a.png"}})
         with self.assertRaises(gen.GenerationError):
             gen.plan_media({"video": "clip.mp4"})
+
+    def test_blank_photo_entries_are_skipped(self):
+        site = {"venue": {"photos": ["a.png", "", "  ", "b.png"]}}
+        self.assertEqual([item.name for item in gen.plan_media(site)], ["a.png", "b.png"])
+
+    def test_load_site_reports_bad_encoding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "site.json").write_bytes(b'{"coupleNames": "\xff\xfe"}')
+            with self.assertRaisesRegex(gen.GenerationError, "not valid UTF-8"):
+                gen.load_site(Path(tmp))
 
     def test_load_site_reports_missing_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -194,9 +215,39 @@ class GenerateTest(unittest.TestCase):
         self.assertEqual(sizes["venue-1.png"], gen.PHOTO_SIZE)
         self.assertEqual(sizes["venue-2.png"], gen.PHOTO_PORTRAIT_SIZE)
         self.assertEqual(sizes["proposal-poster.png"], gen.POSTER_SIZE)
+        # a portrait clip, and a poster of the same proportions
+        self.assertEqual(gen.POSTER_SIZE, gen.VIDEO_SIZE)
+        self.assertEqual(gen.video_size(site), (720, 1280))
+        self.assertLess(gen.VIDEO_SIZE[0], gen.VIDEO_SIZE[1])
         self.assertEqual(sizes["directions.png"], gen.DIRECTIONS_SIZE)
         self.assertGreater(sizes["venue-1.png"][0], sizes["venue-1.png"][1])
         self.assertLess(sizes["venue-2.png"][0], sizes["venue-2.png"][1])
+
+    def test_colours_come_from_the_tokens(self):
+        site = {"venue": {"photos": ["venue-1.png"]}, "video": {"poster": "poster.png"}}
+        default, _ = self.generate(site)
+        before = [path.read_bytes() for path, _size in default]
+        frame = (1, 2, 3)
+        palette = gen.load_tokens(gen.DEFAULT_CSS)._replace(text_muted=frame, line=frame)
+        gen.generate(site, self.out, ffmpeg=None, report=lambda *_: None, palette=palette)
+        for (path, _size), old in zip(default, before):
+            self.assertNotEqual(path.read_bytes(), old)
+            rows = read_png(path.read_bytes())[3]
+            self.assertEqual(bytes(rows[0][:3]), bytes(frame))  # the frame
+
+    def test_poster_follows_the_video_size(self):
+        site = {"video": {"poster": "poster.png", "width": 640, "height": 360}}
+        created, _ = self.generate(site)
+        self.assertEqual(read_png(created[0][0].read_bytes())[:2], (640, 360))
+        for video in ({"width": 640}, {"width": 0, "height": 2}, {"width": 3, "height": 4}):
+            with self.subTest(video=video), self.assertRaises(gen.GenerationError):
+                self.generate({"video": {"poster": "poster.png", **video}})
+
+    def test_missing_token_is_an_error(self):
+        css = Path(self.tmp.name) / "app.css"
+        css.write_text(":root { --color-bg: #fff; }", encoding="utf-8")
+        with self.assertRaisesRegex(gen.GenerationError, "--color-"):
+            gen.load_tokens(css)
 
     def test_pending_example_creates_nothing(self):
         created, stderr = self.generate(gen.load_site(EXAMPLES_DATA_PENDING))
@@ -232,6 +283,8 @@ class GenerateTest(unittest.TestCase):
         self.assertEqual(len(created), 1)
         path, size = created[0]
         self.assertEqual(path.name, "clip.mp4")
+        probe = subprocess.run([FFMPEG, "-hide_banner", "-i", str(path)], capture_output=True, text=True)
+        self.assertIn("720x1280", probe.stderr)
         self.assertLess(size, gen.MAX_FILE_BYTES)
         self.assertGreater(size, 10 * 1024)
         data = path.read_bytes()
