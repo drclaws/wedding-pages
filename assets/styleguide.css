@@ -16,7 +16,6 @@
   --sg-header-gap: var(--space-sm);
   --sg-demo-min: 15rem;
   --sg-scale-label-width: 14ch;
-  --sg-progress-demo: 40%;   /* показательная позиция воспроизведения */
   --sg-plate-angle: 45deg;   /* наклон штриховки плашек */
   /* Проверка масштаба шрифта: размер шрифта корневого элемента. */
   --sg-font-scale-125: 125%;
@@ -300,11 +299,6 @@ html[data-sg-font-scale="330"] { font-size: var(--sg-font-scale-330); }
 .sg-scale__sample--xl { font-size: var(--text-xl); }
 .sg-scale__sample--2xl { font-size: var(--text-2xl); }
 .sg-scale__sample--display { font-size: var(--text-display); }
-
-/* Показательное положение дорожки прогресса (в жизни задаёт скрипт плеера). */
-.sg-progress-demo {
-  --player-progress-value: var(--sg-progress-demo);
-}
 
 /* Показ элементов поверх оверлея: полупрозрачная подложка лежит на плашке,
    как лайтбокс лежит на странице. */

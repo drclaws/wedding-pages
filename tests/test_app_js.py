@@ -45,8 +45,12 @@ class AppJsSourceTest(unittest.TestCase):
 
     def test_no_external_urls_or_network_calls(self):
         self.assertEqual(self.raw.count(SVG_NAMESPACE), 1)
-        self.assertNotRegex(self.raw.replace(SVG_NAMESPACE, ""),
-                            r"(?i)\b(?:https?:)?//[a-z0-9.-]+\.[a-z]{2,}")
+        # "\b" never matches before "//" (a quote is not a word character),
+        # so a protocol-relative address is looked for after a quote or a
+        # bracket, and an absolute one by its scheme
+        source = self.raw.replace(SVG_NAMESPACE, "")
+        for pattern in (r"(?i)https?://", r"""(?i)['"(]//[a-z0-9.-]+\.[a-z]{2,}"""):
+            self.assertNotRegex(source, pattern)
         for pattern in (r"\bfetch\s*\(", r"\bXMLHttpRequest\b", r"\bsendBeacon\b",
                         r"\bWebSocket\b", r"\bEventSource\b", r"\blocalStorage\b",
                         r"\bsessionStorage\b", r"\bdocument\.cookie\b"):

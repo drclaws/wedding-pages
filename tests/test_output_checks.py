@@ -12,6 +12,8 @@ from pathlib import Path
 from unittest import mock
 
 from tests import support
+
+from tools import gen_assets
 from tests.support import (
     CliTestCase,
     TempDirTestCase,
@@ -1063,12 +1065,108 @@ class SvgFileTests(unittest.TestCase):
         self.assertIn((2, "'<?xml-stylesheet' is not allowed"), found)
         self.assertIn((4, "'<!ENTITY' declarations are not allowed"), found)
 
+    def test_srcset_and_xml_base_are_refused(self):
+        """A browser acts on both; the URL rules here cannot follow them."""
+        cases = {
+            '<image srcset="/assets/a.png 1x, https://h.example.invalid/b.png 2x"/>':
+                "<image srcset>: 'srcset' is not allowed in SVG files",
+            '<image imagesrcset="/assets/a.png 1x"/>':
+                "<image imagesrcset>: 'imagesrcset' is not allowed in SVG files",
+            '<g xml:base="https://h.example.invalid/"><image href="a.png"/></g>':
+                "<g xml:base>: 'xml:base' is not allowed in SVG files",
+        }
+        for markup, expected in cases.items():
+            with self.subTest(markup=markup):
+                self.assertIn(expected, svg_problems(f"{self.SVG}{markup}</svg>"))
+
+    def test_the_namespace_decides_not_the_prefix(self):
+        """`<x:div xmlns:x="…/xhtml">` is HTML however it is spelled."""
+        cases = {
+            '<x:div xmlns:x="http://www.w3.org/1999/xhtml"/>':
+                "<x:div>: HTML elements are not allowed in SVG files",
+            '<a:img xmlns:a="http://www.w3.org/1999/xhtml"/>':
+                "<a:img>: HTML elements are not allowed in SVG files",
+            "<foo:bar/>":
+                "<foo:bar>: elements of another namespace are not allowed in SVG files",
+        }
+        for markup, expected in cases.items():
+            with self.subTest(markup=markup):
+                self.assertEqual(svg_problems(f"{self.SVG}{markup}</svg>"), [expected])
+
+    def test_a_prefix_bound_to_svg_is_fine(self):
+        for markup in ('<x:rect xmlns:x="http://www.w3.org/2000/svg" width="4"/>',
+                       '<svg:g><svg:rect width="4"/></svg:g>',
+                       '<defs><symbol id="a"><path d="M0 0h4v4z"/></symbol></defs>'
+                       '<use xlink:href="#a"/><use href="#a"/>',
+                       '<defs><linearGradient id="g"><stop offset="0"/></linearGradient></defs>'
+                       '<rect fill="url(#g)"/>'):  # fmt: skip
+            with self.subTest(markup=markup[:40]):
+                self.assertEqual(svg_problems(f"{self.SVG}{markup}</svg>"), [])
+
+    def test_the_vendored_sprite_and_the_generated_icon_pass(self):
+        sprite = support.ROOT / "assets" / "vendor" / "plyr-3.8.4" / "plyr.svg"
+        self.assertEqual(svg_problems(sprite.read_text(encoding="utf-8")), [])
+        palette = build.load_palette(support.ROOT / "assets")
+        icon = gen_assets.favicon_svg(palette).decode("utf-8")
+        self.assertEqual(svg_problems(icon), [])
+
+    def test_html_elements_inside_svg_are_refused(self):
+        for tag in ("xhtml:iframe", "XHTML:img", "html:div"):
+            with self.subTest(tag=tag):
+                problems = svg_problems(f"{self.SVG}<{tag}/></svg>")
+                self.assertEqual(
+                    problems, [f"<{tag.lower()}>: HTML elements are not allowed in SVG files"]
+                )
+
+    def test_a_script_keeps_its_own_message_whatever_the_prefix(self):
+        self.assertEqual(
+            svg_problems(f"{self.SVG}<html:script>x()</html:script></svg>"),
+            ["<html:script> is not allowed in SVG files"],
+        )
+
+    def test_svg_namespace_prefix_is_still_fine(self):
+        self.assertEqual(svg_problems(f'{self.SVG}<svg:rect width="4"/></svg>'), [])
+
     def test_messages_do_not_echo_the_path_of_an_external_url(self):
         problems = svg_problems(
             self.SVG + '<image href="https://h.example.invalid/private/path.png"/></svg>'
         )
         self.assertEqual(
             problems, ["<image href>: external URL 'https://h.example.invalid/…' is not allowed"]
+        )
+
+
+class SiteAddressMaskTests(unittest.TestCase):
+    """`mask_site`: the address of the site never reaches a message."""
+
+    BASE = "https://invite.example.invalid"
+
+    def test_the_address_and_the_host_are_masked(self):
+        cases = {
+            f"external URL '{self.BASE}/…'": "external URL '<site>/…'",
+            f"external URL '{self.BASE}'": "external URL '<site>'",
+            "host invite.example.invalid here": "host <site> here",
+            "//invite.example.invalid:8443/x": "<site>/x",
+            "HTTPS://INVITE.EXAMPLE.INVALID/x": "<site>/x",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(build.mask_site(text, self.BASE), expected)
+
+    def test_a_long_address_is_masked_in_its_shortened_form(self):
+        base = "https://" + "a" * 70 + ".example.invalid"
+        shown = build._show_url(f"{base}/assets/og.png")
+        self.assertIn("…", shown)
+        masked = build.mask_site(f"external URL '{shown}'", base)
+        self.assertNotIn("aaa", masked)
+
+    def test_without_an_address_nothing_changes(self):
+        self.assertEqual(build.mask_site("host example.org", ""), "host example.org")
+
+    def test_other_text_is_left_alone(self):
+        self.assertEqual(
+            build.mask_site("assets/app.css line 3: url()", self.BASE),
+            "assets/app.css line 3: url()",
         )
 
 

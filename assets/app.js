@@ -896,4 +896,138 @@
      для стилей отдаёт классами is-* и CSS-переменными через style.setProperty.
      ========================================================================== */
 
+
+  /* ==========================================================================
+     Модуль player — видеоплеер [data-player]
+     --------------------------------------------------------------------------
+     В разметке — обычный <video controls>. Если локальная библиотека плеера
+     загрузилась (window.Plyr), она заменяет нативную панель своей; нет
+     библиотеки или она не справилась — остаются нативные controls.
+     Оформление — секция 9 в app.css.
+
+     Библиотека получает только локальные адреса: спрайт иконок берётся из
+     каталога библиотеки, запасной «пустой» ролик и запись настроек в
+     хранилище браузера отключены.
+     ========================================================================== */
+
+  var PLAYER_VENDOR_DIR = '/assets/vendor/plyr-3.8.4';
+  var PLAYER_DEFAULT_RATIO = '16:9';
+  var PLAYER_SEEK_SECONDS = 5;
+
+  var PLAYER_CONTROLS = ['play-large', 'play', 'progress', 'current-time', 'duration',
+    'mute', 'volume', 'fullscreen'];
+
+  /* Подписи всех контролов, которые есть в PLAYER_CONTROLS: библиотека
+     подставляет их и в aria-label, и в скрытый текст кнопок-переключателей. */
+  var PLAYER_I18N = {
+    play: 'Воспроизвести',
+    pause: 'Пауза',
+    seek: 'Перемотка',
+    seekLabel: '{currentTime} из {duration}',
+    played: 'Просмотрено',
+    buffered: 'Загружено',
+    currentTime: 'Текущее время',
+    duration: 'Длительность',
+    volume: 'Громкость',
+    mute: 'Выключить звук',
+    unmute: 'Включить звук',
+    enterFullscreen: 'Во весь экран',
+    exitFullscreen: 'Выйти из полноэкранного режима'
+  };
+
+
+  /* Пропорция кадра известна из атрибутов width/height — до загрузки ролика
+     (preload="none") библиотеке больше неоткуда её взять. */
+  function playerRatio(video) {
+    var width = parseInt(video.getAttribute('width'), 10);
+    var height = parseInt(video.getAttribute('height'), 10);
+    return width > 0 && height > 0 ? width + ':' + height : PLAYER_DEFAULT_RATIO;
+  }
+
+  function playerOptions(video) {
+    return {
+      /* Приватность: ни одного обращения за пределы сайта. */
+      iconUrl: PLAYER_VENDOR_DIR + '/plyr.svg',
+      loadSprite: false,
+      blankVideo: '',
+      storage: { enabled: false },
+      /* iPhone не умеет Fullscreen API для произвольных элементов — там
+         открывается системный плеер. */
+      fullscreen: { enabled: true, fallback: true, iosNative: true },
+      controls: PLAYER_CONTROLS,
+      settings: [],
+      i18n: PLAYER_I18N,
+      ratio: playerRatio(video),
+      autoplay: false,
+      seekTime: PLAYER_SEEK_SECONDS,
+      invertTime: false,
+      toggleInvert: false,
+      resetOnEnd: true,
+      keyboard: { focused: true, global: false },
+      tooltips: { controls: false, seek: true }
+    };
+  }
+
+  /* Уборка после сбоя: снять то, что библиотека успела построить, и вернуть
+     <video> на прежнее место (home — его родитель до инициализации).
+
+     Ссылка на плеер берётся с самого элемента, а не из переменной: если
+     исключение бросил сам конструктор, присваивание не состоялось, а панель
+     в разметке уже есть. Второй шаг — на случай, когда и destroy() не
+     справился: библиотека оборачивает <video> своими узлами, поэтому
+     достаточно подняться от него до прямого потомка home и выбросить обёртку
+     целиком. Каждый шаг в своём try/catch: неудача уборки не должна помешать
+     вернуть нативную панель. */
+  function cleanUpPlayer(video, home) {
+    try {
+      if (video.plyr && typeof video.plyr.destroy === 'function') {
+        video.plyr.destroy();
+      }
+    } catch (ignored) {
+      /* дальше — уборка руками */
+    }
+    try {
+      var wrapper = video;
+      while (wrapper.parentNode && wrapper.parentNode !== home) {
+        wrapper = wrapper.parentNode;
+      }
+      if (wrapper !== video && wrapper.parentNode === home) {
+        home.insertBefore(video, wrapper);
+        home.removeChild(wrapper);
+      }
+    } catch (ignored) {
+      /* остаётся то, что успела построить библиотека */
+    }
+  }
+
+  register('player', function (doc) {
+    if (typeof window.Plyr !== 'function') {
+      return; /* библиотека не загрузилась — работают нативные controls */
+    }
+    Array.prototype.forEach.call(doc.querySelectorAll('[data-player]'), function (container) {
+      var video = container.getElementsByTagName('video')[0];
+      if (!video) {
+        return;
+      }
+      var home = video.parentNode;
+      try {
+        /* Нативную панель библиотека снимает сама — последним шагом, когда
+           её собственная панель уже построена. */
+        var player = new window.Plyr(video, playerOptions(video));
+        /* На весь экран панель всегда лежит поверх кадра и прячется сама. */
+        player.on('enterfullscreen', function () {
+          container.classList.add('is-fullscreen');
+        });
+        player.on('exitfullscreen', function () {
+          container.classList.remove('is-fullscreen');
+        });
+      } catch (error) {
+        /* Сбой на полпути: рядом с нативной панелью осталась бы вторая. */
+        cleanUpPlayer(video, home);
+        video.setAttribute('controls', '');
+        report('player', error);
+      }
+    });
+  });
+
 }());
