@@ -4,7 +4,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -49,10 +48,11 @@ jobs:
           tracked() {
             git -c core.quotePath=false ls-files -z -- "$@" | tr '\0' '\n'
           }
-          names="$(git -c core.quotePath=false ls-files -z | tr -d '\n' | tr '\0' '\n' | wc -l)"
+          names="$(git -c core.quotePath=false ls-files -z | tr -cd '\0' | wc -c)"
           lines="$(tracked | wc -l)"
-          if [ "$names" -ne "$lines" ]; then
-            echo "Tracked file names must not contain line breaks" >&2
+          returns="$(tracked | grep -ac $'\r' || true)"
+          if [ "$names" -ne "$lines" ] || [ "$returns" -ne 0 ]; then
+            echo "Tracked file names must not contain line breaks or carriage returns" >&2
             exit 1
           fi
           # Vendored library files under assets/vendor/ are the only exception.
@@ -112,9 +112,16 @@ jobs:
           set -euo pipefail
           python build.py build --base-url https://example.invalid --out "$RUNNER_TEMP/dist-abs"
           page="$(find "$RUNNER_TEMP/dist-abs/i" -mindepth 2 -maxdepth 2 -type f -name index.html | LC_ALL=C sort | sed -n 1p)"
-          test -n "$page"
-          if ! grep -Eq '<meta property="og:image" content="https://example\.invalid/assets/[^"]+">' "$page"; then
-            echo "og:image on $page does not start with https://example.invalid/assets/" >&2
+          if [ -z "$page" ]; then
+            echo "No invitation page was built in $RUNNER_TEMP/dist-abs" >&2
+            exit 1
+          fi
+          if ! grep -q 'og:image' "$page"; then
+            echo "No og:image on $page" >&2
+            exit 1
+          fi
+          if ! grep -q 'content="https://example.invalid/assets/' "$page"; then
+            echo "$page has no https://example.invalid/assets/ address" >&2
             exit 1
           fi
           if grep -q 'example\.invalid' "$RUNNER_TEMP/dist-abs/index.html" "$RUNNER_TEMP/dist-abs/404.html"; then

@@ -73,7 +73,7 @@ class CiWorkflowTest(unittest.TestCase):
         )
 
     def test_triggers(self):
-        self.assertRegex(self.text, r"(?m)^on:\n  push:\n    branches: \[main\]\n  pull_request:\n")
+        self.assertRegex(self.text, r"(?m)^on:\n  push:\n  pull_request:\n")
         self.assertNotIn("pull_request_target", self.raw)
         self.assertNotIn("workflow_run", self.raw)
 
@@ -126,7 +126,7 @@ class CiWorkflowTest(unittest.TestCase):
         self.assertGreaterEqual(len(listings), 2)
         for listing in listings:
             self.assertRegex(listing, r"^git -c core\.quotePath=false ls-files -z\b")
-        self.assertIn("must not contain line breaks", block)
+        self.assertIn("must not contain line breaks or carriage returns", block)
         self.assertIn("tracked | grep -av '^assets/vendor/' | grep -aEi "
                       "'\\.(png|jpe?g|webp|gif|avif|mp4|mov|webm|ico|svg)$'", block)
         self.assertIn("tracked assets/vendor | grep -aEv "
@@ -138,8 +138,11 @@ class CiWorkflowTest(unittest.TestCase):
         blocks = [block for block in self.runs if "--base-url" in block]
         self.assertEqual(len(blocks), 1)
         self.assertIn('--base-url https://example.invalid --out "$RUNNER_TEMP/dist-abs"', blocks[0])
-        self.assertIn("og:image", blocks[0])
+        self.assertIn("'og:image'", blocks[0])
+        self.assertIn("'content=\"https://example.invalid/assets/'", blocks[0])
         self.assertIn('"$RUNNER_TEMP/dist-abs/index.html"', blocks[0])
+        for message in ("No invitation page was built", "No og:image on"):
+            self.assertIn(message, blocks[0])
 
     def test_build_output_goes_to_runner_temp(self):
         outs = re.findall(r"--out\s+(\S+)", "\n".join(self.runs))
