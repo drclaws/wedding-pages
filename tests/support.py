@@ -134,6 +134,11 @@ TEMPLATE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="robots" content="noindex, nofollow">
 <title>Приглашение</title>
+<meta property="og:image" content="{{ogImage}}">
+<meta property="og:image:type" content="{{ogImageType}}">
+<meta property="og:image:width" content="{{ogImageWidth}}">
+<meta property="og:image:height" content="{{ogImageHeight}}">
+<link rel="icon" href="{{faviconPath}}" type="{{faviconType}}">
 <!-- a note for whoever edits the template: never published -->
 <link rel="stylesheet" href="/assets/app.css">
 <script src="/assets/vendor/lib.js" defer></script>
@@ -184,6 +189,7 @@ STUB = """<!doctype html>
 <meta charset="utf-8">
 <meta name="robots" content="noindex, nofollow">
 <title>Страница не найдена</title>
+<link rel="icon" href="{{faviconPath}}" type="{{faviconType}}">
 <!-- a note for whoever edits the stub: never published -->
 <link rel="stylesheet" href="/assets/app.css">
 </head>
@@ -286,6 +292,10 @@ def make_code_dir(
     code_dir = Path(parent) / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "build.py", code_dir / "build.py")
+    # the generators that the build imports (code only, no caches)
+    (code_dir / "tools").mkdir(exist_ok=True)
+    for source in sorted((ROOT / "tools").glob("*.py")):
+        shutil.copy2(source, code_dir / "tools" / source.name)
     (code_dir / "template.html").write_text(template, encoding="utf-8")
     (code_dir / "stub.html").write_text(stub, encoding="utf-8")
     if assets:

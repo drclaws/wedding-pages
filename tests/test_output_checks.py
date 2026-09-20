@@ -118,19 +118,19 @@ class ExternalResourceTests(FailingBuildTestCase):
                 self.assertBuildFails(f"<{tag}> is not allowed")
 
     def test_css_url(self):
-        (self.code / "assets" / "app.css").write_text(
+        support.write_app_css(
+            self.code,
             "/* comment */\nbody { background: url(https://cdn.example.invalid/bg.png); }\n",
-            encoding="utf-8",
         )
         self.assertBuildFails(
             "assets/app.css line 2: CSS url(): external URL 'https://cdn.example.invalid/…'"
         )
 
     def test_css_import(self):
-        (self.code / "assets" / "app.css").write_text(
+        support.write_app_css(
+            self.code,
             '@import url("https://fonts.example.invalid/css2?family=X");\n'
             "@import '//fonts.example.invalid/other.css';\n",
-            encoding="utf-8",
         )
         result = self.assertBuildFails(
             "assets/app.css line 1: CSS @import: external URL 'https://fonts.example.invalid/…'",
@@ -157,15 +157,15 @@ class ExternalResourceTests(FailingBuildTestCase):
     def test_css_escapes_that_hide_a_url(self):
         hidden = "u\\72l(https://cdn.example.invalid/x.png)"
         cases = {
-            "assets/app.css": lambda: (self.code / "assets" / "app.css").write_text(
-                f"a {{ background: {hidden} }}", encoding="utf-8"
+            "assets/app.css": lambda: support.write_app_css(
+                self.code, f"a {{ background: {hidden} }}\n"
             ),
             "<p style>": lambda: self.add_to_template(f'<p style="background: {hidden}">x</p>'),
             "<style>": lambda: self.add_to_template(f"<style>a {{ background: {hidden} }}</style>"),
         }
         for where, prepare in cases.items():
             with self.subTest(where=where):
-                (self.code / "assets" / "app.css").write_text(":root{}", encoding="utf-8")
+                support.write_app_css(self.code)
                 prepare()
                 expected = (
                     "<style> elements are not allowed"
@@ -185,12 +185,12 @@ class ExternalResourceTests(FailingBuildTestCase):
         self.assertRegex(result.stderr, "markup-like text is not allowed|<img src>: external URL")
 
     def test_css_line_continuation_and_bare_scheme(self):
-        (self.code / "assets" / "app.css").write_text(
-            "a { background: image-set('ht\\\ntps://cdn.example.invalid/x' 1x) }", encoding="utf-8"
+        support.write_app_css(
+            self.code, "a { background: image-set('ht\\\ntps://cdn.example.invalid/x' 1x) }\n"
         )
         self.assertBuildFails("assets/app.css line 1: CSS: a backslash before a line break")
-        (self.code / "assets" / "app.css").write_text(
-            "a { background: image-set('http:cdn.example.invalid/x' 1x) }", encoding="utf-8"
+        support.write_app_css(
+            self.code, "a { background: image-set('http:cdn.example.invalid/x' 1x) }\n"
         )
         self.assertBuildFails("assets/app.css line 1: CSS: external URL")
 
@@ -347,9 +347,9 @@ class LocalPathTests(FailingBuildTestCase):
         self.assertBuildFails("<a href>: '/…' does not exist in the output")
 
     def test_missing_file_in_css(self):
-        (self.code / "assets" / "app.css").write_text(
-            '@font-face { src: url("/assets/fonts/missing.woff2") format("woff2"); }',
-            encoding="utf-8",
+        support.write_app_css(
+            self.code,
+            '@font-face { src: url("/assets/fonts/missing.woff2") format("woff2"); }\n',
         )
         self.assertBuildFails(
             "assets/app.css line 1: CSS url(): '/assets/….woff2' does not exist"
@@ -413,12 +413,12 @@ class LocalPathTests(FailingBuildTestCase):
 
     def test_local_paths_that_resolve(self):
         (self.code / "assets" / "fonts" / "text.woff2").write_bytes(b"")
-        (self.code / "assets" / "app.css").write_text(
+        support.write_app_css(
+            self.code,
             '@font-face { src: url("/assets/fonts/text.woff2") format("woff2"); }\n'
             "a { background: url(/assets/vendor/lib.js?v=1#frag); clip-path: url(#clip) }\n"
             "/* url(https://cdn.example.invalid/commented-out.png) */\n"
             'b::after { content: "// not a url"; background: url("data:image/png;base64,AAAA") }\n',
-            encoding="utf-8",
         )
         self.add_to_template(
             '<a href="/">home</a> <a href="#top">top</a> <a href="/?x=1#y">q</a>\n'
@@ -448,7 +448,9 @@ class LocalPathTests(FailingBuildTestCase):
 class StubCheckTests(FailingBuildTestCase):
     def test_placeholder_in_the_stub(self):
         self.add_to_stub("<p>{{coupleNames}}</p>")
-        self.assertBuildFails("stub.html: must not contain template syntax", "'{{'")
+        self.assertBuildFails(
+            "stub.html: must not contain template syntax", "line 13: '{{coupleNames}}'"
+        )
 
     def test_directive_in_the_stub(self):
         self.add_to_stub("<!-- if:ty -->x<!-- endif -->")
@@ -558,7 +560,7 @@ class OutputContentsCheckTests(FailingBuildTestCase):
 
 
 class FileSizeLimitTests(FailingBuildTestCase):
-    LIMIT = 16 * 1024
+    LIMIT = 64 * 1024  # more than the generated images take
 
     def test_the_limit_is_25_mib(self):
         self.assertEqual(build.MAX_FILE_BYTES, 25 * 1024 * 1024)
@@ -567,14 +569,14 @@ class FileSizeLimitTests(FailingBuildTestCase):
         (self.code / "assets" / "vendor" / "big.js").write_bytes(b"/" * (self.LIMIT + 1))
         with mock.patch.object(build, "MAX_FILE_BYTES", self.LIMIT):
             self.assertBuildFails(
-                "assets/vendor/big.js: 16.0 KiB is larger than the limit of 16.0 KiB"
+                "assets/vendor/big.js: 64.0 KiB is larger than the limit of 64.0 KiB"
             )
 
     def test_oversized_media_file_is_reported_by_validation(self):
         (self.media / "clip.mp4").write_bytes(b"\x00" * (self.LIMIT + 1))
         with mock.patch.object(build, "MAX_FILE_BYTES", self.LIMIT):
             self.assertBuildFails(
-                "field 'video.file'", "clip.mp4 is 16.0 KiB", "the limit for a single file"
+                "field 'video.file'", "clip.mp4 is 64.0 KiB", "the limit for a single file"
             )
 
     def test_file_at_the_limit_passes(self):
@@ -987,6 +989,87 @@ class CommentStrippingTests(unittest.TestCase):
     def test_nothing_to_do(self):
         self.assertEqual(build.strip_html_comments("plain text"), "plain text")
         self.assertEqual(build.strip_html_comments(""), "")
+
+
+def svg_problems(text: str, *existing: str) -> list[str]:
+    exists = exists_in(*existing) if existing else None
+    return [message for _line, message in build.check_svg(text, exists)]
+
+
+class SvgFileTests(unittest.TestCase):
+    """`check_svg` on its own: what an SVG file must not contain."""
+
+    SVG = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">'
+
+    def test_plain_file(self):
+        text = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE svg>\n' + self.SVG
+            + '<defs><linearGradient id="g"><stop offset="0" stop-color="#fff"/></linearGradient>'
+            '<path id="a" d="M0 0h4v4z"/></defs>'
+            '<rect width="4" height="4" fill="url(#g)" style="stroke: rgb(1, 2, 3)" '
+            'transform="rotate(45) translate(1, 2)"/>'
+            '<use xlink:href="#a"/><animate attributeName="opacity" to="0"/></svg>'
+        )
+        self.assertEqual(svg_problems(text), [])
+
+    def test_namespace_prefix_does_not_hide_an_element(self):
+        for tag in ("svg:script", "SVG:Script", "x:foreignObject", "svg:style"):
+            with self.subTest(tag=tag):
+                problems = svg_problems(f"{self.SVG}<{tag}>x</{tag}></svg>")
+                self.assertEqual(problems, [f"<{tag.lower()}> is not allowed in SVG files"])
+
+    def test_style_element(self):
+        problems = svg_problems(self.SVG + "<style>rect { fill: red }</style></svg>")
+        self.assertEqual(problems, ["<style> is not allowed in SVG files"])
+
+    def test_external_url_in_css(self):
+        cases = {
+            '<rect style="fill: url(https://h.example.invalid/p.svg#a)"/>': "<rect style> url()",
+            '<rect fill="url(//h.example.invalid/p.svg#a)"/>': "<rect fill> url()",
+            '<rect filter="URL( \'https://h.example.invalid/f.svg#f\' )"/>': "<rect filter> url()",
+            '<rect mask="u\\72l(https://h.example.invalid/m.svg#m)"/>': "CSS escapes",
+        }
+        for markup, expected in cases.items():
+            with self.subTest(markup=markup):
+                problems = svg_problems(f"{self.SVG}{markup}</svg>")
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn(expected, problems[0])
+
+    def test_local_url_in_css_is_looked_up_in_the_output(self):
+        text = self.SVG + '<rect fill="url(/assets/missing.svg#a)"/></svg>'
+        self.assertEqual(svg_problems(text), [])  # no output to look at
+        self.assertIn("does not exist in the output", svg_problems(text, "assets/other.svg")[0])
+        self.assertEqual(svg_problems(text, "assets/missing.svg"), [])
+
+    def test_animated_href(self):
+        for tag in ("set", "animate", "svg:animate", "animateTransform"):
+            for attribute in ("href", "xlink:href", " HREF "):
+                with self.subTest(tag=tag, attribute=attribute):
+                    problems = svg_problems(
+                        f'{self.SVG}<a href="#x"><{tag} attributeName="{attribute}" '
+                        'to="https://h.example.invalid/"/></a></svg>'
+                    )
+                    self.assertEqual(
+                        problems, [f"<{tag.lower()}>: animating 'href' is not allowed"]
+                    )
+
+    def test_entities_and_style_sheets(self):
+        text = (
+            '<?xml version="1.0"?>\n<?xml-stylesheet href="https://h.example.invalid/s.css"?>\n'
+            '<!DOCTYPE svg [\n<!ENTITY x "<script>alert(1)</script>">\n]>\n'
+            + self.SVG + "&x;</svg>"
+        )
+        found = build.check_svg(text)
+        self.assertIn((2, "'<?xml-stylesheet' is not allowed"), found)
+        self.assertIn((4, "'<!ENTITY' declarations are not allowed"), found)
+
+    def test_messages_do_not_echo_the_path_of_an_external_url(self):
+        problems = svg_problems(
+            self.SVG + '<image href="https://h.example.invalid/private/path.png"/></svg>'
+        )
+        self.assertEqual(
+            problems, ["<image href>: external URL 'https://h.example.invalid/…' is not allowed"]
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover
