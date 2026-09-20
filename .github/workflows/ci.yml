@@ -1,0 +1,185 @@
+# Builds the site from the bundled example data and runs every check.
+# No secrets, no deployment, nothing is uploaded.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  build:
+    name: Build on examples (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Repository hygiene (no tracked media outside assets/vendor, no tracked build output)
+        run: |
+          set -euo pipefail
+          # Names are read NUL-separated and unquoted, so non-ASCII names are matched as is.
+          tracked() {
+            git -c core.quotePath=false ls-files -z -- "$@" | tr '\0' '\n'
+          }
+          names="$(git -c core.quotePath=false ls-files -z | tr -cd '\0' | wc -c)"
+          lines="$(tracked | wc -l)"
+          returns="$(tracked | grep -ac $'\r' || true)"
+          if [ "$names" -ne "$lines" ] || [ "$returns" -ne 0 ]; then
+            echo "Tracked file names must not contain line breaks or carriage returns" >&2
+            exit 1
+          fi
+          # Vendored library files under assets/vendor/ are the only exception.
+          media="$(tracked | grep -av '^assets/vendor/' | grep -aEi '\.(png|jpe?g|webp|gif|avif|mp4|mov|webm|ico|svg)$' || true)"
+          if [ -n "$media" ]; then
+            echo "Media files must not be tracked:" >&2
+            echo "$media" >&2
+            exit 1
+          fi
+          vendor="$(tracked assets/vendor | grep -aEv '(\.(js|css|svg|txt|woff2)|/\.gitkeep)$' || true)"
+          if [ -n "$vendor" ]; then
+            echo "Only .js, .css, .svg, .txt and .woff2 files (and a .gitkeep placeholder) may be tracked under assets/vendor/:" >&2
+            echo "$vendor" >&2
+            exit 1
+          fi
+          output="$(tracked dist examples/media)"
+          if [ -n "$output" ]; then
+            echo "Generated files must not be tracked:" >&2
+            echo "$output" >&2
+            exit 1
+          fi
+          echo "OK: no tracked media or build output"
+
+      - name: Unit tests
+        run: |
+          set -euo pipefail
+          python -m unittest
+
+      - name: Ensure ffmpeg is available
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+          ffmpeg -version | sed -n 1p
+
+      - name: Generate example media
+        run: |
+          set -euo pipefail
+          python tools/gen_example_media.py
+
+      - name: Validate and build the main example set
+        run: |
+          set -euo pipefail
+          python build.py validate
+          python build.py build --out "$RUNNER_TEMP/dist"
+
+      - name: Validate and build the set without a venue and media
+        run: |
+          set -euo pipefail
+          python build.py validate --data examples/data-venue-pending --media examples/media-none
+          python build.py build --data examples/data-venue-pending --media examples/media-none --out "$RUNNER_TEMP/dist-pending"
+
+      - name: Build with an absolute site address
+        run: |
+          set -euo pipefail
+          python build.py build --base-url https://example.invalid --out "$RUNNER_TEMP/dist-abs"
+          page="$(find "$RUNNER_TEMP/dist-abs/i" -mindepth 2 -maxdepth 2 -type f -name index.html | LC_ALL=C sort | sed -n 1p)"
+          if [ -z "$page" ]; then
+            echo "No invitation page was built in $RUNNER_TEMP/dist-abs" >&2
+            exit 1
+          fi
+          if ! grep -q 'og:image' "$page"; then
+            echo "No og:image on $page" >&2
+            exit 1
+          fi
+          if ! grep -q 'content="https://example.invalid/assets/' "$page"; then
+            echo "$page has no https://example.invalid/assets/ address" >&2
+            exit 1
+          fi
+          if grep -q 'example\.invalid' "$RUNNER_TEMP/dist-abs/index.html" "$RUNNER_TEMP/dist-abs/404.html"; then
+            echo "The stub page must not contain the site address" >&2
+            exit 1
+          fi
+          echo "OK: absolute link preview image on invitation pages, no address in the stub"
+
+      - name: Check the built site
+        run: |
+          set -euo pipefail
+          check_site() {
+            local data="$1" out="$2" extra expected actual required
+            cmp "$out/index.html" "$out/404.html"
+            for required in _headers robots.txt; do
+              if [ ! -s "$out/$required" ]; then
+                echo "Missing or empty $required in $out" >&2
+                return 1
+              fi
+            done
+            extra="$(find "$out" \( -iname '*.json' -o -iname '*.map' -o -iname 'styleguide*' \) -print)"
+            if [ -n "$extra" ]; then
+              echo "Files that must not be published:" >&2
+              echo "$extra" >&2
+              return 1
+            fi
+            expected="$(python -c 'import json, sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))))' "$data/invitations.json")"
+            actual="$(find "$out/i" -mindepth 2 -maxdepth 2 -type f -name index.html | wc -l | tr -d '[:space:]')"
+            if [ "$expected" != "$actual" ]; then
+              echo "Expected $expected page(s) in $out, found $actual" >&2
+              return 1
+            fi
+            echo "OK: $out ($actual page(s))"
+          }
+          check_site examples/data "$RUNNER_TEMP/dist"
+          check_site examples/data "$RUNNER_TEMP/dist-abs"
+          check_site examples/data-venue-pending "$RUNNER_TEMP/dist-pending"
+
+      - name: Reproducible build
+        run: |
+          set -euo pipefail
+          python build.py build --out "$RUNNER_TEMP/dist2"
+          tree_hash() {
+            (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum)
+          }
+          tree_hash "$RUNNER_TEMP/dist" > "$RUNNER_TEMP/dist.sha256"
+          tree_hash "$RUNNER_TEMP/dist2" > "$RUNNER_TEMP/dist2.sha256"
+          test -s "$RUNNER_TEMP/dist.sha256"
+          diff "$RUNNER_TEMP/dist.sha256" "$RUNNER_TEMP/dist2.sha256"
+          echo "OK: two builds are identical"
+
+      - name: Working tree stays clean
+        run: |
+          set -euo pipefail
+          status="$(git status --porcelain)"
+          if [ -n "$status" ]; then
+            echo "The build left untracked or modified files:" >&2
+            echo "$status" >&2
+            exit 1
+          fi
+          echo "OK: working tree is clean"
