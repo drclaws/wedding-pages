@@ -194,6 +194,35 @@ STUB = """<!doctype html>
 """
 
 
+#: Design tokens of the fixture `app.css` (one line, so that a test can append
+#: it to a style sheet of its own without moving the line numbers).
+TOKEN_COLORS = {
+    "--color-bg": "#fdfcfa",
+    "--color-surface": "#f2efe9",
+    "--color-surface-sunken": "#e6e1d8",
+    "--color-text": "#22201d",
+    "--color-text-muted": "#5c5851",
+    "--color-accent": "#7a3e2b",
+    "--color-on-accent": "#ffffff",
+    "--color-line": "#cfc8bb",
+}
+
+
+def tokens_css(**overrides: str) -> str:
+    """`:root{…}` with the fixture tokens; `accent="#123456"` replaces one."""
+    colors = dict(TOKEN_COLORS)
+    for role, value in overrides.items():
+        colors[f"--color-{role.replace('_', '-')}"] = value
+    return ":root{" + ";".join(f"{name}:{value}" for name, value in colors.items()) + "}\n"
+
+
+def write_app_css(code_dir: Path, text: str = "", **overrides: str) -> Path:
+    """Replace the fixture `app.css`: `text`, then the tokens the build needs."""
+    path = Path(code_dir) / "assets" / "app.css"
+    path.write_text(text + tokens_css(**overrides), encoding="utf-8")
+    return path
+
+
 def site_data(**overrides) -> dict:
     """A deep copy of the fixture `site.json` with optional overrides."""
     data = copy.deepcopy(SITE)
@@ -241,7 +270,7 @@ def write_assets(directory: Path) -> Path:
     (directory / "fonts").mkdir(parents=True, exist_ok=True)
     (directory / "vendor").mkdir(parents=True, exist_ok=True)
     (directory / ".hidden").mkdir(parents=True, exist_ok=True)
-    (directory / "app.css").write_text(":root{}\n", encoding="utf-8")
+    (directory / "app.css").write_text(tokens_css(), encoding="utf-8")
     (directory / "vendor" / "lib.js").write_text("// lib\n", encoding="utf-8")
     (directory / "fonts" / ".gitkeep").write_text("", encoding="utf-8")
     (directory / ".gitkeep").write_text("", encoding="utf-8")
