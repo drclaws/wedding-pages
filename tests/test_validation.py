@@ -259,6 +259,51 @@ class SiteValidationTests(TempDirTestCase):
         errors = self.errors(site_data(video={"file": "clip.mp4"}))
         self.assertTrue(any("'video.poster'" in error for error in errors), errors)
 
+    def test_video_size_is_optional_and_checked(self):
+        def video(**size):
+            return site_data(video={"file": "clip.mp4", "poster": "poster.jpg", **size})
+
+        report = build.Report()
+        build.check_site(video(width=720, height=1280), report)
+        self.assertEqual((report.errors, report.warnings), ([], []))
+        self.assertEqual(self.errors(video(width=None, height=None)), [])
+        for size in (
+            {"width": 720},
+            {"height": 1280},
+            {"width": 720, "height": None},
+            {"width": 0, "height": 1280},
+            {"width": -720, "height": 1280},
+            {"width": 720.0, "height": 1280},
+            {"width": "720", "height": 1280},
+            {"width": True, "height": 1280},
+        ):
+            with self.subTest(size=size):
+                errors = self.errors(video(**size))
+                self.assertEqual(len(errors), 1, errors)
+                self.assertRegex(errors[0], r"'video\.(width|height)'")
+        self.assertIn("set both or neither", self.errors(video(width=720))[0])
+        self.assertIn("positive whole number", self.errors(video(width=0, height=1))[0])
+
+    def test_video_size_in_the_context(self):
+        invitation = invitations_data(1)[0]
+        site = site_data(video={"file": "clip.mp4", "poster": "poster.jpg", "width": 720, "height": 1280})
+        context = build.build_context(site, invitation)
+        self.assertEqual((context["video"]["width"], context["video"]["height"]), (720, 1280))
+        self.assertEqual(
+            build.render(
+                '<!-- if:video.width --><video width="{{video.width}}" '
+                'height="{{video.height}}"></video><!-- endif -->',
+                context,
+            ),
+            '<video width="720" height="1280"></video>',
+        )
+        context = build.build_context(site_data(), invitation)
+        self.assertEqual((context["video"]["width"], context["video"]["height"]), ("", ""))
+        self.assertEqual(build.render("<!-- if:video.width -->x<!-- endif -->", context), "")
+        # half a size (invalid data) never reaches the template
+        context = build.build_context(site_data(video={"width": 720}), invitation)
+        self.assertEqual(context["video"]["width"], "")
+
     def test_missing_video_file(self):
         errors = self.errors(site_data(video={"file": "absent.mp4", "poster": "poster.jpg"}))
         self.assertTrue(any("absent.mp4" in error for error in errors), errors)
@@ -272,7 +317,11 @@ class SiteValidationTests(TempDirTestCase):
         self.assertTrue(any("absent-route.png" in error for error in errors), errors)
 
     def test_media_names_must_be_plain(self):
-        for name in ("../secret.webp", "sub/dir.webp", "back\\slash.webp", ".hidden.webp"):
+        names = (
+            "../secret.webp", "sub/dir.webp", "back\\slash.webp", ".hidden.webp",
+            "c:drive.webp", " padded.webp", "tab\there.webp",
+        )  # fmt: skip
+        for name in names:
             with self.subTest(name=name):
                 site = site_data()
                 site["venue"]["photos"] = [name]
@@ -535,7 +584,8 @@ class ContextTests(unittest.TestCase):
         for site in (absent, site_data(video=None)):
             context = build.build_context(site, invitations_data(1)[0])
             self.assertEqual(
-                context["video"], {"file": "", "poster": "", "src": "", "posterSrc": ""}
+                context["video"],
+                {"file": "", "poster": "", "src": "", "posterSrc": "", "width": "", "height": ""},
             )
             self.assertEqual(
                 build.render("<!-- if:video.file -->x<!-- endif -->", context), ""

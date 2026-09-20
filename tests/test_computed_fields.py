@@ -165,6 +165,8 @@ class ComputedFieldTests(unittest.TestCase):
                 "poster": "poster.jpg",
                 "src": f"/assets/{support.MEDIA_DIR}/clip.mp4",
                 "posterSrc": f"/assets/{support.MEDIA_DIR}/poster.jpg",
+                "width": "",
+                "height": "",
             },
         )
 

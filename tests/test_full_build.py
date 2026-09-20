@@ -80,6 +80,8 @@ class OutputContentsTests(FullBuildTestCase):
                     "404.html",
                     "_headers",
                     "assets/app.css",
+                    "assets/favicon.svg",
+                    "assets/og.png",
                     "assets/vendor/lib.js",
                     f"{MEDIA}/clip.mp4",
                     f"{MEDIA}/event.ics",
@@ -105,6 +107,8 @@ class OutputContentsTests(FullBuildTestCase):
                     "404.html",
                     "_headers",
                     "assets/app.css",
+                    "assets/favicon.svg",
+                    "assets/og.png",
                     "assets/vendor/lib.js",
                     f"{MEDIA}/event.ics",
                     *(f"i/{token}/index.html" for token in TOKENS),
@@ -216,7 +220,7 @@ class OutputContentsTests(FullBuildTestCase):
         self.assertRegex(
             last,
             r"\Abuild: OK -> dist \(3 page\(s\), 5 media file\(s\), "
-            r"15 file\(s\) in total, \d+(\.\d)? (B|KiB|MiB)\)\Z",
+            r"17 file\(s\) in total, \d+(\.\d)? (B|KiB|MiB)\)\Z",
         )
         self.assertEqual(result.stderr, "")
         self.assertNoPrivateData(result.stdout, result.stderr)
@@ -301,7 +305,7 @@ class ReproducibilityTests(FullBuildTestCase):
     def test_two_builds_are_byte_identical(self):
         self.build()
         first = tree_digest(self.out)
-        self.assertEqual(len(first), 15)
+        self.assertEqual(len(first), 17)
         self.build()  # replaces the previous output
         self.assertEqual(tree_digest(self.out), first)
 
@@ -321,7 +325,7 @@ class ReproducibilityTests(FullBuildTestCase):
             self.data, self.media, other, code_dir=self.code, log=lambda _line: None
         )
         self.assertEqual(tree_digest(other), expected)
-        self.assertEqual(stats.files, 15)
+        self.assertEqual(stats.files, 17)
         self.assertEqual(
             stats.size, sum(path.stat().st_size for path in other.rglob("*") if path.is_file())
         )

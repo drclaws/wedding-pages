@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Static builder for personal invitation pages.
 
-    python build.py build    [--data DIR] [--media DIR] [--out DIR]
+    python build.py build    [--data DIR] [--media DIR] [--out DIR] [--base-url URL]
     python build.py validate [--data DIR] [--media DIR]
     python build.py token
     python build.py links    --base URL [--data DIR]
@@ -10,7 +10,9 @@ Only the Python 3 standard library is used (Python >= 3.10).
 
 `build` writes the pages (`i/<token>/index.html`), the stub (`index.html` and
 `404.html`), `assets/` (including `assets/<mediaDir>/` with the referenced media
-and `event.ics`), `_headers` and `robots.txt`, and then checks the finished
+and `event.ics`, and the icon and the link preview image, which are generated
+from the design tokens of `assets/app.css` unless the media directory provides
+them), `_headers` and `robots.txt`, and then checks the finished
 output: nothing but the expected files, no external resources, no inline
 scripts, every local link resolves, no file above the hosting size limit.
 
@@ -50,6 +52,14 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, NamedTuple, Sequence
 from urllib.parse import quote, unquote, urlsplit
 
+# `tools/` lives next to this file; the directory of the script is on the path
+# when it is run as `python path/to/build.py`, this covers every other import.
+if str(Path(__file__).resolve().parent) not in sys.path:  # pragma: no cover
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from tools import _png as png_tools  # noqa: E402
+from tools import gen_assets  # noqa: E402
+
 # --------------------------------------------------------------------------
 # Layout constants
 # --------------------------------------------------------------------------
@@ -73,6 +83,24 @@ HEADERS_FILE = "_headers"
 ROBOTS_FILE = "robots.txt"
 #: Calendar file inside `assets/<mediaDir>/`: one for everybody, neutral name.
 ICS_FILE = "event.ics"
+
+#: Style sheet inside `assets/` whose `:root` tokens colour the generated images.
+TOKENS_FILE = "app.css"
+#: Site images: `assets/favicon.<ext>` and `assets/og.<ext>`.  They are
+#: generated from the design tokens (`.svg` and `.png`); a file with one of
+#: these names in the media directory replaces the generated one (the first
+#: name that exists wins).
+FAVICON_NAMES = ("favicon.svg", "favicon.png", "favicon.ico")
+OG_IMAGE_NAMES = ("og.png", "og.jpg")
+SITE_IMAGE_NAMES = {"favicon": FAVICON_NAMES, "og": OG_IMAGE_NAMES}
+SITE_IMAGE_TYPES = {
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".jpg": "image/jpeg",
+}
+#: Environment variable with the address of the published site (`--base-url`).
+BASE_URL_VARIABLE = "SITE_BASE_URL"
 
 #: Defaults relative to CODE_DIR.
 DEFAULT_DATA_DIR = Path("examples") / "data"
@@ -192,6 +220,8 @@ class Report:
         self.warnings: list[str] = []
         #: Number of distinct media files referenced by the data.
         self.media_files = 0
+        #: Icon and link preview image, see `find_site_images`.
+        self.site_images: SiteImages = DEFAULT_SITE_IMAGES
         self._on_warn = on_warn
 
     def error(self, message: str) -> None:
@@ -629,7 +659,10 @@ SITE_FIELDS = (
     "schedule",
     "venue",
 )
-VIDEO_FIELDS = ("file", "poster")
+#: `video`: the media files, and the optional size of the video in pixels.
+VIDEO_MEDIA_FIELDS = ("file", "poster")
+VIDEO_SIZE_FIELDS = ("width", "height")
+VIDEO_FIELDS = VIDEO_MEDIA_FIELDS + VIDEO_SIZE_FIELDS
 SCHEDULE_FIELDS = ("time", "title", "text")
 VENUE_FIELDS = (
     "ready",
@@ -746,6 +779,8 @@ def check_media_name(
         return "must not start with a dot"
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
         return "contains control characters"
+    if ":" in name:
+        return "must not contain ':' (not a valid file name on every system)"
     if name.lower() == ICS_FILE:
         return f"must not be '{ICS_FILE}' (the name is reserved for the calendar file)"
     if os.path.splitext(name)[1].lower() not in extensions:
@@ -909,11 +944,18 @@ def check_site(site: Any, report: Report, where: str = SITE_FILE) -> None:
     _warn_unknown(site, SITE_FIELDS, where, report)
 
 
+def video_dimension(value: Any) -> int | None:
+    """`video.width` / `video.height`: a positive integer, else None."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
 def _check_video(site: dict, report: Report, where: str) -> None:
     video = _field(site, "video", "object", where, report, required=False, nullable=True)
     if not isinstance(video, dict):
         return  # absent or null: the video block is optional
-    for key in VIDEO_FIELDS:
+    for key in VIDEO_MEDIA_FIELDS:
         name = _field(
             video, key, "string", where, report, prefix="video.", nonempty=True
         )
@@ -921,6 +963,20 @@ def _check_video(site: dict, report: Report, where: str) -> None:
             problem = check_media_name(name, _media_extensions(f"video.{key}"))
             if problem:
                 report.error(f"{where}: field 'video.{key}' {problem}")
+    # the size is optional, but half of it is of no use to the page
+    given = [key for key in VIDEO_SIZE_FIELDS if video.get(key) is not None]
+    for key in given:
+        if video_dimension(video[key]) is None:
+            report.error(
+                f"{where}: field 'video.{key}' must be a positive whole number of "
+                f"pixels, got {json_type(video[key])}"
+            )
+    if len(given) == 1:
+        missing = next(key for key in VIDEO_SIZE_FIELDS if key not in given)
+        report.error(
+            f"{where}: field 'video.{given[0]}' is set but 'video.{missing}' is not; "
+            "set both or neither"
+        )
     _warn_unknown(video, VIDEO_FIELDS, f"{where}: video", report)
 
 
@@ -1044,7 +1100,7 @@ def media_references(site: Any) -> list[tuple[str, str]]:
         return references
     video = site.get("video")
     if isinstance(video, dict):
-        for key in VIDEO_FIELDS:
+        for key in VIDEO_MEDIA_FIELDS:
             value = video.get(key)
             if isinstance(value, str) and value.strip():
                 references.append((f"video.{key}", value))
@@ -1148,6 +1204,129 @@ def check_media_dir_collision(
             return
 
 
+class SiteImage(NamedTuple):
+    """The icon or the link preview image of the site."""
+
+    #: File name inside `assets/`.
+    name: str
+    mime: str
+    #: The file in the media directory that replaces the generated image.
+    source: Path | None = None
+    #: Size in pixels (the link preview image only).
+    width: int = 0
+    height: int = 0
+
+
+class SiteImages(NamedTuple):
+    favicon: SiteImage
+    og: SiteImage
+
+
+#: What the build generates when the media directory provides nothing.
+DEFAULT_SITE_IMAGES = SiteImages(
+    favicon=SiteImage(gen_assets.FAVICON_FILE, SITE_IMAGE_TYPES[".svg"]),
+    og=SiteImage(gen_assets.OG_FILE, SITE_IMAGE_TYPES[".png"], None, *gen_assets.OG_SIZE),
+)
+
+#: How much of a file is read to find the size of an image.
+_IMAGE_HEADER_BYTES = 1024 * 1024
+_IMAGE_SIGNATURES = {
+    ".png": (png_tools.PNG_SIGNATURE,),
+    ".jpg": (b"\xff\xd8\xff",),
+    ".ico": (b"\x00\x00\x01\x00",),
+}
+
+
+def _inspect_site_image(path: Path, role: str) -> tuple[str | None, tuple[int, int]]:
+    """(problem or None, size in pixels) of a site image from the media directory."""
+    extension = path.suffix.lower()
+    signatures = _IMAGE_SIGNATURES.get(extension)
+    if signatures is None:  # SVG: looked at by the output checks
+        return None, (0, 0)
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(_IMAGE_HEADER_BYTES)
+    except OSError as exc:
+        return f"cannot be read ({exc.strerror or type(exc).__name__})", (0, 0)
+    if not head.startswith(signatures):
+        return f"is not a {extension[1:].upper()} file", (0, 0)
+    if role != "og":
+        return None, (0, 0)
+    size = png_tools.png_size(head) if extension == ".png" else png_tools.jpeg_size(head)
+    if size is None:
+        return "has no readable image size", (0, 0)
+    return None, size
+
+
+def find_site_images(media_dir: Path | str | None, report: Report) -> SiteImages:
+    """The icon and the link preview image: generated, or taken from `media_dir`.
+
+    `favicon.svg` / `favicon.png` / `favicon.ico` and `og.png` / `og.jpg` in the
+    media directory replace the generated images (the first name that exists
+    wins).  They are not mentioned in `site.json`; the same rules apply as to
+    the other media: regular files, no symbolic links, the size limit.
+    """
+    chosen: dict[str, SiteImage] = DEFAULT_SITE_IMAGES._asdict()
+    if media_dir is None:
+        return DEFAULT_SITE_IMAGES
+    media_dir = Path(media_dir)
+    try:
+        with os.scandir(media_dir) as entries:
+            listing = {entry.name: entry for entry in entries}
+    except OSError:
+        return DEFAULT_SITE_IMAGES  # a missing directory is reported with the media
+    for role, names in SITE_IMAGE_NAMES.items():
+        entry = next((listing[name] for name in names if name in listing), None)
+        if entry is None:
+            continue
+        shown = display_path(media_dir / entry.name)
+        if entry.is_symlink():
+            report.error(f"{shown} is a symbolic link; media must be regular files")
+            continue
+        if not entry.is_file():
+            report.error(f"{shown} is not a regular file")
+            continue
+        try:
+            size = entry.stat().st_size
+        except OSError as exc:
+            report.error(f"{shown} cannot be read ({exc.strerror or type(exc).__name__})")
+            continue
+        if size > MAX_FILE_BYTES:
+            report.error(
+                f"{shown} is {format_size(size)}, the limit for a single file is "
+                f"{format_size(MAX_FILE_BYTES)}"
+            )
+            continue
+        problem, (width, height) = _inspect_site_image(Path(entry.path), role)
+        if problem:
+            report.error(f"{shown} {problem}")
+            continue
+        extension = os.path.splitext(entry.name)[1].lower()
+        chosen[role] = SiteImage(
+            entry.name, SITE_IMAGE_TYPES[extension], media_dir / entry.name, width, height
+        )
+    return SiteImages(**chosen)
+
+
+def site_images_context(
+    images: SiteImages = DEFAULT_SITE_IMAGES, base_url: str = ""
+) -> dict:
+    """The computed fields of the icon and the link preview image.
+
+    `ogImage` is absolute when the address of the site is known (`base_url`,
+    without a trailing '/'), and a path from the site root otherwise.  None of
+    the fields depends on the data: the stub may use them as well.
+    """
+    return {
+        "faviconPath": f"/{ASSETS_DIRNAME}/{_url_component(images.favicon.name)}",
+        "faviconType": images.favicon.mime,
+        "ogImage": f"{base_url}/{ASSETS_DIRNAME}/{_url_component(images.og.name)}",
+        "ogImageType": images.og.mime,
+        "ogImageWidth": images.og.width,
+        "ogImageHeight": images.og.height,
+    }
+
+
 def warn_empty_out_of_town(site: Any, invitations: Any, report: Report) -> None:
     """Warn about `outOfTown` invitations whose section would have no text."""
     if not isinstance(site, dict) or not isinstance(invitations, list):
@@ -1223,6 +1402,7 @@ def load_data(
         check_site(site, report)
         if media_dir is not None:
             report.media_files = check_media(site, media_dir, report)
+            report.site_images = find_site_images(media_dir, report)
         if assets_dir is not None:
             check_media_dir_collision(site, assets_dir, report)
     if invitations is not MISSING:
@@ -1329,7 +1509,7 @@ def media_url(media_path: str, name: str) -> str:
     return f"{media_path}/{_url_component(name)}" if name else ""
 
 
-def site_context(site: dict) -> dict:
+def site_context(site: dict, images: dict | None = None) -> dict:
     """Template-ready copy of `site.json` (the shared part of every page).
 
     Every optional field is normalised so that `{{field}}` inside
@@ -1340,7 +1520,12 @@ def site_context(site: dict) -> dict:
     * `mediaPath` - `/assets/<mediaDir>`; `icsPath` - the calendar file;
     * `video.src`, `video.posterSrc` - URLs of the video and its poster; `video`
       is always an object (all strings empty when the data has no video), so
-      `<!-- if:video.file -->` works either way;
+      `<!-- if:video.file -->` works either way; `video.width` / `video.height`
+      are the numbers from the data, or "" when the size is not given;
+    * `faviconPath`, `faviconType`, `ogImage`, `ogImageType`, `ogImageWidth`,
+      `ogImageHeight` - the icon and the link preview image, see
+      `site_images_context` (`images` is its result; the default describes the
+      generated images and a site whose address is not known);
     * `venue.photos` - a list of `{src}` objects (`{{.src}}` inside `each`);
     * `venue.directionsSrc` - URL of the directions image or "";
     * `venue.mapLinks.google` / `.yandex` / `.apple` - see `map_links`;
@@ -1366,8 +1551,11 @@ def site_context(site: dict) -> dict:
     venue_address = _optional_text(venue.get("address"))
     directions = _optional_text(venue.get("directionsImage"))
     links = map_links(venue_name, venue_address, geo, maps)
+    video_size = [video_dimension(video.get(key)) for key in VIDEO_SIZE_FIELDS]
+    video_width, video_height = video_size if all(video_size) else ("", "")
 
     return {
+        **(images if images is not None else site_images_context()),
         "coupleNames": _optional_text(site.get("coupleNames")),
         "dateISO": _optional_text(site.get("dateISO")),
         "dateText": _optional_text(site.get("dateText")),
@@ -1381,6 +1569,8 @@ def site_context(site: dict) -> dict:
             "poster": video_poster,
             "src": media_url(media_path, video_file),
             "posterSrc": media_url(media_path, video_poster),
+            "width": video_width,
+            "height": video_height,
         },
         "schedule": [
             {
@@ -1431,13 +1621,14 @@ def invitation_context(invitation: dict) -> dict:
     }
 
 
-def build_context(site: dict, invitation: dict) -> dict:
+def build_context(site: dict, invitation: dict, images: dict | None = None) -> dict:
     """Full template context for one page: site fields + invitation fields.
 
     A fresh context is built for every page, so per-page computed fields added
-    by later build steps cannot leak between invitations.
+    by later build steps cannot leak between invitations.  `images` is passed
+    on to `site_context`.
     """
-    context = site_context(site)
+    context = site_context(site, images)
     context.update(invitation_context(invitation))
     return context
 
@@ -1654,6 +1845,8 @@ _META_URL_KEYS = frozenset(
         "msapplication-tileimage",
     }
 )
+#: The one of them that may hold an absolute URL of the site itself.
+_META_SITE_URL_KEY = "og:image"
 _SCHEME_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*):")
 #: Schemes that are named in messages; anything else before a ':' may be text.
 _KNOWN_SCHEMES = frozenset(
@@ -2066,11 +2259,13 @@ def check_css(
 class _HtmlChecker(HTMLParser):
     """Walks one HTML document and applies the URL and script rules."""
 
-    def __init__(self, policy: _UrlPolicy):
+    def __init__(self, policy: _UrlPolicy, base_url: str = ""):
         # text is reported as written: an escaped "&lt;!--" in a guest's note
         # is text, not the start of a comment (attribute values are decoded)
         super().__init__(convert_charrefs=False)
         self.policy = policy
+        #: Address of the site: `og:image` may be an absolute URL below it.
+        self.base_url = base_url
         self._in_script = False
 
     @property
@@ -2140,6 +2335,13 @@ class _HtmlChecker(HTMLParser):
             self.policy.problem(line, '<meta http-equiv="refresh"> is not allowed')
             return
         if key in _META_URL_KEYS:
+            if key == _META_SITE_URL_KEY and self.base_url:
+                # services that show link previews want an absolute URL; it is
+                # the one place where the address of the site itself may appear,
+                # and what follows it must be a file of the output all the same
+                prefix = f"{self.base_url}/"
+                if _clean_url(content).startswith(prefix):
+                    content = _clean_url(content)[len(prefix) - 1 :]
             self.policy.check_resource(line, f"<meta {key}>", content)
             return
         external = _EXTERNAL_TEXT_RE.search(content)
@@ -2179,12 +2381,17 @@ def check_html(
     document: str,
     exists: Callable[[str], bool],
     is_dir: Callable[[str], bool] | None = None,
+    base_url: str = "",
 ) -> list[tuple[int, str]]:
     """Problems of one HTML document as (line, message) pairs.
 
     `exists` tells whether a file (relative path with '/') is in the output,
     `is_dir` does the same for directories (only used to word the messages).
     Whatever the parser may read differently from a browser is an error.
+
+    With `base_url` (the address of the site, no trailing '/') the content of
+    `<meta property="og:image">` may be an absolute URL that starts with
+    exactly that address; every other external URL stays an error.
     """
     policy = _UrlPolicy(exists, is_dir)
     leftover = _LEFTOVER_RE.search(document)
@@ -2196,7 +2403,7 @@ def check_html(
     unsafe = find_unsafe_markup(document)
     if unsafe:
         policy.problem(*unsafe)
-    checker = _HtmlChecker(policy)
+    checker = _HtmlChecker(policy, base_url)
     checker.feed(document)
     checker.close()
     return policy.problems
@@ -2218,35 +2425,76 @@ def check_stylesheet(
     return policy.problems
 
 
+#: Markup of an SVG file that pulls in other documents or defines entities
+#: (an entity can hide anything from the checks below).
+_SVG_UNSAFE_MARKUP = (
+    (re.compile(r"<!ENTITY", re.IGNORECASE), "'<!ENTITY' declarations are not allowed"),
+    (re.compile(r"<\?xml-stylesheet", re.IGNORECASE), "'<?xml-stylesheet' is not allowed"),
+)
+_SVG_URL_ATTRIBUTES = frozenset({"href", "xlink:href", "src"})
+
+
+def _local_name(tag: str) -> str:
+    """`svg:script` -> `script`: a namespace prefix does not change the element."""
+    return tag.rsplit(":", 1)[-1]
+
+
 class _SvgChecker(HTMLParser):
     """A cheap look at an SVG file: nothing active, nothing external."""
 
-    def __init__(self) -> None:
+    def __init__(self, policy: _UrlPolicy) -> None:
         super().__init__(convert_charrefs=True)
-        self.problems: list[tuple[int, str]] = []
+        self.policy = policy
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         line = self.getpos()[0]
-        if tag in ("script", "foreignobject"):
-            self.problems.append((line, f"<{tag}> is not allowed in SVG files"))
-        for name, value in attrs:
+        problem = self.policy.problem
+        local = _local_name(tag)
+        if local in ("script", "foreignobject", "style"):
+            problem(line, f"<{tag}> is not allowed in SVG files")
+        values = {name: value or "" for name, value in attrs}
+        if local in _SVG_ANIMATION_ELEMENTS and values.get(
+            "attributename", ""
+        ).strip().lower() in ("href", "xlink:href"):
+            problem(line, f"<{tag}>: animating 'href' is not allowed")
+        for name, value in values.items():
             if name.startswith("on") and len(name) > 2:
-                self.problems.append((line, f"<{tag} {name}>: event handlers are not allowed"))
-            elif name in ("href", "xlink:href", "src"):
-                kind, url = _classify_url(value or "")
+                problem(line, f"<{tag} {name}>: event handlers are not allowed")
+            elif name in _SVG_URL_ATTRIBUTES:
+                kind, url = _classify_url(value)
                 if kind in ("external", "script", "malformed"):
-                    self.problems.append(
-                        (line, f"<{tag} {name}>: external URL '{_show_url(url)}' is not allowed")
-                    )
+                    problem(line, f"<{tag} {name}>: external URL '{_show_url(url)}' is not allowed")
+            elif name == "style" or "(" in value or "\\" in value:
+                # `style` and the presentation attributes (fill="url(…)") are CSS
+                check_css(value, self.policy, f"<{tag} {name}>", line)
 
 
-def check_svg(text: str) -> list[tuple[int, str]]:
-    """Problems of one SVG file: scripts, event handlers, `<foreignObject>`
-    and external references (namespace URIs in `xmlns` are not references)."""
-    checker = _SvgChecker()
+def check_svg(
+    text: str,
+    exists: Callable[[str], bool] | None = None,
+    is_dir: Callable[[str], bool] | None = None,
+    base: str = "",
+) -> list[tuple[int, str]]:
+    """Problems of one SVG file as (line, message) pairs.
+
+    Not allowed: scripts, `<style>` elements, event handlers, `<foreignObject>`,
+    `<!ENTITY` declarations, `<?xml-stylesheet`, animation of `href`, external
+    references in `href` / `src` and in the CSS of `style` and presentation
+    attributes.  Elements are recognised by their local name (`svg:script` is a
+    script); namespace URIs in `xmlns` are not references.
+
+    `exists` and `is_dir` describe the output as for `check_html`, `base` is the
+    directory of the file; without `exists` local URLs are not looked up.
+    """
+    policy = _UrlPolicy(exists if exists is not None else (lambda _path: True), is_dir, base)
+    for pattern, message in _SVG_UNSAFE_MARKUP:
+        match = pattern.search(text)
+        if match:
+            policy.problem(text.count("\n", 0, match.start()) + 1, message)
+    checker = _SvgChecker(policy)
     checker.feed(text)
     checker.close()
-    return checker.problems
+    return policy.problems
 
 
 #: At most this many problems are listed (a problem that repeats on every page
@@ -2347,7 +2595,10 @@ def _check_output_tree(
 
 
 def check_output(
-    out_dir: Path | str, tokens: Sequence[str], media_dir: str = ""
+    out_dir: Path | str,
+    tokens: Sequence[str],
+    media_dir: str = "",
+    base_url: str = "",
 ) -> OutputStats:
     """Check a finished output directory; raises `OutputError` with every problem.
 
@@ -2360,9 +2611,11 @@ def check_output(
     * CSS: `url()` and `@import` point at local files that exist (relative
       URLs of a CSS file are resolved against that file); no CSS escapes that
       could hide a URL;
-    * SVG: no scripts, event handlers, `<foreignObject>` or external references.
+    * SVG: no scripts, styles sheets, event handlers, `<foreignObject>`,
+      entities or external references (see `check_svg`).
 
-    Messages never quote page text, and tokens in paths are shortened.
+    `base_url` is passed on to `check_html`.  Messages never quote page text,
+    and tokens in paths are shortened.
     """
     root = Path(out_dir)
     try:
@@ -2390,13 +2643,17 @@ def check_output(
         except OSError as exc:
             raise BuildError(f"cannot read {shown}: {exc.strerror}") from None
         if extension == ".html":
-            file_problems = check_html(text, files.__contains__, known_dirs.__contains__)
+            file_problems = check_html(
+                text, files.__contains__, known_dirs.__contains__, base_url
+            )
         elif extension == ".css":
             file_problems = check_stylesheet(
                 text, files.__contains__, known_dirs.__contains__, posixpath.dirname(relative)
             )
         else:
-            file_problems = check_svg(text)
+            file_problems = check_svg(
+                text, files.__contains__, known_dirs.__contains__, posixpath.dirname(relative)
+            )
         for line, message in file_problems:
             found.setdefault(_redact_paths(message), []).append((shown, line))
 
@@ -2762,6 +3019,75 @@ def copy_media(site: dict, media_dir: Path | str, destination: Path) -> int:
     return len(names)
 
 
+def load_palette(assets_dir: Path) -> "gen_assets.Palette":
+    """The colours of the generated images, from the tokens of `app.css`."""
+    path = Path(assets_dir) / TOKENS_FILE
+    if not Path(assets_dir).is_dir():
+        raise BuildError(f"assets directory not found: {display_path(assets_dir)}")
+    if path.is_symlink():
+        raise BuildError(
+            f"the style sheet must not be a symbolic link: {display_path(path)}"
+        )
+    try:
+        return gen_assets.load_palette(path)
+    except gen_assets.TokenError as exc:
+        raise BuildError(
+            f"{ASSETS_DIRNAME}/{exc} (the icon and the link preview image are "
+            "generated from the design tokens)"
+        ) from None
+
+
+def check_reserved_asset_names(assets_dir: Path) -> None:
+    """`assets/favicon.*` and `assets/og.*` belong to the build."""
+    reserved = {name for names in SITE_IMAGE_NAMES.values() for name in names}
+    try:
+        with os.scandir(assets_dir) as entries:
+            taken = sorted(entry.name for entry in entries if entry.name.lower() in reserved)
+    except OSError:
+        return  # reported when the assets are copied
+    if taken:
+        raise BuildError(
+            f"'{taken[0]}' in {display_path(assets_dir)} collides with an image that the "
+            "build writes; to replace a generated image put the file into the media "
+            "directory instead"
+        )
+
+
+def write_site_images(
+    images: SiteImages, destination: Path, palette: "gen_assets.Palette | None"
+) -> int:
+    """Write the icon and the link preview image into `assets/`; returns how
+    many of them came from the media directory (the rest is generated)."""
+    generators = {"favicon": gen_assets.favicon_svg, "og": gen_assets.og_png}
+    copied = 0
+    for role, image in images._asdict().items():
+        target = destination / image.name
+        if image.source is None:
+            if palette is None:  # pragma: no cover - the caller loads it when needed
+                raise BuildError("the design tokens were not loaded")
+            _write_file(target, generators[role](palette))
+            continue
+        if image.source.is_symlink():
+            raise BuildError(
+                f"symbolic links are not allowed in media: {display_path(image.source)}"
+            )
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(image.source, target)
+        except OSError as exc:
+            raise BuildError(
+                f"cannot copy the media file {display_path(image.source)}: "
+                f"{exc.strerror or type(exc).__name__}"
+            ) from None
+        copied += 1
+    return copied
+
+
+def mask_base_url(base_url: str) -> str:
+    """The address of the site for the log: the scheme only."""
+    return f"{base_url.split(':', 1)[0].lower()}://…"
+
+
 # --------------------------------------------------------------------------
 # Build
 # --------------------------------------------------------------------------
@@ -2791,24 +3117,45 @@ def load_template(path: Path) -> Template:
     return parse_template(_read_source(path, "template"), path.name)
 
 
-def load_stub(path: Path) -> str:
+#: The only fields the stub may use: they say nothing about the site.
+STUB_FIELDS = ("faviconPath", "faviconType")
+
+
+def load_stub(path: Path, images: dict | None = None) -> str:
     """Read the stub page (published as `index.html` and `404.html`).
 
-    The stub is the same for everybody and gets no data at all, so template
-    syntax in it is an error rather than something to render.  HTML comments
-    are removed, as on the pages.
+    The stub is the same for everybody and gets no data: the only template
+    syntax allowed in it are the placeholders of `STUB_FIELDS` (the icon, see
+    `site_images_context`).  HTML comments are removed, as on the pages.
     """
     source = _read_source(path, "stub page")
-    check_rendered(
-        source,
-        path.name,
-        problem="must not contain template syntax (the stub gets no data)",
+    problem = (
+        "must not contain template syntax other than "
+        + " and ".join("{{" + field + "}}" for field in STUB_FIELDS)
+        + " (the stub gets no data)"
     )
-    return strip_html_comments(source, path.name)
+    try:
+        template = parse_template(source, path.name)
+    except TemplateError as exc:
+        raise TemplateError(f"{problem}: {exc.reason}", exc.line, path.name) from None
+    found = [
+        f"line {node.line}: "
+        + (f"'{{{{{node.path}}}}}'" if isinstance(node, _Var) else f"'<!-- {node.kind}:… -->'")
+        for node in template.nodes
+        if isinstance(node, _Block) or (isinstance(node, _Var) and node.path not in STUB_FIELDS)
+    ]
+    if found:
+        raise TemplateError(f"{problem}: " + "; ".join(found[:5]), None, path.name)
+    fields = images if images is not None else site_images_context()
+    rendered = template.render({field: fields[field] for field in STUB_FIELDS})
+    return strip_html_comments(rendered, path.name)
 
 
 def render_pages(
-    template: Template, site: dict, invitations: Sequence[dict]
+    template: Template,
+    site: dict,
+    invitations: Sequence[dict],
+    images: dict | None = None,
 ) -> list[tuple[str, str]]:
     """Render every invitation; returns (token, html) pairs.
 
@@ -2821,7 +3168,7 @@ def render_pages(
     for index, invitation in enumerate(invitations, start=1):
         label = invitation_label(index, invitation.get("token"))
         try:
-            page = template.render(build_context(site, invitation))
+            page = template.render(build_context(site, invitation, images))
             pages.append((invitation["token"], strip_html_comments(page, template.name)))
         except TemplateError as exc:
             failures.setdefault(str(exc), []).append(label)
@@ -2868,12 +3215,18 @@ def build_site(
     code_dir: Path = CODE_DIR,
     report: Report | None = None,
     log: Callable[[str], None] = print,
+    base_url: str = "",
 ) -> OutputStats:
     """Validate the data, write the output directory and check the result.
 
     The output is assembled in a temporary directory and only replaces
     `out_dir` when every check has passed.  The log gets counters and paths,
     never data.
+
+    `base_url` is the address of the published site (see `parse_base_url`).
+    It makes the URL of the link preview image absolute, which is what most
+    services that show previews need; it goes into that `<meta>` tag only and
+    is never logged in full.
     """
     report = report if report is not None else Report()
     assets_dir = code_dir / ASSETS_DIRNAME
@@ -2885,9 +3238,15 @@ def build_site(
         f"validated (data: {display_path(data_dir)}, media: {display_path(media_dir)})"
     )
 
+    images = report.site_images
+    check_reserved_asset_names(assets_dir)
+    generated = [image.name for image in images if image.source is None]
+    palette = load_palette(assets_dir) if generated else None
+    images_context = site_images_context(images, base_url)
+
     template = load_template(code_dir / TEMPLATE_FILE)
-    stub = load_stub(code_dir / STUB_FILE).encode("utf-8")
-    pages = render_pages(template, site, invitations)
+    stub = load_stub(code_dir / STUB_FILE, images_context).encode("utf-8")
+    pages = render_pages(template, site, invitations, images_context)
     media_name = site["mediaDir"]
 
     with _StagedOutput(out_dir, warn=report.warn) as stage:
@@ -2895,11 +3254,14 @@ def build_site(
         for name in STUB_OUTPUTS:
             _write_file(stage / name, stub)
         assets = copy_assets(assets_dir, stage / ASSETS_DIRNAME, ignore=is_styleguide_asset)
+        write_site_images(images, stage / ASSETS_DIRNAME, palette)
         media = copy_media(site, media_dir, stage / ASSETS_DIRNAME / media_name)
         _write_file(stage / ASSETS_DIRNAME / media_name / ICS_FILE, build_ics(site))
         _write_file(stage / HEADERS_FILE, HEADERS_TEXT.encode("utf-8"))
         _write_file(stage / ROBOTS_FILE, ROBOTS_TEXT.encode("utf-8"))
-        stats = check_output(stage, [token for token, _page in pages], media_name)
+        stats = check_output(
+            stage, [token for token, _page in pages], media_name, base_url=base_url
+        )
 
     out_shown = display_path(out_dir)
     log(f"build: wrote {written} page(s) to {out_shown}/{PAGES_DIRNAME}/")
@@ -2907,6 +3269,15 @@ def build_site(
     log(
         f"build: copied {media} media file(s) and wrote {ICS_FILE} to "
         f"{out_shown}/{ASSETS_DIRNAME}/<mediaDir>/"
+    )
+    for image in images:
+        origin = "generated from the design tokens" if image.source is None else (
+            f"copied from {display_path(media_dir)}"
+        )
+        log(f"build: {ASSETS_DIRNAME}/{image.name} {origin}")
+    log(
+        "build: link preview image URL is "
+        + (f"absolute ({mask_base_url(base_url)})" if base_url else "a path from the site root")
     )
     log(
         f"build: OK -> {out_shown} ({written} page(s), {media} media file(s), "
@@ -2941,8 +3312,24 @@ def _media_dir(args: argparse.Namespace, code_dir: Path) -> Path:
     return Path(args.media) if args.media is not None else code_dir / DEFAULT_MEDIA_DIR
 
 
+def base_url_setting(args: argparse.Namespace, environ: Any = None) -> str:
+    """`--base-url`, else the `SITE_BASE_URL` variable, else ""."""
+    if getattr(args, "base_url", None):
+        return args.base_url
+    environ = os.environ if environ is None else environ
+    value = environ.get(BASE_URL_VARIABLE, "").strip()
+    if not value:
+        return ""
+    try:
+        return parse_base_url(value)
+    except argparse.ArgumentTypeError as exc:
+        # the value is not echoed: it may be the private address of the site
+        raise BuildError(f"{BASE_URL_VARIABLE}: {exc}") from None
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     code_dir = CODE_DIR
+    base_url = base_url_setting(args)
     build_site(
         _data_dir(args, code_dir),
         _media_dir(args, code_dir),
@@ -2950,6 +3337,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         code_dir=code_dir,
         report=_cli_report(),
         log=_stdout,
+        base_url=base_url,
     )
     return EXIT_OK
 
@@ -2990,7 +3378,8 @@ def running_in_ci(environ: Any = None) -> bool:
 
 
 def parse_base_url(value: str) -> str:
-    """`--base`: an http(s) URL of the site; the trailing '/' is dropped."""
+    """`--base` / `--base-url`: an http(s) URL of the site; the trailing '/'
+    is dropped."""
     value = value.strip()
     try:
         parts = urlsplit(value)
@@ -3064,6 +3453,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         metavar="DIR",
         help=f"output directory, replaced on every build (default: {DEFAULT_OUT_DIR})",
+    )
+    build_cmd.add_argument(
+        "--base-url",
+        metavar="URL",
+        type=parse_base_url,
+        help="address of the published site, e.g. https://example.org; makes the URL "
+        "of the link preview image absolute (default: the "
+        f"{BASE_URL_VARIABLE} environment variable; without either the URL is a path "
+        "from the site root)",
     )
     build_cmd.set_defaults(func=cmd_build)
 

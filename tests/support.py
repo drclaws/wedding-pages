@@ -134,6 +134,11 @@ TEMPLATE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="robots" content="noindex, nofollow">
 <title>Приглашение</title>
+<meta property="og:image" content="{{ogImage}}">
+<meta property="og:image:type" content="{{ogImageType}}">
+<meta property="og:image:width" content="{{ogImageWidth}}">
+<meta property="og:image:height" content="{{ogImageHeight}}">
+<link rel="icon" href="{{faviconPath}}" type="{{faviconType}}">
 <!-- a note for whoever edits the template: never published -->
 <link rel="stylesheet" href="/assets/app.css">
 <script src="/assets/vendor/lib.js" defer></script>
@@ -184,6 +189,7 @@ STUB = """<!doctype html>
 <meta charset="utf-8">
 <meta name="robots" content="noindex, nofollow">
 <title>Страница не найдена</title>
+<link rel="icon" href="{{faviconPath}}" type="{{faviconType}}">
 <!-- a note for whoever edits the stub: never published -->
 <link rel="stylesheet" href="/assets/app.css">
 </head>
@@ -192,6 +198,35 @@ STUB = """<!doctype html>
 </body>
 </html>
 """
+
+
+#: Design tokens of the fixture `app.css` (one line, so that a test can append
+#: it to a style sheet of its own without moving the line numbers).
+TOKEN_COLORS = {
+    "--color-bg": "#fdfcfa",
+    "--color-surface": "#f2efe9",
+    "--color-surface-sunken": "#e6e1d8",
+    "--color-text": "#22201d",
+    "--color-text-muted": "#5c5851",
+    "--color-accent": "#7a3e2b",
+    "--color-on-accent": "#ffffff",
+    "--color-line": "#cfc8bb",
+}
+
+
+def tokens_css(**overrides: str) -> str:
+    """`:root{…}` with the fixture tokens; `accent="#123456"` replaces one."""
+    colors = dict(TOKEN_COLORS)
+    for role, value in overrides.items():
+        colors[f"--color-{role.replace('_', '-')}"] = value
+    return ":root{" + ";".join(f"{name}:{value}" for name, value in colors.items()) + "}\n"
+
+
+def write_app_css(code_dir: Path, text: str = "", **overrides: str) -> Path:
+    """Replace the fixture `app.css`: `text`, then the tokens the build needs."""
+    path = Path(code_dir) / "assets" / "app.css"
+    path.write_text(text + tokens_css(**overrides), encoding="utf-8")
+    return path
 
 
 def site_data(**overrides) -> dict:
@@ -241,7 +276,7 @@ def write_assets(directory: Path) -> Path:
     (directory / "fonts").mkdir(parents=True, exist_ok=True)
     (directory / "vendor").mkdir(parents=True, exist_ok=True)
     (directory / ".hidden").mkdir(parents=True, exist_ok=True)
-    (directory / "app.css").write_text(":root{}\n", encoding="utf-8")
+    (directory / "app.css").write_text(tokens_css(), encoding="utf-8")
     (directory / "vendor" / "lib.js").write_text("// lib\n", encoding="utf-8")
     (directory / "fonts" / ".gitkeep").write_text("", encoding="utf-8")
     (directory / ".gitkeep").write_text("", encoding="utf-8")
@@ -257,6 +292,10 @@ def make_code_dir(
     code_dir = Path(parent) / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "build.py", code_dir / "build.py")
+    # the generators that the build imports (code only, no caches)
+    (code_dir / "tools").mkdir(exist_ok=True)
+    for source in sorted((ROOT / "tools").glob("*.py")):
+        shutil.copy2(source, code_dir / "tools" / source.name)
     (code_dir / "template.html").write_text(template, encoding="utf-8")
     (code_dir / "stub.html").write_text(stub, encoding="utf-8")
     if assets:
