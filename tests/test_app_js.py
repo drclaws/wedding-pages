@@ -133,7 +133,8 @@ class LightboxSourceTest(unittest.TestCase):
         maps = self.template[self.template.index("<!-- if:venue.hasMapLinks -->"):]
         maps = maps[:maps.index("<!-- if:venue.directionsSrc -->")]
         self.assertIn('<ul class="venue__maps"', maps)
-        self.assertTrue(maps.rstrip().endswith("</ul>\n          <!-- endif -->"))
+        # the whole list is inside the condition; indentation is not the point
+        self.assertTrue(" ".join(maps.split()).endswith("</ul> <!-- endif -->"))
 
 
 class MotionStylesTest(unittest.TestCase):
@@ -167,7 +168,10 @@ class MotionStylesTest(unittest.TestCase):
         self.assertNotRegex(keyframes, r"\bto\s*\{|100%")
         self.assertRegex(self.section, r"animation: cover-in [^;]*\bbackwards;")
         self.assertNotRegex(self.section, r"animation: cover-in [^;]*\bboth\b")
-        self.assertNotRegex(self.section, r"\*\s*\d")
+        # the cascade counts with an index variable, not with literal multipliers
+        cover = self.section[self.section.index("html.js.cover-animate"):]
+        self.assertIn("calc(var(--cover-index, 0) * var(--reveal-stagger))", cover)
+        self.assertNotRegex(cover, r"var\(--reveal-stagger\)\s*\*\s*\d")
 
     def test_only_opacity_and_vertical_transform_are_animated(self):
         self.assertNotRegex(self.section, r"translateX|translate\(|translate3d|scale|margin|inset|width|height")
@@ -202,6 +206,19 @@ class GalleryStylesTest(unittest.TestCase):
         self.assertRegex(self.section, r"\.lightbox\[open\]\s*\{\s*display: grid;")
         self.assertNotRegex(self.section, r"\.lightbox\s*\{[^{}]*\bdisplay:")
         self.assertRegex(self.section, r"@media \(prefers-reduced-motion: reduce\)\s*\{")
+
+    def test_printing_leaves_the_invitation_on_the_page(self):
+        printed = self.section[self.section.index("@media print"):]
+        self.assertRegex(printed, r"\.lightbox\[open\]\s*\{\s*display: none;")
+        # the page gets its scrolling and the scrollbar gap back
+        self.assertRegex(printed, r"html\.is-lightbox-open\s*\{\s*overflow: visible;")
+        self.assertIn("padding-inline-end: 0;", printed)
+
+    def test_the_layout_breakpoint_is_the_only_one_and_matches_its_token(self):
+        token = re.search(r"--bp-layout:\s*([^;]+);", self.css)
+        self.assertIsNotNone(token)
+        widths = set(re.findall(r"@media[^{]*\(\s*(?:min|max)-width:\s*([^)\s]+)\s*\)", self.css))
+        self.assertEqual(widths, {token.group(1).strip()})
 
     def test_gallery_link_focus_ring_is_drawn_inside_the_frame(self):
         self.assertRegex(self.css, r"\.gallery__link:focus-visible::after,\s*\.gallery__link\.is-focus::after\s*\{"

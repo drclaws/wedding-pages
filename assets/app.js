@@ -726,6 +726,11 @@
         return;
       }
       touches = Math.max(0, touches - 1);
+      /* Палец подняли уже после закрытия (Esc во время жеста): листать нечего. */
+      if (!ui.dialog.open) {
+        swipe = null;
+        return;
+      }
       var from = swipe;
       if (!from || from.id !== event.pointerId) {
         return;
@@ -851,6 +856,9 @@
       if (window.visualViewport) {
         window.visualViewport.addEventListener('resize', onZoom);
       }
+      /* Страница могла быть увеличена щипком ещё до открытия: события resize
+         не будет, состояние снимается сразу. */
+      onZoom();
     }
 
     function onLinkClick(event) {
