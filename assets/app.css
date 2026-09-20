@@ -1502,8 +1502,91 @@ a.btn[aria-disabled="true"] {
    Появление блоков при прокрутке ([data-reveal]) и анимация обложки.
    Скрытые начальные состояния — только под html.js: без скрипта всё видно сразу.
    Токены движения уже есть в секции 1 и обнулены под prefers-reduced-motion.
-   Пока пусто: заполняется вместе со скриптом появления блоков.
+
+   Оба эффекта включает скрипт — классом-маркером на <html>, который ставится
+   только после успешного запуска соответствующего модуля:
+     html.js.reveal-on      — действует скрытое состояние блоков;
+     html.js.cover-animate  — проигрывается анимация обложки.
+   Меняются только opacity и transform (сдвиг по вертикали): раскладка не
+   «прыгает», горизонтальная прокрутка не появляется.
    ========================================================================== */
+
+/* --- Появление блоков -------------------------------------------------------
+   --reveal-index — место блока в группе появившихся одновременно; выставляет
+   скрипт, задержка каскада = индекс × --reveal-stagger. */
+html.js.reveal-on [data-reveal] {
+  transition:
+    opacity var(--duration-base) var(--ease-out),
+    transform var(--duration-base) var(--ease-out);
+  transition-delay: calc(var(--reveal-index, 0) * var(--reveal-stagger));
+}
+
+html.js.reveal-on [data-reveal]:not(.is-revealed) {
+  opacity: 0;
+  transform: translateY(var(--reveal-distance));
+}
+
+/* Показ без перехода: блок уже был на экране при загрузке, остался выше
+   экрана или получил фокус с клавиатуры. */
+html.js.reveal-on [data-reveal].is-instant {
+  transition: none;
+}
+
+/* --- Обложка ------------------------------------------------------------ */
+@keyframes cover-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--cover-distance));
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+html.js.cover-animate .cover__inner > * {
+  animation: cover-in var(--duration-slow) var(--ease-out) both;
+}
+
+html.js.cover-animate .cover__inner > :nth-child(2) {
+  animation-delay: var(--reveal-stagger);
+}
+
+html.js.cover-animate .cover__inner > :nth-child(3) {
+  animation-delay: calc(var(--reveal-stagger) * 2);
+}
+
+html.js.cover-animate .cover__inner > :nth-child(4) {
+  animation-delay: calc(var(--reveal-stagger) * 3);
+}
+
+/* --- Страховки: сокращённое движение и печать — всё видно сразу ----------- */
+@media (prefers-reduced-motion: reduce) {
+  html.js.reveal-on [data-reveal],
+  html.js.reveal-on [data-reveal]:not(.is-revealed) {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  html.js.cover-animate .cover__inner > * {
+    animation: none;
+  }
+}
+
+@media print {
+  html.js.reveal-on [data-reveal],
+  html.js.reveal-on [data-reveal]:not(.is-revealed) {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  html.js.cover-animate .cover__inner > * {
+    animation: none;
+  }
+}
 
 
 /* =============================================================================
