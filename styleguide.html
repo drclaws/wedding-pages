@@ -61,6 +61,7 @@
           <button type="button" class="btn btn--secondary" data-font-scale-value="125" aria-pressed="false">125 %</button>
           <button type="button" class="btn btn--secondary" data-font-scale-value="150" aria-pressed="false">150 %</button>
           <button type="button" class="btn btn--secondary" data-font-scale-value="200" aria-pressed="false">200 %</button>
+          <button type="button" class="btn btn--secondary" data-font-scale-value="330" aria-pressed="false">330 %</button>
         </div>
       </div>
       <p class="sg-note">
@@ -71,7 +72,9 @@
         размер шрифта корневого элемента этой страницы — так же, как его меняет
         системная настройка на телефоне. Проверять на ширине 360 px при 150 % и
         200 %: без горизонтальной прокрутки, таймер складывается в 2×2, подписи
-        не выходят из ячеек. Граница раскладки <code>--bp-layout</code> задана в
+        не выходят из ячеек. 330 % — предел системного «Увеличенного текста» на
+        iPhone (корень ≈ 53 px): таймер встаёт в одну колонку, прокрутки
+        по-прежнему нет. Граница раскладки <code>--bp-layout</code> задана в
         <code>em</code> медиазапроса и зависит от размера шрифта в настройках
         браузера, а не от корневого элемента: её проверяют настройкой браузера
         «Размер шрифта» — при «очень крупном» две колонки включаются на более
@@ -295,7 +298,8 @@
         <p class="sg-note">
           Раскладка зависит от ширины контейнера, а не окна: четыре ячейки в
           ряд, если контейнер не уже <code>--countdown-inline-min</code>, иначе
-          2×2. Здесь контейнер — рамка демонстрационного блока.
+          2×2; в контейнере не шире <code>--countdown-stack-max</code> (очень
+          крупный системный шрифт на телефоне) — одна колонка. Здесь контейнер — рамка демонстрационного блока.
         </p>
         <ul class="countdown">
           <li class="countdown__cell">

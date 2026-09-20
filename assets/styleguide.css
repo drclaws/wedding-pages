@@ -22,6 +22,7 @@
   --sg-font-scale-125: 125%;
   --sg-font-scale-150: 150%;
   --sg-font-scale-200: 200%;
+  --sg-font-scale-330: 330%;  /* предел системного «Увеличенного текста» на iOS */
 }
 
 /* --- Проверка масштаба шрифта ---------------------------------------------
@@ -30,6 +31,7 @@
 html[data-sg-font-scale="125"] { font-size: var(--sg-font-scale-125); }
 html[data-sg-font-scale="150"] { font-size: var(--sg-font-scale-150); }
 html[data-sg-font-scale="200"] { font-size: var(--sg-font-scale-200); }
+html[data-sg-font-scale="330"] { font-size: var(--sg-font-scale-330); }
 
 .sg-fontscale {
   display: none;
@@ -188,7 +190,8 @@ html[data-sg-font-scale="200"] { font-size: var(--sg-font-scale-200); }
 }
 
 .sg-scale__name {
-  flex: 0 0 var(--sg-scale-label-width);
+  flex: 0 1 var(--sg-scale-label-width);
+  min-inline-size: 0;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--color-text-muted);
@@ -317,4 +320,25 @@ html[data-sg-font-scale="200"] { font-size: var(--sg-font-scale-200); }
 .sg-overlay-frame {
   overflow: hidden;
   border-radius: var(--radius-md);
+}
+
+/* При очень крупном системном шрифте (корень до ~53px) длинные имена токенов,
+   подписи состояний и образцы шкалы переносятся в любом месте, а не распирают
+   страницу. */
+.sg-token__name,
+.sg-token__value,
+.sg-scale__name,
+.sg-scale__sample,
+.sg-plate__display,
+.sg-state__label,
+.sg-demo__label,
+.sg-meta > * {
+  overflow-wrap: anywhere;
+}
+
+/* Метка времени в демонстрационных блоках переносится, когда не помещается
+   (на странице она переносится только в программе дня). */
+.sg-demo .time-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
