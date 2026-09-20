@@ -130,6 +130,7 @@
             <p>{{venue.description}}</p>
           </div>
           <!-- endif -->
+          <!-- if:venue.hasMapLinks -->
           <ul class="venue__maps" role="list" aria-label="Открыть на карте">
             <!-- if:venue.mapLinks.google -->
             <li class="venue__map"><a class="btn btn--secondary" href="{{venue.mapLinks.google}}" target="_blank" rel="noopener noreferrer">Google Карты</a></li>
@@ -141,9 +142,10 @@
             <li class="venue__map"><a class="btn btn--secondary" href="{{venue.mapLinks.apple}}" target="_blank" rel="noopener noreferrer">Apple Карты</a></li>
             <!-- endif -->
           </ul>
+          <!-- endif -->
           <!-- if:venue.directionsSrc -->
           <figure class="venue__scheme">
-            <a class="media media--scheme" href="{{venue.directionsSrc}}">
+            <a class="media media--scheme" href="{{venue.directionsSrc}}" data-lightbox>
               <img src="{{venue.directionsSrc}}" alt="Схема проезда" loading="lazy" decoding="async">
             </a>
             <figcaption class="gallery__caption">Схема проезда</figcaption>
@@ -151,7 +153,7 @@
           <!-- endif -->
         </div>
         <!-- if:venue.photos -->
-        <ul class="gallery venue__gallery" role="list" data-gallery data-reveal>
+        <ul class="gallery gallery--ribbon venue__gallery" role="list" data-gallery data-reveal>
           <!-- each:venue.photos -->
           <li class="gallery__item"><a class="gallery__link" href="{{.src}}" data-lightbox><img src="{{.src}}" alt="Фотография места проведения" loading="lazy" decoding="async"></a></li>
           <!-- endeach -->

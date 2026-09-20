@@ -507,23 +507,36 @@
       </div>
 
       <div class="sg-demo">
-        <p class="sg-demo__label">Поверх оверлея: .on-overlay (--color-on-overlay, --color-focus-on-overlay)</p>
+        <p class="sg-demo__label">Поверх оверлея: .on-overlay и элементы лайтбокса (.lightbox__counter, .lightbox__button)</p>
         <p class="sg-note">
           Внутри <code>.on-overlay</code> роли текста и кольца фокуса получают
           значения для тёмной подложки лайтбокса; сами компоненты при этом не
-          переписываются.
+          переписываются. Кнопки лайтбокса несут собственную подложку
+          <code>--color-overlay-control</code>: стрелки лежат поверх фотографии.
+          Само окно (<code>.lightbox</code>) создаёт скрипт страницы. По порядку:
+          обычная, hover, focus, выключенная (край галереи).
         </p>
         <div class="sg-overlay-frame sg-plate">
           <div class="sg-overlay on-overlay">
-            <span>Подпись поверх оверлея</span>
-            <button type="button" class="player__button" aria-label="Закрыть">
-              <svg class="player__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <p class="lightbox__counter">2 / 4</p>
+            <button type="button" class="lightbox__button" aria-label="Закрыть">
+              <svg class="lightbox__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M6 6 18 18M18 6 6 18"></path>
               </svg>
             </button>
-            <button type="button" class="player__button is-focus" aria-label="Закрыть">
-              <svg class="player__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <button type="button" class="lightbox__button is-hover" aria-label="Закрыть">
+              <svg class="lightbox__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M6 6 18 18M18 6 6 18"></path>
+              </svg>
+            </button>
+            <button type="button" class="lightbox__button is-focus" aria-label="Закрыть">
+              <svg class="lightbox__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M6 6 18 18M18 6 6 18"></path>
+              </svg>
+            </button>
+            <button type="button" class="lightbox__button" aria-label="Следующая фотография" aria-disabled="true">
+              <svg class="lightbox__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M9 5 16 12 9 19"></path>
               </svg>
             </button>
           </div>

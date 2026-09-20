@@ -129,6 +129,8 @@
   --color-overlay: rgba(14, 16, 18, 0.78);  /* TEMP  подложка лайтбокса */
   --color-on-overlay: #ffffff;        /* TEMP  текст, иконки и кнопки поверх оверлея */
   --color-focus-on-overlay: #ffc46b;  /* TEMP  кольцо фокуса поверх оверлея (≥3:1 к нему) */
+  --color-overlay-control: rgba(14, 16, 18, 0.62);        /* TEMP  подложка кнопки лайтбокса (кнопка может лежать на фото) */
+  --color-overlay-control-hover: rgba(14, 16, 18, 0.92);  /* TEMP  она же под курсором/нажатием */
   --color-disabled-bg: #e4e6ea;     /* TEMP  фон выключенного элемента */
   --color-disabled-text: #6b7078;   /* TEMP  текст выключенного элемента */
   --color-shadow: rgba(14, 16, 18, 0.16);   /* TEMP  цвет теней */
@@ -321,6 +323,10 @@
   --gallery-columns-venue-desktop: 2;  /* TEMP */
   --gallery-columns-venue: var(--gallery-columns-venue-mobile);
 
+  /* Лента галереи (мобильный формат): доля ширины ленты, которую занимает
+     один элемент; остаток — видимый край следующего, подсказка прокрутки. */
+  --gallery-ribbon-item-size: 82%;  /* TEMP */
+
   --countdown-columns: 4;  /* дни/часы/минуты/секунды — не стиль */
   /* В узком контейнере (или при крупном шрифте) таймер складывается в 2×2. */
   --countdown-columns-narrow: 2;
@@ -366,6 +372,11 @@
 
   --focus-ring-width: 3px;   /* TEMP  толщина кольца фокуса */
   --focus-ring-offset: 2px;  /* TEMP */
+  /* Кольцо внутри рамки элемента — там, где внешнее обрезал бы overflow
+     предка (элемент галереи, лента). Поверх изображения кольцу нужен светлый
+     подслой: его ширина — от внешнего края, вдвое шире кольца. */
+  --focus-ring-offset-inset: calc(var(--focus-ring-width) * -1);
+  --focus-ring-inset-halo: calc(var(--focus-ring-width) * 2);
 
   --opacity-disabled: 0.6;  /* TEMP */
 
@@ -466,6 +477,10 @@
     max(var(--player-progress-min-mobile) * 1px, var(--player-progress-min-desktop) * 1px));
   /* Позиция воспроизведения; задаётся скриптом плеера как процент. */
   --player-progress-value: 0%;
+
+  /* Ширина полосы прокрутки страницы, скрытой на время показа лайтбокса;
+     задаётся скриптом галереи, чтобы раскладка под окном не сдвигалась. */
+  --lightbox-scroll-gap: 0px;
 
   --icon-size-mobile: 20;    /* TEMP  размер иконки в кнопке */
   --icon-size-desktop: 22;   /* TEMP */
@@ -1146,6 +1161,7 @@ a.btn[aria-disabled="true"] {
 
 /* Обёртка, если изображение открывает лайтбокс. */
 .gallery__link {
+  position: relative;
   display: block;
   inline-size: 100%;
   min-inline-size: var(--tap-min);
@@ -1156,6 +1172,28 @@ a.btn[aria-disabled="true"] {
   background-color: transparent;
   border: none;
   padding: 0;
+}
+
+/* Кольцо фокуса — внутри рамки и поверх изображения: внешнее кольцо обрезал
+   бы overflow элемента галереи и ленты. Рисует его псевдоэлемент (обводка
+   самой ссылки оказалась бы под увеличенным изображением); светлый подслой
+   отделяет кольцо от тёмных участков фотографии. */
+.gallery__link:focus-visible,
+.gallery__link.is-focus {
+  outline: none;
+}
+
+.gallery__link:focus-visible::after,
+.gallery__link.is-focus::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-raised);
+  border-radius: inherit;
+  outline: var(--focus-ring-width) solid var(--color-focus);
+  outline-offset: var(--focus-ring-offset-inset);
+  box-shadow: inset 0 0 0 var(--focus-ring-inset-halo) var(--color-bg);
+  pointer-events: none;
 }
 
 .gallery__link .gallery__item,
@@ -1668,8 +1706,13 @@ a.btn[aria-disabled="true"] {
 
 /* --- Появление блоков -------------------------------------------------------
    --reveal-index — место блока в группе появившихся одновременно; выставляет
-   скрипт, задержка каскада = индекс × --reveal-stagger. */
-html.js.reveal-on [data-reveal] {
+   скрипт, задержка каскада = индекс × --reveal-stagger.
+   Переход и задержка действуют только до конца появления: после него скрипт
+   ставит is-settled (и снимает --reveal-index), и собственные переходы
+   элемента — hover карточки, лента галереи — работают без чужой задержки.
+   Блок, показанный без перехода (уже был на экране, остался выше экрана,
+   получил фокус с клавиатуры), получает is-settled сразу. */
+html.js.reveal-on [data-reveal]:not(.is-settled) {
   transition:
     opacity var(--duration-base) var(--ease-out),
     transform var(--duration-base) var(--ease-out);
@@ -1681,40 +1724,27 @@ html.js.reveal-on [data-reveal]:not(.is-revealed) {
   transform: translateY(var(--reveal-distance));
 }
 
-/* Показ без перехода: блок уже был на экране при загрузке, остался выше
-   экрана или получил фокус с клавиатуры. */
-html.js.reveal-on [data-reveal].is-instant {
-  transition: none;
-}
-
 /* --- Обложка ------------------------------------------------------------ */
+/* Кадра to нет: анимация приходит к собственным значениям элемента и после
+   окончания ничего не удерживает (fill-mode backwards — только скрытое
+   состояние на время задержки), так что opacity и transform детей обложки
+   остаются свободными для других правил.
+   --cover-index — порядковый номер строки обложки в каскаде. */
 @keyframes cover-in {
   from {
     opacity: 0;
     transform: translateY(var(--cover-distance));
   }
-
-  to {
-    opacity: 1;
-    transform: none;
-  }
 }
 
 html.js.cover-animate .cover__inner > * {
-  animation: cover-in var(--duration-slow) var(--ease-out) both;
+  animation: cover-in var(--duration-slow) var(--ease-out) backwards;
+  animation-delay: calc(var(--cover-index, 0) * var(--reveal-stagger));
 }
 
-html.js.cover-animate .cover__inner > :nth-child(2) {
-  animation-delay: var(--reveal-stagger);
-}
-
-html.js.cover-animate .cover__inner > :nth-child(3) {
-  animation-delay: calc(var(--reveal-stagger) * 2);
-}
-
-html.js.cover-animate .cover__inner > :nth-child(4) {
-  animation-delay: calc(var(--reveal-stagger) * 3);
-}
+html.js.cover-animate .cover__inner > :nth-child(2) { --cover-index: 1; }
+html.js.cover-animate .cover__inner > :nth-child(3) { --cover-index: 2; }
+html.js.cover-animate .cover__inner > :nth-child(4) { --cover-index: 3; }
 
 /* --- Страховки: сокращённое движение и печать — всё видно сразу ----------- */
 @media (prefers-reduced-motion: reduce) {
@@ -1748,15 +1778,267 @@ html.js.cover-animate .cover__inner > :nth-child(4) {
    8. Gallery & lightbox
    -----------------------------------------------------------------------------
    Лента со scroll-snap на мобильном, сетка на десктопе, лайтбокс
-   ([data-gallery], [data-lightbox]): подложка --color-overlay, слой --z-lightbox.
-   Пока пусто: заполняется вместе с галереей.
+   ([data-gallery], [data-lightbox]).
 
-   Лайтбокс (position: fixed) размещать ВНЕ элементов с container-type
-   (.container, элементы .grid) — прямым потомком <body> — либо делать его
-   через <dialog>.showModal() (верхний слой). В старых движках элемент с
-   container-type становится containing block для fixed-потомков, и оверлей
-   растянулся бы на контейнер, а не на окно.
+   Лайтбокс — <dialog>, который скрипт создаёт прямым потомком <body> и
+   открывает через showModal(): окно живёт в верхнем слое браузера и не
+   зависит ни от z-index, ни от container-type/transform предков (в старых
+   движках элемент с container-type становится containing block для
+   fixed-потомков — оверлей внутри него растянулся бы на контейнер, а не на
+   окно).
    ========================================================================== */
+
+/* --- Лента -------------------------------------------------------------------
+   .gallery--ribbon: до границы раскладки — горизонтальная лента, от неё —
+   обычная сетка .gallery (секция 5). Лента — чистый CSS, но включается только
+   под html.js: без скрипта галерея остаётся сеткой, где все фотографии видны
+   сразу, а ссылки открывают файлы. Прокручивается только сама лента: у
+   страницы горизонтальной прокрутки нет. Фокус с клавиатуры прокручивает
+   ленту; частично видимый элемент доводит до края скрипт галереи (браузер
+   его не трогает). Кольцо фокуса — внутри рамки (секция 5).
+   Значение порога должно совпадать с --bp-layout = 48em. */
+@media not all and (min-width: 48em) {
+  html.js .gallery--ribbon {
+    display: flex;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scroll-snap-type: inline mandatory;
+  }
+
+  /* Элемент не выше --media-max-height (ландшафтная ориентация телефона):
+     как и у .media, ограничивается ширина — высота × пропорция. */
+  html.js .gallery--ribbon > * {
+    --gallery-ribbon-item-used: var(--gallery-ribbon-item-size);
+    flex: none;
+    inline-size: min(
+      var(--gallery-ribbon-item-used),
+      calc(var(--media-max-height) * var(--ratio-gallery))
+    );
+    scroll-snap-align: start;
+  }
+
+  /* Единственной фотографии подсказка прокрутки не нужна. */
+  html.js .gallery--ribbon > :only-child {
+    --gallery-ribbon-item-used: 100%;
+  }
+}
+
+/* --- Лайтбокс: страница под окном ---------------------------------------------
+   Прокрутка фона заблокирована; место исчезнувшей полосы прокрутки занимает
+   отступ (--lightbox-scroll-gap выставляет скрипт). */
+html.is-lightbox-open {
+  overflow: hidden;
+}
+
+html.is-lightbox-open body {
+  padding-inline-end: var(--lightbox-scroll-gap);
+}
+
+/* --- Лайтбокс: окно -------------------------------------------------------------
+   Окно занимает весь экран и само несёт цвет подложки: ::backdrop в движках
+   прошлых лет не наследует переменные :root и остался бы прозрачным. Клик по
+   свободному месту окна закрывает его. Цвета текста и фокуса — контекст
+   .on-overlay (секция 5).
+   Жесты: прокрутки внутри окна нет, листание — скриптом; щипок браузера
+   разрешён, а пока страница увеличена (is-zoomed) — и сдвиг. */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  max-inline-size: none;
+  max-block-size: none;
+  margin: 0;
+  padding:
+    max(var(--space-2xs), var(--safe-inset-top))
+    max(var(--space-2xs), var(--safe-inset-right))
+    max(var(--space-2xs), var(--safe-inset-bottom))
+    max(var(--space-2xs), var(--safe-inset-left));
+  border: none;
+  background-color: var(--color-overlay);
+  overflow: hidden;
+  overscroll-behavior: contain;
+  touch-action: pinch-zoom;
+}
+
+.lightbox[open] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--space-2xs);
+  animation: lightbox-in var(--duration-base) var(--ease-out) backwards;
+}
+
+.lightbox::backdrop {
+  background-color: transparent;
+}
+
+.lightbox.is-zoomed {
+  touch-action: auto;
+}
+
+@keyframes lightbox-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.lightbox__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+  min-block-size: var(--tap-min);
+}
+
+.lightbox__counter {
+  padding-inline: var(--space-2xs);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Сцена: одна ячейка, в которую изображение вписывается целиком (размеры
+   ячейки заданы окном, поэтому проценты max-* у изображения определены).
+   Стрелки лежат поверх сцены по её краям, по центру высоты. */
+.lightbox__stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  place-items: center;
+  min-block-size: 0;
+}
+
+.lightbox__image {
+  grid-area: 1 / 1;
+  inline-size: auto;
+  block-size: auto;
+  max-inline-size: 100%;
+  max-block-size: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  transition: opacity var(--duration-base) var(--ease-out);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Пока файл грузится, прежнее изображение не показывается (и исчезает без
+   перехода); не загрузился — вместо значка «битой картинки» сообщение. */
+.lightbox.is-loading .lightbox__image {
+  opacity: 0;
+  transition: none;
+}
+
+.lightbox.is-error .lightbox__image {
+  display: none;
+}
+
+.lightbox__status {
+  grid-area: 1 / 1;
+  padding-inline: var(--tap-min);
+  font-size: var(--text-base);
+  text-align: center;
+}
+
+.lightbox__status:empty {
+  display: none;
+}
+
+.lightbox__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--tap-min);
+  block-size: var(--tap-min);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-round);
+  background-color: var(--color-overlay-control);
+  color: var(--color-on-overlay);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+/* «Закрыть» остаётся справа и тогда, когда счётчик скрыт. */
+.lightbox__button--close {
+  margin-inline-start: auto;
+}
+
+.lightbox__button--prev,
+.lightbox__button--next {
+  position: absolute;
+  inset-block: 0;
+  margin-block: auto;
+}
+
+.lightbox__button--prev {
+  inset-inline-start: 0;
+}
+
+.lightbox__button--next {
+  inset-inline-end: 0;
+}
+
+.lightbox__icon {
+  inline-size: min(var(--icon-size), 100%);
+  block-size: min(var(--icon-size), 100%);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: var(--line-width);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+@media (hover: hover) {
+  .lightbox__button:hover:not([aria-disabled="true"]),
+  .lightbox__button.is-hover {
+    background-color: var(--color-overlay-control-hover);
+  }
+}
+
+.lightbox__button:active:not([aria-disabled="true"]),
+.lightbox__button.is-active {
+  background-color: var(--color-overlay-control-hover);
+}
+
+/* На краях галереи стрелка выключена через aria-disabled, а не disabled:
+   кнопка не теряет фокус, клавиатура в окне продолжает работать. */
+.lightbox__button[aria-disabled="true"] {
+  opacity: var(--opacity-disabled);
+  cursor: default;
+}
+
+/* Сокращённое движение: длительности уже обнулены токенами; здесь анимация
+   открытия и переход изображения сняты явно. */
+@media (prefers-reduced-motion: reduce) {
+  .lightbox[open] {
+    animation: none;
+  }
+
+  .lightbox__image {
+    transition: none;
+  }
+}
+
+/* Печать: на бумагу идёт приглашение, а не открытая поверх него фотография.
+   Окно скрывается целиком, странице возвращаются прокрутка и отступ на месте
+   полосы прокрутки — иначе печать с открытым лайтбоксом дала бы лист с фото. */
+@media print {
+  .lightbox[open] {
+    display: none;
+  }
+
+  html.is-lightbox-open {
+    overflow: visible;
+  }
+
+  html.is-lightbox-open body {
+    padding-inline-end: 0;
+  }
+}
 
 
 /* =============================================================================
