@@ -57,6 +57,7 @@ from urllib.parse import quote, unquote, urlsplit
 if str(Path(__file__).resolve().parent) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from tools import _data as data_tools  # noqa: E402
 from tools import _png as png_tools  # noqa: E402
 from tools import gen_assets  # noqa: E402
 
@@ -1765,7 +1766,11 @@ def _reject_constant(name: str) -> Any:
 
 
 def read_json(path: Path, report: Report) -> Any:
-    """Read a JSON document, reporting I/O and syntax problems (never values)."""
+    """Read a JSON document, reporting I/O and syntax problems (never values).
+
+    A key repeated within one object is an error as well: the standard parser
+    would silently keep the last value only.
+    """
     shown = display_path(path)
     try:
         text = path.read_text(encoding="utf-8-sig")
@@ -1782,14 +1787,18 @@ def read_json(path: Path, report: Report) -> Any:
         report.error(f"{shown}: cannot read the file ({exc.strerror})")
         return MISSING
     try:
-        return json.loads(text, parse_constant=_reject_constant)
+        value, duplicates = data_tools.parse_json(text, parse_constant=_reject_constant)
     except json.JSONDecodeError as exc:
         report.error(
             f"{shown}: invalid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})"
         )
+        return MISSING
     except ValueError as exc:
         report.error(f"{shown}: invalid JSON: {exc}")
-    return MISSING
+        return MISSING
+    for duplicate in duplicates:
+        report.error(f"{shown}: {duplicate.describe()}")
+    return MISSING if duplicates else value
 
 
 def load_data(
@@ -2090,6 +2099,46 @@ def _ics_timestamp(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+#: The part of a `UID` before the `@`: letters, digits, `_` and `-` only.
+_ICS_UID_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def build_event_ics(
+    *, uid: str, start: datetime, end: datetime, summary: str, location: str = ""
+) -> bytes:
+    """A calendar file with one event: times in UTC, `uid@ICS_UID_DOMAIN`.
+
+    `summary` and `location` are escaped and folded; an empty `location`
+    leaves the `LOCATION` line out.  The result depends on the arguments only
+    (no clock, no random values), so equal inputs give identical bytes.
+    """
+    if not isinstance(uid, str) or _ICS_UID_RE.fullmatch(uid) is None:
+        raise ValueError("the calendar uid may only contain A-Z, a-z, 0-9, '_' and '-'")
+    if start.utcoffset() is None or end.utcoffset() is None:
+        raise ValueError("the start and the end of an event need a UTC offset")
+    if end <= start:
+        raise ValueError("the end of an event must be later than its start")
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        f"PRODID:{ICS_PRODID}",
+        "CALSCALE:GREGORIAN",
+        "BEGIN:VEVENT",
+        f"UID:{uid}@{ICS_UID_DOMAIN}",
+        f"DTSTAMP:{ICS_DTSTAMP}",
+        f"DTSTART:{_ics_timestamp(start)}",
+        f"DTEND:{_ics_timestamp(end)}",
+        # the revision grows when the location is announced, so that importing
+        # the file again updates an event that was saved without it
+        f"SEQUENCE:{1 if location else 0}",
+        f"SUMMARY:{ics_escape(summary)}",
+    ]
+    if location:
+        lines.append(f"LOCATION:{ics_escape(location)}")
+    lines += ["END:VEVENT", "END:VCALENDAR"]
+    return "".join(ics_fold(line) + "\r\n" for line in lines).encode("utf-8")
+
+
 def build_ics(site: dict) -> bytes:
     """The calendar file: one event in UTC, without names or guest data.
 
@@ -2112,25 +2161,13 @@ def build_ics(site: dict) -> bytes:
         parts = (_optional_text(venue.get(key)).strip() for key in ("name", "address"))
         location = ", ".join(part for part in parts if part)
 
-    lines = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        f"PRODID:{ICS_PRODID}",
-        "CALSCALE:GREGORIAN",
-        "BEGIN:VEVENT",
-        f"UID:{uid}@{ICS_UID_DOMAIN}",
-        f"DTSTAMP:{ICS_DTSTAMP}",
-        f"DTSTART:{_ics_timestamp(start)}",
-        f"DTEND:{_ics_timestamp(start + ICS_DEFAULT_DURATION)}",
-        # the revision grows when the location is announced, so that importing
-        # the file again updates an event that was saved without it
-        f"SEQUENCE:{1 if location else 0}",
-        f"SUMMARY:{ics_escape(ICS_SUMMARY)}",
-    ]
-    if location:
-        lines.append(f"LOCATION:{ics_escape(location)}")
-    lines += ["END:VEVENT", "END:VCALENDAR"]
-    return "".join(ics_fold(line) + "\r\n" for line in lines).encode("utf-8")
+    return build_event_ics(
+        uid=uid,
+        start=start,
+        end=start + ICS_DEFAULT_DURATION,
+        summary=ICS_SUMMARY,
+        location=location,
+    )
 
 
 # --------------------------------------------------------------------------

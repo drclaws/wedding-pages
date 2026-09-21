@@ -206,5 +206,151 @@ class FoldingTests(unittest.TestCase):
         )
 
 
+class SingleEventCalendarTests(unittest.TestCase):
+    """`build_event_ics`: the calendar file of one event."""
+
+    #: `build_ics` of the fixture, byte for byte.
+    FIXTURE_ICS = (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "PRODID:-//invitation//static site build//RU\r\n"
+        "CALSCALE:GREGORIAN\r\n"
+        "BEGIN:VEVENT\r\n"
+        "UID:49a23c2e6ff98b6649bef54d1c22628b@invitation\r\n"
+        "DTSTAMP:20000101T000000Z\r\n"
+        "DTSTART:20300601T130000Z\r\n"
+        "DTEND:20300601T190000Z\r\n"
+        "SEQUENCE:1\r\n"
+        "SUMMARY:Приглашение\r\n"
+        "LOCATION:Усадьба в Энске\\, Энск\\, Вымышленная \r\n"
+        " улица\\, 1\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    ).encode("utf-8")
+
+    def event_ics(self, **overrides) -> bytes:
+        arguments = {
+            "uid": "0123456789abcdef",
+            "start": build.parse_date_iso("2030-06-15T16:00+03:00"),
+            "end": build.parse_date_iso("2030-06-15T23:30+03:00"),
+            "summary": "Праздничный ужин",
+            "location": "",
+        }
+        arguments.update(overrides)
+        return build.build_event_ics(**arguments)
+
+    def test_build_ics_gives_the_same_bytes(self):
+        self.assertEqual(build.build_ics(site_data()), self.FIXTURE_ICS)
+        self.assertEqual(
+            build.build_event_ics(
+                uid="49a23c2e6ff98b6649bef54d1c22628b",
+                start=build.parse_date_iso("2030-06-01T16:00:00+03:00"),
+                end=build.parse_date_iso("2030-06-01T22:00:00+03:00"),
+                summary=build.ICS_SUMMARY,
+                location=f"{support.VENUE_NAME}, {support.VENUE_ADDRESS}",
+            ),
+            self.FIXTURE_ICS,
+        )
+        site = site_data()
+        site["venue"]["ready"] = False
+        pending = (
+            self.FIXTURE_ICS.decode("utf-8")
+            .replace("SEQUENCE:1", "SEQUENCE:0")
+            .replace("LOCATION:Усадьба в Энске\\, Энск\\, Вымышленная \r\n улица\\, 1\r\n", "")
+        )
+        self.assertEqual(build.build_ics(site), pending.encode("utf-8"))
+
+    def test_structure_and_times(self):
+        payload = self.event_ics()
+        self.assertEqual(
+            [line.split(":", 1)[0] for line in unfold(payload)],
+            [
+                "BEGIN",
+                "VERSION",
+                "PRODID",
+                "CALSCALE",
+                "BEGIN",
+                "UID",
+                "DTSTAMP",
+                "DTSTART",
+                "DTEND",
+                "SEQUENCE",
+                "SUMMARY",
+                "END",
+                "END",
+                "",
+            ],
+        )
+        found = properties(payload)
+        self.assertEqual(found["UID"], "0123456789abcdef@invitation")
+        self.assertEqual(found["DTSTART"], "20300615T130000Z")
+        # the end comes from the argument, not from the default duration
+        self.assertEqual(found["DTEND"], "20300615T203000Z")
+        self.assertEqual(found["SUMMARY"], "Праздничный ужин")
+        found = properties(self.event_ics(end=build.parse_date_iso("2030-06-16T02:00+05:00")))
+        self.assertEqual(found["DTEND"], "20300615T210000Z")
+
+    def test_summary_is_escaped_and_folded(self):
+        found = properties(self.event_ics(summary="Ужин; танцы, салют \\ фейерверк"))
+        self.assertEqual(found["SUMMARY"], "Ужин\\; танцы\\, салют \\\\ фейерверк")
+        summary = "Очень длинное название вымышленного праздничного вечера на берегу пруда"
+        payload = self.event_ics(summary=summary)
+        physical = payload.split(b"\r\n")
+        self.assertTrue(any(line.startswith(b"SUMMARY:") for line in physical))
+        self.assertTrue(any(line.startswith(b" ") for line in physical))
+        for chunk in physical:
+            self.assertLessEqual(len(chunk), 75, chunk)
+            chunk.decode("utf-8")
+        self.assertEqual(properties(payload)["SUMMARY"], summary)
+
+    def test_location_and_sequence(self):
+        found = properties(self.event_ics())
+        self.assertNotIn("LOCATION", found)
+        self.assertEqual(found["SEQUENCE"], "0")
+        found = properties(self.event_ics(location="Терраса, Энск, ул. Примерная; вход"))
+        self.assertEqual(found["LOCATION"], "Терраса\\, Энск\\, ул. Примерная\\; вход")
+        self.assertEqual(found["SEQUENCE"], "1")
+        self.assertEqual(
+            properties(self.event_ics(location="Терраса"))["UID"],
+            properties(self.event_ics())["UID"],
+        )
+
+    def test_output_is_deterministic(self):
+        self.assertEqual(self.event_ics(), self.event_ics())
+        self.assertEqual(
+            self.event_ics(location="Терраса"), self.event_ics(location="Терраса")
+        )
+
+    def test_no_line_breaks_or_control_characters_from_the_arguments(self):
+        hostile = "a\r\nX-INJECTED:1\rb\nc\x00d\x1be\x7ff\x0bg"
+        payload = self.event_ics(summary=hostile, location=hostile)
+        lines = payload.split(b"\r\n")
+        self.assertEqual(lines[-1], b"")
+        for line in lines:
+            self.assertNotIn(b"\r", line)
+            self.assertNotIn(b"\n", line)
+            self.assertFalse(any(byte < 0x20 or byte == 0x7F for byte in line), line)
+        self.assertFalse(any(line.startswith("X-INJECTED") for line in unfold(payload)))
+        self.assertEqual(
+            [name for name in properties(payload) if name not in ("SUMMARY", "LOCATION")],
+            ["VERSION", "PRODID", "CALSCALE", "UID", "DTSTAMP", "DTSTART", "DTEND", "SEQUENCE"],
+        )
+
+    def test_invalid_arguments(self):
+        for uid in ("", "abc\r\nX-INJECTED:1", "a@b", "a b", "Ёж", None):
+            with self.subTest(uid=uid):
+                with self.assertRaises(ValueError):
+                    self.event_ics(uid=uid)
+        start = build.parse_date_iso("2030-06-15T16:00+03:00")
+        for end in (start, start - timedelta(minutes=1)):
+            with self.subTest(end=end):
+                with self.assertRaises(ValueError):
+                    self.event_ics(end=end)
+        with self.assertRaises(ValueError):
+            self.event_ics(start=start.replace(tzinfo=None))
+        with self.assertRaises(TypeError):  # the arguments are keyword-only
+            build.build_event_ics("uid", start, start + timedelta(hours=1), "x")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
