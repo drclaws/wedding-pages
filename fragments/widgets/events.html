@@ -34,12 +34,12 @@
     </div>
     <!-- endif -->
     <!-- with:.location --><!-- include:partials/location-card --><!-- endwith -->
-    <!-- if:.schedule -->
-    <section class="events__program" aria-labelledby="{{.domId}}-program">
-      <h4 class="events__program-title" id="{{.domId}}-program">Программа</h4>
+    <!-- with:.program -->
+    <section class="events__program" aria-labelledby="{{.domId}}">
+      <h4 class="events__program-title" id="{{.domId}}">Программа</h4>
       <!-- include:partials/schedule -->
     </section>
-    <!-- endif -->
+    <!-- endwith -->
   </article>
   <!-- endeach -->
 </div>

@@ -1,6 +1,7 @@
-<!-- Программа события; ожидает в `.` событие: schedule[] (пункты: time, title, text). Пункты — h5 под подзаголовком «Программа» (h4) карточки события. -->
+<!-- Программа; ожидает в `.` программу: items[] (пункты: time, title, text), nested. nested — программа внутри карточки события под подзаголовком «Программа» (h4): пункты h5; отдельный виджет стоит прямо под заголовком секции: пункты h3. Уровень выбирается до each: внутри него `.` — пункт, признака программы там нет. -->
+<!-- if:.nested -->
 <ol class="schedule__list" role="list">
-  <!-- each:.schedule -->
+  <!-- each:.items -->
   <li class="schedule__item">
     <!-- if:.time -->
     <span class="time-label schedule__time">{{.time}}</span>
@@ -14,3 +15,21 @@
   </li>
   <!-- endeach -->
 </ol>
+<!-- endif -->
+<!-- if:!.nested -->
+<ol class="schedule__list" role="list">
+  <!-- each:.items -->
+  <li class="schedule__item">
+    <!-- if:.time -->
+    <span class="time-label schedule__time">{{.time}}</span>
+    <!-- endif -->
+    <div class="stack stack--tight schedule__body">
+      <h3 class="schedule__name">{{.title}}</h3>
+      <!-- if:.text -->
+      <p>{{.text}}</p>
+      <!-- endif -->
+    </div>
+  </li>
+  <!-- endeach -->
+</ol>
+<!-- endif -->

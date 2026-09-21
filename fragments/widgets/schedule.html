@@ -1,18 +1,4 @@
-<!-- Виджет программы; ожидает в `.` виджет: items[] (пункты: time, title, text). Отдельный виджет стоит прямо под заголовком секции, поэтому пункты — h3 (в карточке события программа своя: partials/schedule, пункты h5). -->
+<!-- Виджет программы; ожидает в `.` виджет: items[] (пункты: time, title, text), nested: false — пункты h3. -->
 <div class="widget schedule-widget">
-  <ol class="schedule__list" role="list">
-    <!-- each:.items -->
-    <li class="schedule__item">
-      <!-- if:.time -->
-      <span class="time-label schedule__time">{{.time}}</span>
-      <!-- endif -->
-      <div class="stack stack--tight schedule__body">
-        <h3 class="schedule__name">{{.title}}</h3>
-        <!-- if:.text -->
-        <p>{{.text}}</p>
-        <!-- endif -->
-      </div>
-    </li>
-    <!-- endeach -->
-  </ol>
+  <!-- include:partials/schedule -->
 </div>

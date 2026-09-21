@@ -53,7 +53,7 @@ WIDGET_FIELDS = {
 EVENT_FIELDS = (
     "id", "domId", "title", "description", "note", "isMain", "isPrimary", "kind",
     "startISO", "endISO", "dateText", "timeText", "whenText", "tabText", "icsPath",
-    "location", "schedule",
+    "location", "program",
 )
 #: `primaryEvent` in the root (and the event of the cover) has no DOM id.
 PRIMARY_EVENT_FIELDS = tuple(field for field in EVENT_FIELDS if field != "domId")
@@ -67,6 +67,8 @@ MEDIA_FIELDS = (
     "durationText", "label", "alt", "caption",
 )
 SCHEDULE_ITEM_FIELDS = ("time", "title", "text")
+#: The program of an event (`null` when it has none).
+PROGRAM_FIELDS = ("domId", "items", "nested")
 
 #: Checked enumerations: the only fields a class modifier may come from.
 ENUM_FIELDS = {
@@ -350,7 +352,9 @@ class PageTree:
             icsPath=f"/i/{self.guest['token']}/{event_id}.ics",
             location=location_node(item["location"], f"{dom_id or 'primary'}-location",
                                    compact=False, nested=True, url=self.url),
-            schedule=schedule_items(item.get("schedule")),
+            program=node(PROGRAM_FIELDS, domId=f"{dom_id or 'primary'}-program",
+                         items=schedule_items(item["schedule"]), nested=True)
+            if item.get("schedule") else None,
         )
         if dom_id is not None:
             values["domId"] = dom_id
@@ -557,8 +561,9 @@ def bare_event(event_id: str, full: bool, primary: bool = False, with_dom_id: bo
         whenText="Суббота, 15 июня 2030, 16:00", tabText="16:00",
         icsPath=f"/i/t/{event_id}.ics",
         location=bare_location(full, ready=full, nested=True),
-        schedule=[node(SCHEDULE_ITEM_FIELDS, time="16:00" if full else "", title="Пункт",
-                       text="Текст" if full else "")] if full else [],
+        program=node(PROGRAM_FIELDS, domId=f"w-{event_id}-program", nested=True, items=[
+            node(SCHEDULE_ITEM_FIELDS, time="16:00", title="Пункт", text="Текст"),
+            node(SCHEDULE_ITEM_FIELDS, time="", title="Пункт", text="")]) if full else None,
     )
     if with_dom_id:
         values["domId"] = f"w-{event_id}"
@@ -783,6 +788,23 @@ class FragmentContractTests(unittest.TestCase):
         self.assertRegex(document, r"<h4 class=\"venue__name\">")
         self.assertRegex(document, r"<h4 class=\"events__program-title\" id=\"w-a-program\">")
         self.assertRegex(document, r"<h5 class=\"schedule__name\">")
+
+    def test_one_program_markup_at_two_depths(self):
+        items = [node(SCHEDULE_ITEM_FIELDS, time="10:00", title="Пункт", text="")]
+        widget = self.render("widgets", [bare_widget("schedule", items=items, nested=False)])
+        self.assertIn('<h3 class="schedule__name">Пункт</h3>', widget)
+        self.assertNotIn("<h5", widget)
+        card = self.render("widgets", [bare_widget(
+            "events", items=[bare_event("a", True, primary=True)], count=1, multiple=False,
+            primaryDomId="w-a")])
+        self.assertIn('<section class="events__program" aria-labelledby="w-a-program">', card)
+        self.assertNotIn('<h3 class="schedule__name">', card)
+        # an event without a program: no heading "Программа" at all
+        bare = self.render("widgets", [bare_widget(
+            "events", items=[bare_event("a", False, primary=True)], count=1, multiple=False,
+            primaryDomId="w-a")])
+        self.assertNotIn("events__program", bare)
+        self.assertNotIn("schedule__list", bare)
 
     def test_the_location_card(self):
         def card(**flags) -> str:
