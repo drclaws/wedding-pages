@@ -162,9 +162,23 @@ class MotionStylesTest(unittest.TestCase):
         self.assertRegex(self.section, r"@media print\s*\{")
         self.assertRegex(self.section, r"@media \(prefers-reduced-motion: reduce\)\s*\{")
 
-    def test_reveal_transition_ends_with_the_reveal(self):
-        self.assertIn("html.js.reveal-on [data-reveal]:not(.is-settled) {", self.section)
+    def test_reveal_transition_runs_only_while_appearing(self):
+        # hiding (marker set) is instant; the transition starts with is-revealed
+        # and is dropped with is-settled
+        self.assertIn("html.js.reveal-on [data-reveal].is-revealed:not(.is-settled) {", self.section)
         self.assertNotRegex(self.section, r"html\.js\.reveal-on \[data-reveal\]\s*\{\s*transition")
+        self.assertNotRegex(self.section, r"\[data-reveal\]:not\(\.is-settled\)\s*\{")
+        hidden = re.search(r"html\.js\.reveal-on \[data-reveal\]:not\(\.is-revealed\) \{([^}]*)\}",
+                           self.section)
+        self.assertIsNotNone(hidden)
+        self.assertNotIn("transition", hidden.group(1))
+
+    def test_reveal_uses_the_entrance_duration(self):
+        rule = re.search(r"\.is-revealed:not\(\.is-settled\) \{([^}]*)\}", self.section).group(1)
+        # opacity starts gently (a steep start reads as a flash), the offset decelerates
+        self.assertIn("opacity var(--duration-slow) var(--ease-in-out),", rule)
+        self.assertIn("transform var(--duration-slow) var(--ease-out);", rule)
+        self.assertNotRegex(rule, r"--duration-(?:fast|base)")
 
     def test_cover_animation_does_not_hold_final_values(self):
         keyframes = self.section[self.section.index("@keyframes cover-in"):]
@@ -179,6 +193,55 @@ class MotionStylesTest(unittest.TestCase):
 
     def test_only_opacity_and_vertical_transform_are_animated(self):
         self.assertNotRegex(self.section, r"translateX|translate\(|translate3d|scale|margin|inset|width|height")
+
+
+def css_ms(css, token):
+    value = re.search(r"\n\s*" + re.escape(token) + r":\s*([\d.]+)(ms|s)\b", css)
+    number = float(value.group(1))
+    return number * 1000 if value.group(2) == "s" else number
+
+
+class RevealInvariantsTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        code = strip_comments(APP_JS.read_text(encoding="utf-8"))
+        cls.module = code[code.index("register('reveal'"):code.index("register('countdown'")]
+        cls.code = code
+        cls.css = APP_CSS.read_text(encoding="utf-8")
+
+    def test_settles_only_at_the_real_end_of_the_opacity_transition(self):
+        # an event from a nested element, the transform transition or an extra
+        # transitionend with elapsedTime 0 (sent while scrolling) is not the end
+        end = self.module[self.module.index("function isRevealEnd("):self.module.index("function settleLater(")]
+        self.assertRegex(end, r"if \(event\.target !== element\) \{\s*return false;\s*\}")
+        self.assertRegex(end, r"if \(event\.type === 'transitioncancel'\) \{\s*return true;\s*\}")
+        self.assertIn("return event.propertyName === 'opacity' && event.elapsedTime > 0;", end)
+        later = self.module[self.module.index("function settleLater("):self.module.index("function show(")]
+        self.assertIn("if (event && !isRevealEnd(event, element))", later)
+        for event in ("transitionend", "transitioncancel"):
+            self.assertIn("element.addEventListener('%s', done);" % event, later)
+            self.assertIn("element.removeEventListener('%s', done);" % event, later)
+        self.assertIn("setTimeout(done, REVEAL_SETTLE_MS)", later)
+
+    def test_reveals_from_the_first_visible_pixel(self):
+        # a non-zero inset leaves a band at the bottom edge where a block is on
+        # screen but still empty
+        self.assertRegex(self.code, r"\bvar REVEAL_INSET = 0;")
+        self.assertIn("rootMargin: REVEAL_MARGIN", self.module)
+
+    def test_revealed_blocks_are_never_hidden_again(self):
+        self.assertNotRegex(self.module, r"classList\.remove\('is-(?:revealed|settled)'\)")
+        self.assertNotRegex(self.module, r"classList\.toggle\(")
+        # the marker is removed only on failure (everything becomes visible)
+        self.assertEqual(self.module.count("root.classList.remove('reveal-on')"), 1)
+        fail = self.module[self.module.index("function fail()"):]
+        self.assertTrue(fail[:fail.index("}")].strip().endswith("finish();"))
+
+    def test_safety_timer_outlasts_the_longest_reveal(self):
+        settle = int(re.search(r"REVEAL_SETTLE_MS = (\d+)", self.code).group(1))
+        stagger_max = int(re.search(r"REVEAL_STAGGER_MAX = (\d+)", self.code).group(1))
+        longest = css_ms(self.css, "--duration-slow") + stagger_max * css_ms(self.css, "--reveal-stagger")
+        self.assertGreater(settle, longest + 200)
 
 
 class GalleryStylesTest(unittest.TestCase):
