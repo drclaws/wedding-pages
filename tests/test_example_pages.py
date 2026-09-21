@@ -3,13 +3,15 @@
 Both example sets are built with the real template, fragments and assets
 into a temporary directory (the media files are placeholders made from the
 media registry).  The checks look at the published files only: what a guest
-does not see must be absent from the HTML of the page and from the calendar
-files next to it.
+does not see must be absent from the HTML of the page, which links the
+calendar files of the events it shows and no other.
 """
 
 from __future__ import annotations
 
 import collections
+import hashlib
+import hmac
 import json
 import re
 import shutil
@@ -143,9 +145,27 @@ class ExamplePagesTestCase(unittest.TestCase):
 
     @staticmethod
     def own(invitation: dict, files: dict[str, str]) -> dict[str, str]:
-        """The page and the calendar files of one invitation."""
+        """The files of the directory of one invitation (its page only)."""
         prefix = f"i/{invitation['token']}/"
         return {path: text for path, text in files.items() if path.startswith(prefix)}
+
+    @staticmethod
+    def calendars(site: dict, files: dict[str, str]) -> dict[str, str]:
+        """Event id -> the published path of its calendar file (as the build names it)."""
+        prefix = f"assets/{site['mediaDir']}/"
+        by_uid = {
+            re.search(r"^UID:(\S+)", content, re.M).group(1): path
+            for path, content in files.items()
+            if path.startswith(prefix) and path.endswith(".ics")
+        }
+        found = {}
+        for event_id, event in site["events"].items():
+            uid = hashlib.sha256(
+                f"{site['mediaDir']}\n{event_id}\n{event['start']}".encode()
+            ).hexdigest()[:32]
+            if f"{uid}@invitation" in by_uid:
+                found[event_id] = by_uid[f"{uid}@invitation"]
+        return found
 
 
 class PrivacyTests(ExamplePagesTestCase):
@@ -174,8 +194,11 @@ class PrivacyTests(ExamplePagesTestCase):
             for invitation in invitations:
                 seen = visible_events(site, invitation)
                 own = self.own(invitation, files)
-                calendars = sorted(path.rsplit("/", 1)[1] for path in own if path.endswith(".ics"))
-                self.assertEqual(calendars, sorted(f"{event_id}.ics" for event_id in seen))
+                self.assertEqual(list(own), [f"i/{invitation['token']}/index.html"])
+                calendars = self.calendars(site, files)
+                page = own[f"i/{invitation['token']}/index.html"]
+                linked = {path.rsplit("/", 1)[1] for path in re.findall(r'href="/([^"]+\.ics)"', page)}
+                self.assertEqual(linked, {calendars[event_id].rsplit("/", 1)[1] for event_id in seen})
                 for event_id, event in site["events"].items():
                     if event_id in seen:
                         continue
@@ -185,22 +208,44 @@ class PrivacyTests(ExamplePagesTestCase):
                             self.assertNotIn(event["start"], content, path)
                             self.assertNotIn(f"e-{event_id}", content, path)
                             self.assertNotIn(f"/{event_id}.ics", content, path)
+                            # neither the link to its calendar file nor its name
+                            self.assertNotIn(calendars[event_id].rsplit("/", 1)[1], content, path)
                             checked += 1
         self.assertGreater(checked, 0)
+
+    def test_one_calendar_file_per_event_somebody_sees(self):
+        for name, site, invitations, files in self.sets():
+            with self.subTest(data=name):
+                seen = set().union(*(visible_events(site, invitation) for invitation in invitations))
+                published = sorted(path for path in files if path.endswith(".ics"))
+                self.assertEqual(sorted(self.calendars(site, files).values()), published)
+                self.assertEqual(set(self.calendars(site, files)), seen)
+                for path in published:
+                    self.assertRegex(path, rf"\Aassets/{re.escape(site['mediaDir'])}/[0-9a-f]{{16}}\.ics\Z")
+                    name_hash = path.rsplit("/", 1)[1][:16]
+                    key = hashlib.sha256(
+                        "\n".join(sorted(item["token"] for item in invitations)).encode()
+                    ).digest()
+                    expected = hmac.new(key, files[path].encode(), hashlib.sha256).hexdigest()[:16]
+                    self.assertEqual(name_hash, expected)
+                    # a plain hash of the contents is not the name
+                    self.assertNotEqual(name_hash, hashlib.sha256(files[path].encode()).hexdigest()[:16])
 
     def test_hidden_events_are_where_they_are_shown(self):
         site, invitations, files = self.built["data"]
         title = site["events"]["brunch"]["title"]
         guests = [invitation for invitation in invitations if "brunch" in visible_events(site, invitation)]
         self.assertEqual(len(guests), 2)
+        brunch = self.calendars(site, files)["brunch"]
+        pages = sorted(f"i/{invitation['token']}/index.html" for invitation in guests)
         self.assertEqual(
             sorted(path for path, content in files.items() if title in content),
-            sorted(
-                f"i/{invitation['token']}/{file}"
-                for invitation in guests
-                for file in ("brunch.ics", "index.html")
-            ),
+            sorted([*pages, brunch]),
         )
+        # its calendar file is linked from these pages only: not from the stub,
+        # nor from the pages of the other guests
+        file_name = brunch.rsplit("/", 1)[1]
+        self.assertEqual(sorted(path for path, content in files.items() if file_name in content), pages)
 
     def test_hidden_sections_and_widgets_are_not_on_the_page(self):
         checked = 0
@@ -226,7 +271,7 @@ class PrivacyTests(ExamplePagesTestCase):
     def test_calendar_files_carry_nothing_of_the_invitation(self):
         for name, _site, invitations, files in self.sets():
             for invitation in invitations:
-                for path, content in self.own(invitation, files).items():
+                for path, content in files.items():
                     if not path.endswith(".ics"):
                         continue
                     with self.subTest(data=name, file=path):
@@ -242,11 +287,9 @@ class PrivacyTests(ExamplePagesTestCase):
                 with self.subTest(data=name, token=token[:4]):
                     for path, content in files.items():
                         if path == page:
-                            # the page links to its own calendar files only
-                            links = re.findall(rf"/i/{re.escape(token)}/([^\"]*)\"", content)
-                            self.assertTrue(links)
-                            self.assertTrue(all(link.endswith(".ics") for link in links))
-                            self.assertNotIn(token, re.sub(rf"/i/{re.escape(token)}/[\w-]+\.ics", "", content))
+                            # nothing of the page is under its token: the
+                            # calendar files are in the media directory
+                            self.assertNotIn(token, content)
                         else:
                             self.assertNotIn(token, content, path)
                             self.assertNotIn(token.lower(), content.lower(), path)

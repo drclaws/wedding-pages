@@ -140,12 +140,14 @@
       "location": "manor",
       "start": "2030-06-15T16:00:00+03:00",
       "end": "2030-06-15T23:30:00+03:00",
+      "showEnd": true,
       "schedule": "dinner"
     },
     "brunch": {
       "title": "Второй день",
       "location": "terrace",
       "start": "2030-06-16T12:00:00+03:00",
+      "end": "2030-06-16T15:00:00+03:00",
       "visible": false
     }
   },

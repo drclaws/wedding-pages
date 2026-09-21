@@ -12,7 +12,6 @@ Pure functions, no input/output.  Standard library only.
 
 from __future__ import annotations
 
-import bisect
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, NamedTuple
@@ -144,12 +143,16 @@ def format_tab(start: datetime, same_day: bool) -> str:
     return f"{format_day_month(start)}, {format_time(start)}"
 
 
+#: How long an event without an end lasts.
+DEFAULT_EVENT_DURATION = timedelta(hours=6)
+
+
 class TimelineEntry(NamedTuple):
     """An event of `event_timeline` with the end it effectively has."""
 
     id: str
     start: datetime
-    #: The given end, or the one worked out by `event_timeline`.
+    #: The given end, or the start plus the default duration.
     end: datetime
     #: True when the end was given.
     explicit: bool
@@ -157,16 +160,14 @@ class TimelineEntry(NamedTuple):
 
 def event_timeline(
     events: Iterable[tuple[str, datetime, datetime | None]],
-    default_duration: timedelta,
+    default_duration: timedelta = DEFAULT_EVENT_DURATION,
 ) -> list[TimelineEntry]:
     """Events `(id, start, end or None)` in order, each with an end.
 
     The order is by the moment of the start, then by id.  An event without an
-    end lasts `default_duration`, but not past the start of the next event
-    that starts strictly later; such an end is given on the clock of its start.
-
-    Only the events the guest may see belong in `events`: a hidden event
-    would otherwise shorten the others and so give itself away.
+    end lasts `default_duration`; that end is given on the clock of its start.
+    The end of an event never depends on the other events: it is the same for
+    everybody who sees the event (and in its calendar file).
 
     An end that is not later than its start raises `ValueError`.
     """
@@ -181,7 +182,6 @@ def event_timeline(
                 raise ValueError("the end of an event must be later than its start")
         ordered.append((start, event_id, end))
     ordered.sort(key=lambda item: (item[0], item[1]))
-    starts = [start for start, _id, _end in ordered]
     timeline: list[TimelineEntry] = []
     for start, event_id, end in ordered:
         if end is not None:
@@ -189,8 +189,5 @@ def event_timeline(
             continue
         # added in UTC: the duration is real time whatever the clock of start
         effective = _in_offset_of(start.astimezone(timezone.utc) + default_duration, start)
-        following = bisect.bisect_right(starts, start)
-        if following < len(starts) and starts[following] < effective:
-            effective = _in_offset_of(starts[following], start)
         timeline.append(TimelineEntry(event_id, start, effective, False))
     return timeline

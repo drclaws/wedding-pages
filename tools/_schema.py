@@ -37,7 +37,7 @@ from tools._data import (
     json_type,
     show_id,
 )
-from tools._dates import parse_date_iso
+from tools._dates import DEFAULT_EVENT_DURATION, parse_date_iso
 
 SCHEMA_VERSION = 2
 SITE_FILE = "site.json"
@@ -123,7 +123,9 @@ WIDGET_VARIANTS = {
 }
 MEDIA_LAYOUTS = ("grid", "ribbon", "single")
 
-EVENT_FIELDS = ("title", "location", "start", "end", "schedule", "description", "visible")
+EVENT_FIELDS = (
+    "title", "location", "start", "end", "showEnd", "schedule", "description", "visible"
+)
 LOCATION_FIELDS = (
     "ready",
     "name",
@@ -750,6 +752,12 @@ def _media_type(index: SiteIndex, media_id: str | None) -> str | None:
     return kind if kind in MEDIA_TYPES else None
 
 
+def _duration_text(duration: Any) -> str:
+    """`6 h`, `90 min`: a duration for a message."""
+    minutes = int(duration.total_seconds()) // 60
+    return f"{minutes // 60} h" if minutes % 60 == 0 else f"{minutes} min"
+
+
 def _check_events(check: _Checker, site: dict, index: SiteIndex) -> dict | None:
     events = _registry(check, site, "events", required=True)
     if events is None:
@@ -767,6 +775,7 @@ def _check_events(check: _Checker, site: dict, index: SiteIndex) -> dict | None:
         check.value(event, "title", "string", parts, required=True, single_line=True)
         check.value(event, "description", "string", parts)
         check.value(event, "visible", "boolean", parts)
+        show_end = check.value(event, "showEnd", "boolean", parts)
         if "location" not in event:
             check.error(
                 (*parts, "location"),
@@ -778,16 +787,30 @@ def _check_events(check: _Checker, site: dict, index: SiteIndex) -> dict | None:
         if "schedule" in event:
             check.ref(event["schedule"], (*parts, "schedule"), index.schedules, "schedule")
         moments: dict[str, datetime] = {}
+        given: set[str] = set()
         for key in ("start", "end"):
             text = check.value(event, key, "string", parts, required=key == "start")
             if text is MISSING:
                 continue
+            given.add(key)
             try:
                 moments[key] = parse_date_iso(text)
             except ValueError as exc:
                 check.error((*parts, key), str(exc))
         if "start" in moments and "end" in moments and moments["end"] <= moments["start"]:
             check.error((*parts, "end"), "must be later than 'start'")
+        # default: the end is optional; without it the calendar file and the
+        # past/now marks of the page use the start plus the default duration
+        # (an end of a wrong type is an error above, not "not set")
+        end = event.get("end", "")
+        if "end" not in given and isinstance(end, str):
+            check.warning(
+                (*parts, "end"),
+                "is not set: the calendar and the past/now marks use start + "
+                f"{_duration_text(DEFAULT_EVENT_DURATION)}",
+            )
+            if show_end is True:
+                check.warning((*parts, "showEnd"), "has no effect without 'end'")
         if "start" in moments:
             offsets[event_id] = moments["start"].utcoffset()
     if len(set(offsets.values())) > 1:

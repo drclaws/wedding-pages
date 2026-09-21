@@ -117,7 +117,9 @@ class BuildExamplesTests(TempDirTestCase):
         result = self.run_script("--set", "data", "--out", "out")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(self.pages("data")), 8)
-        self.assertEqual(len(list((self.work / "out" / "data" / "i").rglob("*.ics"))), 17)
+        # one calendar file per event, in the media directory; none next to the pages
+        self.assertEqual(list((self.work / "out" / "data" / "i").rglob("*.ics")), [])
+        self.assertEqual(len(list((self.work / "out" / "data" / "assets").rglob("*.ics"))), 3)
         self.assertTrue((self.repo / "examples" / "media" / "walk.mp4").is_file())
         for token, greeting in tokens("data"):
             self.assertIn(f"  http://localhost:8000/i/{token}/  {greeting}", result.stdout)

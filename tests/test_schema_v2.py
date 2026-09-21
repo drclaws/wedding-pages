@@ -563,6 +563,50 @@ class EventTests(SchemaTestCase):
         report = run(lambda s, i: s["events"]["ceremony"].update(end="2030-06-15T10:00:00+03:00"))
         self.assertOneError(report, "site.json: field 'events.ceremony.end' must be later than 'start'")
 
+    NO_END = (
+        "site.json: field 'events.{}.end' is not set: the calendar and the past/now marks "
+        "use start + 6 h"
+    )
+
+    def test_an_event_without_an_end_is_a_warning(self):
+        for end in (None, "", "  "):
+            with self.subTest(end=end):
+                def change(site, invitations):
+                    if end is None:
+                        site["events"]["ceremony"].pop("end")
+                    else:
+                        site["events"]["ceremony"]["end"] = end
+
+                self.assertMessages(run(change), warnings=[self.NO_END.format("ceremony")])
+
+    def test_an_end_of_a_wrong_type_is_an_error_only(self):
+        report = run(lambda s, i: s["events"]["ceremony"].update(end=None))
+        self.assertOneError(report, "site.json: field 'events.ceremony.end' must be a string, got null")
+        self.assertEqual(report.warnings, [])
+
+    def test_show_end(self):
+        # a boolean, false by default; with an end it only changes the page
+        self.assertMessages(run(lambda s, i: s["events"]["ceremony"].update(showEnd=True)))
+        self.assertMessages(run(lambda s, i: s["events"]["dinner"].update(showEnd=False)))
+        report = run(lambda s, i: s["events"]["ceremony"].update(showEnd="yes"))
+        self.assertOneError(report, "site.json: field 'events.ceremony.showEnd' must be a boolean (true or false), got a string")
+
+        def without_end(site, invitations):
+            site["events"]["dinner"].pop("end")
+
+        self.assertMessages(
+            run(without_end),
+            warnings=[
+                self.NO_END.format("dinner"),
+                "site.json: field 'events.dinner.showEnd' has no effect without 'end'",
+            ],
+        )
+
+    def test_show_end_is_spelt_out(self):
+        report = run(lambda s, i: s["events"]["ceremony"].update(showend=True))
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("did you mean 'showEnd'?", report.errors[0])
+
     def test_offset_is_required(self):
         report = run(lambda s, i: s["events"]["brunch"].update(start="2030-06-16T12:00:00"))
         self.assertOneError(
@@ -1130,7 +1174,7 @@ class PageWarningTests(SchemaTestCase):
             site["locations"]["station"] = {"name": "Вокзал"}
             site["schedules"]["spare"] = [{"title": "Сбор"}]
             site["media"]["unused-1"] = {"type": "image", "file": "unused-1.webp", "alt": "x"}
-            site["events"]["rehearsal"] = {"title": "Репетиция", "location": "manor", "start": "2030-06-14T18:00:00+03:00", "visible": False}
+            site["events"]["rehearsal"] = {"title": "Репетиция", "location": "manor", "start": "2030-06-14T18:00:00+03:00", "end": "2030-06-14T20:00:00+03:00", "visible": False}
 
         self.assertEqual(
             self.warnings(change),

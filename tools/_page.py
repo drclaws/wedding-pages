@@ -3,13 +3,13 @@
 `build_pages` turns data that passed `tools._schema.check_data` into one tree
 per invitation.  What an invitation does not see is cut out while the tree
 is built: a hidden section, widget or event is not in the tree at all, and a
-hidden event is left out of the cards, the dates, the programmes and the end
-times of the other events.  Every field of the tree always exists: an empty
+hidden event is left out of the cards, the dates and the programmes.  The end
+of an event never depends on the other events.  Every field of the tree always exists: an empty
 string, `[]`, `false` or `null` for an object.  Texts come ready: the form of
 address is picked and the placeholders are filled in.
 
 Everything outside the data comes in through `PageSettings`: the URL of a
-media file, the facts of the media files (sizes, durations), the default
+media file and of the calendar file of an event, the facts of the media files (sizes, durations), the default
 duration of an event, the path of the pages and the fields of the site
 images.  The module reads no files.
 
@@ -84,8 +84,7 @@ VIDEO_LABEL = "Видео"
 class PageSettings:
     """What the trees need from outside the data."""
 
-    #: Duration of an event without an end (it ends earlier when the next
-    #: event of the invitation starts).
+    #: Duration of an event without an end.
     default_duration: timedelta
     #: `faviconPath`, `faviconType`, `ogImage`, `ogImageType`, `ogImageWidth`,
     #: `ogImageHeight`: copied to the root of every tree.
@@ -93,6 +92,10 @@ class PageSettings:
     #: File name from the data -> its URL; by default the name under
     #: `mediaPath`.
     media_src: Callable[[str], str] | None = None
+    #: Event id -> the URL of its calendar file (`icsPath`).  The build names
+    #: the file after the hash of its contents; the default,
+    #: `<mediaPath>/<eventId>.ics`, is for previews and tests only.
+    calendar_src: Callable[[str], str] | None = None
     #: File name from the data -> its facts (`tools._media.MediaInfo` or an
     #: object with the same attributes); a missing entry means "unknown".
     media_info: Mapping[str, Any] = field(default_factory=dict)
@@ -161,28 +164,14 @@ class _Page:
 
     def _visible_events(self) -> list[str]:
         """The events the invitation sees, by start; their effective ends."""
-        seen = []
-        for event_id, event in self.events.items():
-            # default: an event hidden in the registry is shown to the
-            # invitations that switch it on
-            override = self.event_overrides.get(event_id, {})
-            shown = override.get("visible", event.get("visible", True))
-            if shown:
-                seen.append(event_id)
-        # only the visible events: a hidden one would shorten the others
-        self.timeline = _dates.event_timeline(
-            (
-                (
-                    event_id,
-                    _dates.parse_date_iso(self.events[event_id]["start"]),
-                    _dates.parse_date_iso(self.events[event_id]["end"])
-                    if _text(self.events[event_id].get("end"))
-                    else None,
-                )
-                for event_id in seen
-            ),
-            self.settings.default_duration,
-        )
+        seen = seen_events(self.site, self.invitation)
+        # the end of an event does not depend on the other events, so the
+        # hidden ones change nothing here
+        self.timeline = [
+            item
+            for item in event_timeline(self.site, self.settings.default_duration)
+            if item.id in seen
+        ]
         self.ends = {item.id: item for item in self.timeline}
         # default: the cards are ordered by the time they start
         return [item.id for item in self.timeline]
@@ -259,9 +248,13 @@ class _Page:
             # spelling of its own
             "dateText": _dates.format_date(entry.start),
             "timeText": _dates.format_time(entry.start),
-            "whenText": _dates.format_when(entry.start, entry.end if entry.explicit else None),
+            # default: the page shows the start only; the end stays in the
+            # calendar and the past/now marks unless `showEnd` asks for it
+            "whenText": _dates.format_when(
+                entry.start, entry.end if entry.explicit and raw.get("showEnd") is True else None
+            ),
             "tabText": _dates.format_tab(entry.start, same_day),
-            "icsPath": f"{self.settings.pages_path}/{self.invitation['token']}/{event_id}.ics",
+            "icsPath": self._calendar_src(event_id),
             "location": self.location(
                 raw["location"], dom_id(own_id, location_part(raw["location"])), nested=True
             ),
@@ -328,6 +321,11 @@ class _Page:
             }
             for item in items
         ]
+
+    def _calendar_src(self, event_id: str) -> str:
+        if self.settings.calendar_src is not None:
+            return self.settings.calendar_src(event_id)
+        return f"{self.media_path}/{event_id}.ics"
 
     def _src(self, name: str) -> str:
         if not name:
@@ -564,15 +562,67 @@ def build_page(
     return page.tree()
 
 
-def visible_events(site: dict, invitation: dict, settings: PageSettings) -> list[dict]:
-    """The events an invitation sees, by start, as its tree shows them.
+def seen_events(site: dict, invitation: dict) -> set[str]:
+    """The ids of the events an invitation sees."""
+    overrides = invitation.get("events", {})
+    # default: an event hidden in the registry is shown to the invitations
+    # that switch it on
+    return {
+        event_id
+        for event_id, event in site["events"].items()
+        if overrides.get(event_id, {}).get("visible", event.get("visible", True))
+    }
 
-    Each is the event of the tree without DOM ids (as `primaryEvent`): the
-    effective end, the place and the programme are the same as on the page.
-    The calendar files of the invitation are made from these.
+
+def event_timeline(site: dict, default_duration: timedelta) -> list[_dates.TimelineEntry]:
+    """Every event of the site by start, with its effective end."""
+    return _dates.event_timeline(
+        (
+            (
+                event_id,
+                _dates.parse_date_iso(event["start"]),
+                _dates.parse_date_iso(event["end"]) if _text(event.get("end")) else None,
+            )
+            for event_id, event in site["events"].items()
+        ),
+        default_duration,
+    )
+
+
+def calendar_events(
+    site: dict, invitations: Sequence[dict], settings: PageSettings
+) -> list[dict]:
+    """The events at least one invitation sees, by start, for their calendar files.
+
+    Only what is the same for every invitation: `id`, `title`, `startISO`,
+    `endISO` (the effective end, as on the pages) and `location` (`ready`,
+    `name`, `address`).  Nothing of an invitation is in them, so one file per
+    event serves everybody who sees it.
     """
-    page = _Page(site, invitation, settings, Usage(), None, "", set())
-    return [page.event(event_id, "") for event_id in page.visible]
+    seen: set[str] = set()
+    for invitation in invitations:
+        seen |= seen_events(site, invitation)
+    events = []
+    for entry in event_timeline(site, settings.default_duration):
+        if entry.id not in seen:
+            continue
+        raw = site["events"][entry.id]
+        place = site.get("locations", {}).get(raw["location"], {})
+        ready = place.get("ready", True) is not False
+        events.append(
+            {
+                "id": entry.id,
+                "title": raw["title"],
+                "startISO": raw["start"],
+                "endISO": raw["end"] if entry.explicit else entry.end.isoformat(),
+                "location": {
+                    "ready": ready,
+                    "name": _text(place.get("name")) if ready else "",
+                    "address": _text(place.get("address")) if ready else "",
+                },
+            }
+        )
+    return events
 
 
 def build_pages(

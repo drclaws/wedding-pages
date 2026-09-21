@@ -653,20 +653,21 @@ class CheckOutputTreeTests(TempDirTestCase):
             (out / name).write_text("<p>stub</p>", encoding="utf-8")
         (out / "_headers").write_text("/*\n", encoding="utf-8")
         (out / "robots.txt").write_text("User-agent: *\n", encoding="utf-8")
-        (page.parent / "dinner.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
         (out / "assets").mkdir()
         return out
 
     def problems(self, out: Path) -> list[str]:
         with self.assertRaises(build.OutputError) as caught:
-            build.check_output(out, {self.TOKEN: ["dinner"]})
+            build.check_output(out, [self.TOKEN])
         for message in caught.exception.errors:
             self.assertNotIn(self.TOKEN, message)
         return caught.exception.errors
 
     def test_clean_tree_passes(self):
-        stats = build.check_output(self.make_tree(), {self.TOKEN: ["dinner"]})
-        self.assertEqual(stats.files, 6)
+        out = self.make_tree()
+        self.assertEqual(build.check_output(out, [self.TOKEN]).files, 5)
+        # a mapping of the tokens is read as its keys
+        self.assertEqual(build.check_output(out, {self.TOKEN: ()}).files, 5)
 
     def test_dot_files(self):
         out = self.make_tree()
@@ -693,8 +694,9 @@ class CheckOutputTreeTests(TempDirTestCase):
         (stranger / "index.html").write_text("<p>x</p>", encoding="utf-8")
         (out / "i" / "index.html").write_text("<p>list</p>", encoding="utf-8")
         (out / "i" / self.TOKEN / "extra.html").write_text("<p>x</p>", encoding="utf-8")
-        # a calendar file of an event the invitation does not see
-        (out / "i" / self.TOKEN / "brunch.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
+        # calendar files live in the media directory, never next to a page
+        (out / "i" / self.TOKEN / "dinner.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
+        (out / "i" / self.TOKEN / "0123456789abcdef.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
         (out / "i" / "event.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
         problems = self.problems(out)
         self.assertIn(
@@ -703,11 +705,10 @@ class CheckOutputTreeTests(TempDirTestCase):
             problems,
         )
         self.assertIn(
-            "i/index.html: unexpected file (only <token>/index.html and the calendar "
-            "files of the events of the invitation are allowed in i/)",
+            "i/index.html: unexpected file (only <token>/index.html is allowed in i/)",
             problems,
         )
-        for name in ("extra.html", "brunch.ics"):
+        for name in ("extra.html", "dinner.ics", "0123456789abcdef.ics"):
             self.assertTrue(
                 any(p.startswith(f"i/…/{name}: unexpected file") for p in problems), name
             )
@@ -735,11 +736,9 @@ class CheckOutputTreeTests(TempDirTestCase):
         out = self.make_tree()
         os.remove(out / "404.html")
         os.remove(out / "i" / self.TOKEN / "index.html")
-        os.remove(out / "i" / self.TOKEN / "dinner.ics")
         problems = self.problems(out)
         self.assertIn("404.html: missing from the output", problems)
         self.assertIn("i/…/index.html: missing from the output", problems)
-        self.assertIn("i/…/dinner.ics: missing from the output", problems)
 
     def test_data_files_anywhere(self):
         out = self.make_tree()
@@ -774,11 +773,13 @@ class CheckOutputTreeTests(TempDirTestCase):
         self.assertIn("i/…/index.html line 2: HTML comment left in the output", problems)
 
     HASHED = "0123456789abcdef.png"
+    CALENDAR = "fedcba9876543210.ics"
 
-    def media_problems(self, out: Path, media=(HASHED,)) -> list[str]:
+    def media_problems(self, out: Path, media=(HASHED,), calendars=()) -> list[str]:
         with self.assertRaises(build.OutputError) as caught:
             build.check_output(
-                out, {self.TOKEN: ["dinner"]}, media_dir=support.MEDIA_DIR, media=set(media)
+                out, [self.TOKEN], media_dir=support.MEDIA_DIR, media=set(media),
+                calendars=set(calendars),
             )
         for message in caught.exception.errors:
             self.assertNotIn(support.MEDIA_DIR, message)
@@ -792,29 +793,64 @@ class CheckOutputTreeTests(TempDirTestCase):
 
     def test_the_media_directory_holds_exactly_the_published_names(self):
         stats = build.check_output(
-            self.with_media(), {self.TOKEN: ["dinner"]}, media_dir=support.MEDIA_DIR,
+            self.with_media(), [self.TOKEN], media_dir=support.MEDIA_DIR,
             media={self.HASHED},
         )
-        self.assertEqual(stats.files, 7)
+        self.assertEqual(stats.files, 6)
+
+    UNEXPECTED_MEDIA = (
+        "unexpected file (only the media the pages show and the calendar files of the "
+        "events are published, under the hash of their contents)"
+    )
 
     def test_a_media_file_under_the_name_of_the_data_is_refused(self):
         out = self.with_media()
         (out / "assets" / support.MEDIA_DIR / "venue-1.png").write_bytes(b"png")
         problems = self.media_problems(out)
-        self.assertIn(
-            "assets/<mediaDir>/….png: unexpected file (only the media the pages show are "
-            "published, under the hash of their contents)",
-            problems,
-        )
+        self.assertIn(f"assets/<mediaDir>/….png: {self.UNEXPECTED_MEDIA}", problems)
         self.assertNotIn("venue-1", "\n".join(problems))
 
     def test_a_hashed_file_that_no_page_shows_is_refused(self):
         out = self.with_media()
         (out / "assets" / support.MEDIA_DIR / "fedcba9876543210.png").write_bytes(b"png")
         self.assertIn(
-            "assets/<mediaDir>/fedcba9876543210.png: unexpected file (only the media the "
-            "pages show are published, under the hash of their contents)",
+            f"assets/<mediaDir>/fedcba9876543210.png: {self.UNEXPECTED_MEDIA}",
             self.media_problems(out),
+        )
+
+    def test_the_calendar_files_live_in_the_media_directory(self):
+        out = self.with_media()
+        (out / "assets" / support.MEDIA_DIR / self.CALENDAR).write_bytes(b"BEGIN:VCALENDAR\r\n")
+        stats = build.check_output(
+            out, [self.TOKEN], media_dir=support.MEDIA_DIR, media={self.HASHED},
+            calendars={self.CALENDAR},
+        )
+        self.assertEqual(stats.files, 7)
+        # without media files the directory holds the calendar files alone
+        os.remove(out / "assets" / support.MEDIA_DIR / self.HASHED)
+        stats = build.check_output(
+            out, [self.TOKEN], media_dir=support.MEDIA_DIR, calendars={self.CALENDAR}
+        )
+        self.assertEqual(stats.files, 6)
+
+    def test_an_extra_calendar_file_is_refused(self):
+        out = self.with_media()
+        media = out / "assets" / support.MEDIA_DIR
+        (media / self.CALENDAR).write_bytes(b"BEGIN:VCALENDAR\r\n")
+        # the file of an event nobody sees, and one named after its event
+        (media / "00112233445566ff.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
+        (media / "brunch.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
+        problems = self.media_problems(out, calendars={self.CALENDAR})
+        self.assertIn(f"assets/<mediaDir>/00112233445566ff.ics: {self.UNEXPECTED_MEDIA}", problems)
+        self.assertIn(f"assets/<mediaDir>/….ics: {self.UNEXPECTED_MEDIA}", problems)
+        self.assertNotIn("brunch", "\n".join(problems))
+        self.assertEqual(len(problems), 2)
+
+    def test_a_missing_calendar_file(self):
+        out = self.with_media()
+        self.assertIn(
+            f"assets/<mediaDir>/{self.CALENDAR}: missing from the output",
+            self.media_problems(out, calendars={self.CALENDAR}),
         )
 
     def test_a_published_name_missing_from_the_media_directory(self):

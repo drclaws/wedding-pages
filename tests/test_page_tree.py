@@ -220,22 +220,24 @@ class HiddenEventTests(unittest.TestCase):
         self.assertIn("brunch", [item["id"] for item in events_widget(pages[0])["items"]])
         self.assertNotIn("brunch", [item["id"] for item in events_widget(pages[1])["items"]])
 
-    def test_hidden_event_does_not_shorten_the_others(self):
+    def test_other_events_do_not_shorten_an_event(self):
+        # the end is the same for everybody: no event, seen or hidden, cuts it
         def change(site, invitations):
             site["events"]["ceremony"].pop("end")
             site["events"]["secret"] = {
                 "title": "Тайное", "location": "registry",
-                "start": "2030-06-15T13:00:00+03:00", "visible": False,
+                "start": "2030-06-15T13:00:00+03:00",
+                "end": "2030-06-15T14:00:00+03:00", "visible": False,
             }  # fmt: skip
             invitations[0]["events"]["secret"] = {"visible": True}
 
         pages = build(change)
         ceremony = {page["greeting"]: next(e for e in events_widget(page)["items"] if e["id"] == "ceremony") for page in pages[:2]}
-        self.assertEqual(ceremony["Дорогая Кэрол!"]["endISO"], "2030-06-15T13:00:00+03:00")
-        self.assertEqual(ceremony["Дорогой Дэйв!"]["endISO"], "2030-06-15T16:00:00+03:00")
+        self.assertEqual(ceremony["Дорогая Кэрол!"]["endISO"], "2030-06-15T17:00:00+03:00")
+        self.assertEqual(ceremony["Дорогой Дэйв!"]["endISO"], "2030-06-15T17:00:00+03:00")
 
     def test_default_duration(self):
-        pages = build(default_duration=timedelta(hours=2))
+        pages = build(lambda s, i: s["events"]["brunch"].pop("end"), default_duration=timedelta(hours=2))
         brunch = next(e for e in events_widget(pages[0])["items"] if e["id"] == "brunch")
         self.assertEqual(brunch["endISO"], "2030-06-16T14:00:00+03:00")
         self.assertEqual(brunch["whenText"], "Воскресенье, 16 июня 2030, 12:00")
@@ -499,7 +501,37 @@ class DateTextTests(unittest.TestCase):
         self.assertEqual(dinner["whenText"], "Суббота, 15 июня 2030, 16:00–23:30")
         self.assertEqual(dinner["startISO"], "2030-06-15T16:00:00+03:00")
         self.assertEqual(dinner["endISO"], "2030-06-15T23:30:00+03:00")
-        self.assertEqual(dinner["icsPath"], "/i/0R-pnCqGFgrPOR5e-NluZw/dinner.ics")
+        # without a provider the calendar file is named after the event
+        self.assertEqual(dinner["icsPath"], f"/assets/{F.MEDIA_DIR}/dinner.ics")
+
+    def test_the_end_is_on_the_page_only_with_show_end(self):
+        pages = build()
+        brunch = next(e for e in events_widget(pages[0])["items"] if e["id"] == "brunch")
+        # the brunch has an end, but does not ask to show it
+        self.assertEqual(brunch["whenText"], "Воскресенье, 16 июня 2030, 12:00")
+        self.assertEqual(brunch["endISO"], "2030-06-16T15:00:00+03:00")
+
+        def change(site, invitations):
+            site["events"]["dinner"]["showEnd"] = False
+            site["events"]["brunch"]["showEnd"] = True
+            site["events"]["ceremony"]["showEnd"] = True
+            site["events"]["ceremony"].pop("end")
+
+        page = build(change)[0]
+        found = {item["id"]: item for item in events_widget(page)["items"]}
+        self.assertEqual(found["dinner"]["whenText"], "Суббота, 15 июня 2030, 16:00")
+        self.assertEqual(found["dinner"]["endISO"], "2030-06-15T23:30:00+03:00")
+        self.assertEqual(found["brunch"]["whenText"], "Воскресенье, 16 июня 2030, 12:00–15:00")
+        # no end: `showEnd` has nothing to show, the start + 6 h stays hidden
+        self.assertEqual(found["ceremony"]["whenText"], "Суббота, 15 июня 2030, 11:00")
+        self.assertEqual(found["ceremony"]["endISO"], "2030-06-15T17:00:00+03:00")
+
+    def test_calendar_src(self):
+        pages = build(calendar_src=lambda event_id: f"/assets/{F.MEDIA_DIR}/{event_id[::-1]}.ics")
+        self.assertEqual(pages[0]["primaryEvent"]["icsPath"], f"/assets/{F.MEDIA_DIR}/rennid.ics")
+        for page in pages:
+            for event in walk_events(page):
+                self.assertEqual(event["icsPath"], f"/assets/{F.MEDIA_DIR}/{event['id'][::-1]}.ics")
 
     def test_cards_ordered_by_start(self):
         page = build(lambda s, i: s["sections"][4]["widgets"][0].update(events=["brunch", "dinner", "ceremony"]))[0]
@@ -533,7 +565,7 @@ class PlaceTests(unittest.TestCase):
         event = page["primaryEvent"]
         self.assertFalse(event["location"]["ready"])
         self.assertEqual(event["whenText"], "Суббота, 10 августа 2030, 15:00")
-        self.assertEqual(event["endISO"], "2030-08-10T21:00:00+05:00")
+        self.assertEqual(event["endISO"], "2030-08-10T22:00:00+05:00")
         self.assertEqual(len(event["program"]["items"]), 2)
 
 
