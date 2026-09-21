@@ -734,6 +734,14 @@ class FragmentContractTests(unittest.TestCase):
                 self.assertIn("data-lightbox", document)
                 self.assertEqual("width=" in document.split("<img", 1)[1].split(">", 1)[0],
                                  bool(item["width"]))
+                # the sizer of a single tile: the size of the frame, or the ratio token
+                if item["width"]:
+                    self.assertIn('<li class="gallery__item"><svg class="gallery__sizer" '
+                                  'width="640" height="480" viewBox="0 0 640 480"', document)
+                else:
+                    self.assertIn('<li class="gallery__item"><span class="gallery__sizer '
+                                  'gallery__sizer--default" aria-hidden="true"></span>', document)
+                    self.assertNotIn("data-media-ratio", document)
 
     def test_a_field_outside_the_contract_fails(self):
         widget = bare_widget("text", text="Текст", variant="body")
@@ -762,7 +770,6 @@ class FragmentContractTests(unittest.TestCase):
         tablist = re.search(r"<div [^>]*data-events-tablist[^>]*>", document).group(0)
         self.assertIn(" hidden", tablist)
         self.assertIn('aria-labelledby="s--title"', tablist)
-        self.assertIn('style="--events-count: 2"', tablist)
         self.assertIn('data-events-primary="w--e-a"', document)
         panels = re.findall(r"<article [^>]*>", document)
         self.assertEqual(len(panels), 2)
@@ -890,6 +897,12 @@ class FullPageTests(unittest.TestCase):
             with self.subTest(token=token):
                 build.check_rendered(page)
                 self.assertEqual(html_problems(page, published_files(tree)), [])
+
+    def test_the_pages_have_no_inline_styles(self):
+        for token, (_tree, page) in self.pages.items():
+            with self.subTest(token=token):
+                self.assertNotRegex(page, r"<[a-zA-Z][^>]*\sstyle\s*=")
+                self.assertNotRegex(page, r"(?i)<style[\s>]")
 
     def test_ids_are_unique_and_every_reference_resolves(self):
         for token, (_tree, page) in self.pages.items():

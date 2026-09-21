@@ -1,7 +1,7 @@
-<!-- Виджет событий; ожидает в `.` виджет: domId, labelledBy, items[] (события гостя по времени начала), count, multiple, primaryDomId. Без скрипта список вкладок скрыт и все карточки идут подряд; первостепенная — в рамке (events__panel--primary). Пометки «прошло» и «идёт сейчас» ставит скрипт. Таймера в карточках нет. -->
+<!-- Виджет событий; ожидает в `.` виджет: domId, labelledBy, items[] (события гостя по времени начала), multiple, primaryDomId. Без скрипта список вкладок скрыт и все карточки идут подряд; первостепенная — в рамке (events__panel--primary). Пометки «прошло» и «идёт сейчас» ставит скрипт. Таймера в карточках нет. -->
 <div class="widget events-widget events" id="{{.domId}}" data-events data-events-primary="{{.primaryDomId}}">
   <!-- if:.multiple -->
-  <div class="events__tabs" role="tablist" aria-labelledby="{{.labelledBy}}" style="--events-count: {{.count}}" data-events-tablist hidden>
+  <div class="events__tabs" role="tablist" aria-labelledby="{{.labelledBy}}" data-events-tablist hidden>
     <!-- each:.items -->
     <button class="events__tab" type="button" role="tab" id="{{.domId}}--tab" aria-controls="{{.domId}}" aria-selected="false" tabindex="-1" data-events-tab>
       <span class="events__tab-title">{{.title}}</span>
