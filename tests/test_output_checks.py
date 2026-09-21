@@ -13,6 +13,7 @@ from unittest import mock
 
 from tests import support
 
+from tools import _schema as schema
 from tools import gen_assets
 from tests.support import (
     CliTestCase,
@@ -605,6 +606,19 @@ class FileSizeLimitTests(FailingBuildTestCase):
                 "is 64.0 KiB"
             )
         self.assertNotIn("clip.mp4", result.stderr)
+
+    def test_a_large_photo_behind_the_cover_is_a_warning(self):
+        site = site_data()
+        site["sections"][0]["background"] = "venue-2"
+        write_data(self.data, site=site)
+        size = (self.media / "venue-2.png").stat().st_size
+        with mock.patch.object(schema, "COVER_BACKGROUND_WARN_BYTES", size):
+            self.assertNotIn("first screen", self.assertBuildPasses().stderr)
+        with mock.patch.object(schema, "COVER_BACKGROUND_WARN_BYTES", size - 1):
+            result = self.assertBuildPasses()
+        self.assertIn("warning: site.json: field 'media.venue-2.file' is ", result.stderr)
+        self.assertIn("first screen: keep it under ~400 KB", result.stderr)
+        self.assertNotIn("venue-2.png", result.stderr)
 
     def test_file_at_the_limit_passes(self):
         (self.code / "assets" / "fonts" / "big.js").write_bytes(b"/" * self.LIMIT)

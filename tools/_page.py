@@ -30,6 +30,7 @@ from tools import _dates, _maps
 from tools._data import format_path, invitation_label, resolve_text, show_id, substitute
 from tools._mp4 import format_duration
 from tools._schema import (
+    COVER_FOCUSES,
     PLACEHOLDERS,
     SITE_FILE,
     report_warning,
@@ -418,14 +419,20 @@ class _Page:
             "note": "",
             "eyebrow": "",
             "event": None,
+            "background": None,
+            "backgroundFocus": "",
             "widgets": [],
         }
         parts = ("sections", position)
         if kind == "cover":
             event_id = self.cover_event()
+            background = _text(section.get("background"))
             tree.update(
                 eyebrow=self.resolve(section.get("eyebrow"), (*parts, "eyebrow")),
                 event=self.event(event_id, own_id),
+                background=self.media(background) if background else None,
+                # default: the middle of the photo stays in view
+                backgroundFocus=section.get("backgroundFocus", COVER_FOCUSES[0]),
             )
             return tree
         # default: an invitation switches the widgets of a section by their id

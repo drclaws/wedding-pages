@@ -86,11 +86,27 @@ V1_SITE_HINTS = {
 }
 
 SECTION_FIELDS = {
-    "cover": ("id", "type", "visible", "eyebrow"),
+    "cover": ("id", "type", "visible", "eyebrow", "background", "backgroundFocus"),
     "custom": ("id", "type", "visible", "title", "titleHidden", "width", "align", "widgets"),
 }
 SECTION_WIDTHS = ("narrow", "wide")
 SECTION_ALIGNS = ("start", "center")
+#: Which part of the photo behind the cover stays in view when the screen
+#: crops it (the first one is the default).
+COVER_FOCUSES = (
+    "center",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+)
+#: A photo behind the cover larger than this gets a warning: it is loaded
+#: first, before anything else of the page.  TEMP: the size is not final.
+COVER_BACKGROUND_WARN_BYTES = 1024 * 1024
 
 WIDGET_BASE_FIELDS = ("type", "id", "visible")
 WIDGET_FIELDS = {
@@ -572,10 +588,47 @@ def _media_name(
         )
 
 
+def _ids(value: Any) -> list[str]:
+    """The strings of a list of ids (a broken list is reported elsewhere)."""
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def cover_backgrounds(site: Any) -> set[str]:
+    """Ids of the media items that a cover shows as its background photo."""
+    sections = site.get("sections") if isinstance(site, dict) else None
+    return {
+        section["background"]
+        for section in (sections if isinstance(sections, list) else [])
+        if isinstance(section, dict)
+        and section.get("type") == "cover"
+        and isinstance(section.get("background"), str)
+    }
+
+
+def _described_media(site: dict) -> set[str]:
+    """Ids of the media items shown as a tile or a picture with a description."""
+    ids: set[str] = set()
+    locations = site.get("locations")
+    for place in (locations.values() if isinstance(locations, dict) else ()):
+        if isinstance(place, dict):
+            ids.update(_ids(place.get("photos")))
+            if isinstance(place.get("directions"), str):
+                ids.add(place["directions"])
+    sections = site.get("sections")
+    for section in (sections if isinstance(sections, list) else ()):
+        widgets = section.get("widgets") if isinstance(section, dict) else None
+        for widget in (widgets if isinstance(widgets, list) else ()):
+            if isinstance(widget, dict) and widget.get("type") == "media":
+                ids.update(_ids(widget.get("items")))
+    return ids
+
+
 def _check_media(check: _Checker, site: dict) -> dict | None:
     media = _registry(check, site, "media")
     if not media:
         return media
+    # a photo behind the cover is decoration: the page gives it an empty alt
+    decorative = cover_backgrounds(site) - _described_media(site)
     for media_id, item in media.items():
         parts = ("media", media_id)
         item = check.object(item, parts)
@@ -603,6 +656,8 @@ def _check_media(check: _Checker, site: dict) -> dict | None:
             check.error((*parts, given[0]), f"is set without '{other}'; set both or neither")
         check.value(item, "alt", "string", parts, single_line=True)
         alt = item.get("alt")
+        if media_id in decorative:
+            continue
         if "alt" not in item or (isinstance(alt, str) and not alt.strip()):
             # default: a missing description is a warning, not an error
             check.warning(
@@ -828,6 +883,7 @@ def _check_sections(check: _Checker, site: dict, index: SiteIndex) -> None:
                 check.error((*parts, "type"), "is 'cover': the cover must be the first section")
             covers.append(position)
             _check_text(check, section, "eyebrow", parts, index, single_line=True)
+            _check_cover_background(check, section, parts, index)
             continue
         _check_text(check, section, "title", parts, index, required=True, single_line=True)
         check.value(section, "titleHidden", "boolean", parts)
@@ -842,6 +898,21 @@ def _check_sections(check: _Checker, site: dict, index: SiteIndex) -> None:
             )
     if not covers and sections:
         check.warning(("sections",), "has no 'cover' section: the page will have no main heading")
+
+
+def _check_cover_background(
+    check: _Checker, section: dict, parts: Sequence[PathPart], index: SiteIndex
+) -> None:
+    """`background` (a picture of the media registry) and `backgroundFocus`."""
+    if "background" in section:
+        where = (*parts, "background")
+        found = check.ref(section["background"], where, index.media, "media item")
+        kind = _media_type(index, found)
+        if found is not None and kind is not None and kind != "image":
+            check.error(where, f"must be an image, but {show_id(found)} is a {kind}")
+    check.choice(section, "backgroundFocus", COVER_FOCUSES, parts)
+    if "backgroundFocus" in section and "background" not in section:
+        check.warning((*parts, "backgroundFocus"), "has no effect without 'background'")
 
 
 def _section_id(
@@ -1207,17 +1278,20 @@ def check_media_files(
     report: Any,
     shown: Iterable[str] | None = None,
     where: str = SITE_FILE,
+    sizes: Mapping[str, int] | None = None,
 ) -> None:
     """Messages about the media files of the items in `shown` (all by default).
 
     `infos` maps a file name from the data to its `tools._media.MediaInfo`;
     a file without an entry is skipped (its absence is reported by whoever
-    looked for it).  Only paths to fields are printed, never file names.
+    looked for it).  `sizes` maps a file name to its size in bytes, when
+    known.  Only paths to fields are printed, never file names.
     """
     check = _Checker(report, where)
     media = site.get("media") if isinstance(site, dict) else None
     if not isinstance(media, dict):
         return
+    backgrounds = cover_backgrounds(site)
     for media_id in sorted(media if shown is None else set(shown)):
         item = media.get(media_id)
         if not isinstance(item, dict):
@@ -1235,6 +1309,15 @@ def check_media_files(
             if role == "file" and item.get("type") == "video":
                 _video_warnings(check, (*parts, role), info.problems)
         _size_warnings(check, item, parts, infos)
+        file = item.get("file")
+        size = (sizes or {}).get(file) if isinstance(file, str) else None
+        if media_id in backgrounds and size is not None and size > COVER_BACKGROUND_WARN_BYTES:
+            check.warning(
+                (*parts, "file"),
+                f"is {_data.format_size(size)}; it is the background of the cover, the "
+                "first screen: keep it under ~400 KB (a long side of 2000-2400 px, JPEG "
+                "quality ~70 or WebP)",
+            )
 
 
 _VIDEO_WARNINGS = {

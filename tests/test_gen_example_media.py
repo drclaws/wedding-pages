@@ -132,6 +132,7 @@ class PlanMediaTest(unittest.TestCase):
         self.assertEqual(
             [(item.kind, item.name) for item in plan],
             [
+                ("cover", "cover.png"),
                 ("photo", "registry-1.png"),
                 ("photo", "venue-1.png"),
                 ("photo", "venue-2.png"),
@@ -153,6 +154,7 @@ class PlanMediaTest(unittest.TestCase):
         self.assertEqual(sizes["walk.mp4"], (1280, 720))
         self.assertEqual(sizes["walk-poster.png"], (1280, 720))
         self.assertEqual(sizes["directions.png"], gen.DIRECTIONS_SIZE)
+        self.assertEqual(sizes["cover.png"], gen.COVER_SIZE)
         self.assertEqual(sizes["registry-1.png"], gen.PHOTO_SIZE)
         self.assertEqual(sizes["venue-1.png"], gen.PHOTO_PORTRAIT_SIZE)
         self.assertEqual(len([item for item in plan if item.kind == "video"]), 2)
@@ -236,6 +238,25 @@ class PlanMediaTest(unittest.TestCase):
             [("photo", "photo.png"), ("directions", "map.png")],
         )
 
+    def test_the_cover_background_is_a_landscape_picture(self):
+        site = {
+            "sections": [{"id": "cover", "type": "cover", "background": "back"}],
+            "media": {"photo": image("photo.png"), "back": image("back.png"),
+                      "sized": image("sized.png")},
+        }  # fmt: skip
+        plan = {item.name: item for item in gen.plan_media(site)}
+        self.assertEqual((plan["back.png"].kind, plan["back.png"].size), ("cover", gen.COVER_SIZE))
+        self.assertGreater(gen.COVER_SIZE[0], gen.COVER_SIZE[1])
+        # the photos keep their numbers: the background is not one of them
+        self.assertEqual((plan["photo.png"].index, plan["sized.png"].index), (0, 1))
+        site["media"]["back"].update(width=1000, height=500)
+        self.assertEqual(gen.plan_media(site)[1].size, (1000, 500))
+        # only the cover has a background
+        site["sections"][0]["type"] = "custom"
+        self.assertEqual(gen.plan_media(site)[1].kind, "photo")
+        with self.assertRaises(gen.GenerationError):
+            gen.plan_media({"sections": {}, "media": {}})
+
     def test_load_site_reports_bad_encoding(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "site.json").write_bytes(b'{"coupleNames": "\xff\xfe"}')
@@ -270,9 +291,9 @@ class GenerateTest(unittest.TestCase):
         names = [path.name for path, _ in created]
         self.assertEqual(
             names,
-            ["registry-1.png", "venue-1.png", "venue-2.png", "venue-3.png", "venue-4.png",
-             "directions.png", "story-1.png", "story-2.png", "proposal-poster.png",
-             "walk-poster.png"],
+            ["cover.png", "registry-1.png", "venue-1.png", "venue-2.png", "venue-3.png",
+             "venue-4.png", "directions.png", "story-1.png", "story-2.png",
+             "proposal-poster.png", "walk-poster.png"],
         )  # fmt: skip
         self.assertIn("ffmpeg", stderr)
         for clip in ("proposal.mp4", "walk.mp4"):
@@ -289,6 +310,8 @@ class GenerateTest(unittest.TestCase):
         self.assertEqual(sizes["venue-2.png"], gen.PHOTO_SIZE)
         self.assertEqual(sizes["venue-1.png"], gen.PHOTO_PORTRAIT_SIZE)
         self.assertEqual(sizes["directions.png"], gen.DIRECTIONS_SIZE)
+        # the background of the cover: a .png, so it is made without ffmpeg too
+        self.assertEqual(sizes["cover.png"], gen.COVER_SIZE)
         # the posters have the proportions of their clips: portrait and landscape
         self.assertEqual(sizes["proposal-poster.png"], (720, 1280))
         self.assertEqual(sizes["walk-poster.png"], (1280, 720))
@@ -417,7 +440,7 @@ class CommandLineTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("ffmpeg not found", result.stderr)
             lines = result.stdout.splitlines()
-            self.assertEqual(len(lines), 10)
+            self.assertEqual(len(lines), 11)
             for line in lines:
                 self.assertTrue(line.startswith("media/"), line)
             site = load_json(workdir / "data" / "site.json")

@@ -412,6 +412,18 @@
   --cover-height-ratio: var(--cover-height-ratio-mobile);
   --cover-min-height: calc(var(--viewport-height) * var(--cover-height-ratio));
 
+  /* Фото на фоне обложки (необязательное): поверх него — вуаль цвета обложки,
+     весь текст обложки на фото — цветом --color-cover-text.
+     Контраст (WCAG): текст на вуали непрозрачности a над пикселем фото P —
+     цвет фона a·veil + (1 − a)·P; худший пиксель — чёрный. С текущей палитрой
+     (текст #1b1d21, вуаль #f1f2f4) на чёрном: a = 0.6 → 5.4:1, минимум для
+     4.5:1 — 0.55; на белом пикселе контраст только выше. Вторичный цвет
+     текста на фото не годится: ему нужна вуаль ≥ 0.86, фото почти пропало бы.
+     При смене палитры минимум пересчитать. */
+  --color-cover-veil: var(--color-surface);  /* TEMP  вуаль поверх фото */
+  --color-cover-text: var(--color-text);     /* TEMP  текст обложки на фото */
+  --cover-veil-opacity: 0.6;                 /* TEMP  см. расчёт выше, не ниже 0.55 */
+
   /* Медиа и плитка видео не выше этой доли экрана — чтобы в ландшафтной
      ориентации телефона кадр помещался целиком. */
   --media-max-height-ratio: 0.8;  /* TEMP */
@@ -1455,6 +1467,11 @@ a.btn[aria-disabled="true"] {
     calc(var(--space-xl) + var(--safe-inset-bottom));
   background-color: var(--color-surface);
   text-align: center;
+  /* Для фото на фоне: подложка лежит под содержимым, но над фоном обложки,
+     и не выходит за её границы. */
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
 }
 
 .cover__title {
@@ -1465,6 +1482,63 @@ a.btn[aria-disabled="true"] {
   font-size: var(--text-lg);
   line-height: var(--line-height-tight);
   color: var(--color-text-muted);
+}
+
+/* Фото на фоне обложки. Заполняет обложку при любой пропорции экрана
+   (object-fit: cover): лишнее обрезается, полос нет. Какая часть кадра
+   остаётся видна — модификатор из перечисления backgroundFocus (ключевые
+   слова object-position, без JS и без inline-стилей). Поверх фото —
+   вуаль цвета обложки (::after) непрозрачностью --cover-veil-opacity. */
+.cover__backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-base);
+}
+
+/* Содержимое идёт в разметке после подложки и тоже позиционировано —
+   поэтому рисуется поверх неё. */
+.cover__backdrop ~ .cover__inner {
+  position: relative;
+}
+
+.cover__backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-color: var(--color-cover-veil);
+  opacity: var(--cover-veil-opacity);
+}
+
+.cover__photo {
+  inline-size: 100%;
+  block-size: 100%;
+  max-inline-size: none;
+  object-fit: cover;
+  object-position: center;
+}
+
+.cover__photo--top { object-position: center top; }
+.cover__photo--bottom { object-position: center bottom; }
+.cover__photo--left { object-position: left center; }
+.cover__photo--right { object-position: right center; }
+.cover__photo--top-left { object-position: left top; }
+.cover__photo--top-right { object-position: right top; }
+.cover__photo--bottom-left { object-position: left bottom; }
+.cover__photo--bottom-right { object-position: right bottom; }
+
+/* На фото весь текст обложки — основным цветом: вторичный не держит
+   контраст на тёмном кадре (расчёт — у --cover-veil-opacity). */
+.cover__backdrop ~ .cover__inner .cover__eyebrow,
+.cover__backdrop ~ .cover__inner .cover__title,
+.cover__backdrop ~ .cover__inner .cover__date {
+  color: var(--color-cover-text);
+}
+
+/* Печать: фото не нужно — обложка как без него. */
+@media print {
+  .cover__backdrop {
+    display: none;
+  }
 }
 
 /* --- 2. Официальное приглашение --------------------------------------------- */

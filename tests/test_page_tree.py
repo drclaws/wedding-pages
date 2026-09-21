@@ -21,7 +21,7 @@ ROOT_FIELDS = {
 }  # fmt: skip
 SECTION_FIELDS = {
     "id", "type", "domId", "titleId", "title", "titleHidden", "align", "width",
-    "note", "eyebrow", "event", "widgets",
+    "note", "eyebrow", "event", "background", "backgroundFocus", "widgets",
 }  # fmt: skip
 WIDGET_FIELDS = {
     "text": {"text", "variant"},
@@ -585,6 +585,52 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(photos["walk"]["ratio"], "1280 / 720")
         self.assertEqual((photos["venue-2"]["width"], photos["venue-2"]["ratio"]), ("", ""))
 
+    def test_cover_photo(self):
+        for page in build():
+            cover, *others = page["sections"]
+            photo = cover["background"]
+            self.assertEqual(set(photo), MEDIA_FIELDS)
+            self.assertEqual(photo["id"], "cover")
+            self.assertEqual(photo["src"], f"/assets/{F.MEDIA_DIR}/cover.png")
+            self.assertEqual((photo["width"], photo["height"]), (2400, 1600))
+            self.assertEqual(cover["backgroundFocus"], "center")
+            # the fields exist on every section: empty on the others
+            for item in others:
+                self.assertEqual((item["background"], item["backgroundFocus"]), (None, ""))
+
+    def test_cover_photo_focus_and_its_default(self):
+        def focus(site, invitations):
+            site["sections"][0]["backgroundFocus"] = "bottom-left"
+
+        def default(site, invitations):
+            site["sections"][0].pop("backgroundFocus")
+
+        self.assertEqual(build(focus)[0]["sections"][0]["backgroundFocus"], "bottom-left")
+        self.assertEqual(build(default)[0]["sections"][0]["backgroundFocus"], "center")
+
+    def test_cover_without_a_photo(self):
+        def change(site, invitations):
+            site["sections"][0].pop("background")
+            site["sections"][0].pop("backgroundFocus")
+            site["media"].pop("cover")
+
+        cover = build(change)[0]["sections"][0]
+        self.assertEqual((cover["background"], cover["backgroundFocus"]), (None, "center"))
+        pending = build(site=F.pending_site(), invitations=F.pending_invitations())[0]
+        self.assertIsNone(pending["sections"][0]["background"])
+
+    def test_cover_photo_is_published(self):
+        site, invitations = F.site(), F.invitations()
+        _pages, usage = _page.build_pages(site, invitations, F.settings())
+        self.assertIn("cover", usage.media)
+        self.assertIn(("media.cover.file", "cover.png"), _page.media_files(site, usage))
+        # the same picture elsewhere is still one media item
+        site["locations"]["manor"]["photos"].append("cover")
+        _pages, usage = _page.build_pages(site, invitations, F.settings())
+        self.assertEqual(
+            [path for path, _name in _page.media_files(site, usage)].count("media.cover.file"), 1
+        )
+
     def test_thumb_and_address_provider(self):
         def change(site, invitations):
             site["media"]["walk"]["thumb"] = "walk-small.jpg"
@@ -607,8 +653,12 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(usage.media, set(site["media"]))
         self.assertEqual(usage.locations, set(site["locations"]))
         self.assertEqual(
-            _page.media_files(site, usage)[:2],
-            [("media.directions.file", "directions.png"), ("media.proposal.file", "proposal.mp4")],
+            _page.media_files(site, usage)[:3],
+            [
+                ("media.cover.file", "cover.png"),
+                ("media.directions.file", "directions.png"),
+                ("media.proposal.file", "proposal.mp4"),
+            ],
         )
 
     def test_the_data_is_not_changed(self):

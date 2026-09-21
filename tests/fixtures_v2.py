@@ -4,8 +4,9 @@
 combination of the form of address, a guest from another city and a
 companion, a different primary event, hidden and switched-on events, notes
 for sections and events, a place that is not announced yet, events on two
-days and photos with a portrait and a landscape video.  `PENDING_SITE` /
-`PENDING_INVITATIONS` are the set without places and media.
+days, photos with a portrait and a landscape video and a photo behind the
+cover.  `PENDING_SITE` / `PENDING_INVITATIONS` are the set without places and
+media (and a cover without a photo).
 
 There are no media files: `MEDIA_INFO` stands for what the build would read
 from them.  Use `site()` / `invitations()` for copies that a test may change.
@@ -28,7 +29,7 @@ SITE = {
     "mediaDir": MEDIA_DIR,
     "mainEvent": "dinner",
     "sections": [
-        {"id": "cover", "type": "cover"},
+        {"id": "cover", "type": "cover", "background": "cover", "backgroundFocus": "center"},
         {
             "id": "invite",
             "title": "{greeting}",
@@ -188,6 +189,8 @@ SITE = {
         ]
     },
     "media": {
+        # the background of the cover: decoration, no description
+        "cover": {"type": "image", "file": "cover.png"},
         "registry-1": {"type": "image", "file": "registry-1.png", "alt": "Дворец бракосочетания"},
         "venue-1": {"type": "image", "file": "venue-1.png", "alt": "Усадьба со стороны пруда"},
         "venue-2": {"type": "image", "file": "venue-2.png", "alt": "Сад усадьбы"},
@@ -443,6 +446,7 @@ MEDIA_INFO = {
 MEDIA_INFO.update(
     {
         "directions.png": MediaInfo("directions.png", width=1000, height=1000),
+        "cover.png": MediaInfo("cover.png", width=2400, height=1600),
         "proposal-poster.png": MediaInfo("proposal-poster.png", width=720, height=1280),
         "walk-poster.png": MediaInfo("walk-poster.png", width=1280, height=720),
         "proposal.mp4": MediaInfo(
