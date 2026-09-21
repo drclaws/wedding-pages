@@ -280,8 +280,10 @@ class BuiltPageTests(TempDirTestCase):
             self.assertIn(f'alt="" width="{width}" height="{height}"', page)
 
     def test_pages_have_no_inline_styles(self):
-        """Without style attributes and <style> elements the pages would work
-        with a style-src that has no 'unsafe-inline'."""
+        """The pages work under a style-src without 'unsafe-inline': they
+        have no style attributes and no <style> elements."""
+        self.assertIn("style-src 'self';", build.HEADERS_TEXT)
+        self.assertNotIn("unsafe-inline", build.HEADERS_TEXT)
         style_attribute = re.compile(r"<[a-zA-Z][^>]*\sstyle\s*=", re.S)
         for data_name in ("data", "data-venue-pending"):
             out = self.build(data_name)

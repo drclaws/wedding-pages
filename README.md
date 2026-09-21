@@ -1240,7 +1240,7 @@ ffmpeg -ss 00:00:01 -i proposal.mp4 -frames:v 1 -update 1 -q:v 3 proposal-poster
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
-  Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+  Content-Security-Policy: default-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
 /i/*
   Cache-Control: private, no-cache
 ```
@@ -1252,15 +1252,15 @@ ffmpeg -ss 00:00:01 -i proposal.mp4 -frames:v 1 -update 1 -q:v 3 proposal-poster
 CSP работает потому, что страница по построению не нуждается в послаблениях:
 все скрипты и стили — отдельные файлы из `/assets/`, inline-скриптов нет,
 встраиваемых виджетов и карт нет, единственные внешние адреса — ссылки на
-картографические сервисы, которые открываются по нажатию. В `style-src`
-пока стоит `'unsafe-inline'`, но страницам он **не нужен**: в собранных
-страницах нет ни атрибутов `style`, ни элементов `<style>` (это проверяет
-тест), а стили, которые скрипт ставит во время работы (ширина скрытой полосы
-прокрутки при открытом лайтбоксе, пропорция кадра ролика в нём), задаются
-через CSSOM (`style.setProperty`), и CSP их не ограничивает. Убрать
-`'unsafe-inline'` из заголовка можно отдельным решением, после проверки в
-браузерах. Скриптам (`script-src`) никаких
-послаблений не нужно.
+картографические сервисы, которые открываются по нажатию. Стили — только
+файлы: `style-src 'self'` без `'unsafe-inline'`. В собранных страницах нет ни
+атрибутов `style`, ни элементов `<style>` (это проверяет тест), а стили,
+которые скрипт ставит во время работы (ширина скрытой полосы прокрутки при
+открытом окне просмотра, пропорция кадра ролика в нём), задаются через CSSOM
+(`element.style.setProperty`), и CSP их не ограничивает. Поэтому в разметке и
+в скриптах нельзя писать `style="…"` и `setAttribute('style', …)`: браузер
+такой стиль не применит. Скриптам (`script-src`) никаких послаблений тоже не
+нужно.
 
 Что ещё сделано ради приватности:
 
