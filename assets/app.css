@@ -412,8 +412,8 @@
   --cover-height-ratio: var(--cover-height-ratio-mobile);
   --cover-min-height: calc(var(--viewport-height) * var(--cover-height-ratio));
 
-  /* Медиа и плеер не выше этой доли экрана — чтобы в ландшафтной ориентации
-     телефона кадр вместе с панелью управления помещался целиком. */
+  /* Медиа и плитка видео не выше этой доли экрана — чтобы в ландшафтной
+     ориентации телефона кадр помещался целиком. */
   --media-max-height-ratio: 0.8;  /* TEMP */
   --media-max-height: calc(var(--viewport-height) * var(--media-max-height-ratio));
 
@@ -456,10 +456,10 @@
   --safe-inset-left: env(safe-area-inset-left, 0px);
 
   /* --- Токены компонентов -------------------------------------------------- */
-  /* Плеер. Панель управления — нативная панель браузера. Уже этого блок
-     плеера не становится (узкий вертикальный кадр при низком окне): в панели
-     должны помещаться кнопки, время и дорожка перемотки. */
-  --player-min-width: 16.25rem;  /* TEMP */
+  /* Плитка видео: круглый значок ▶ поверх постера и треугольник в нём.
+     Нажимается вся плитка, значок только показывает, что это ролик. */
+  --media-play-size: calc(var(--tap-min) + var(--icon-size));  /* TEMP */
+  --media-play-icon-size: calc(var(--icon-size) * 1.5);       /* TEMP */
 
   /* Ширина полосы прокрутки страницы, скрытой на время показа лайтбокса;
      задаётся скриптом галереи, чтобы раскладка под окном не сдвигалась. */
@@ -851,7 +851,8 @@ hr {
   --media-fit: contain;
 }
 
-/* Скрыто визуально, доступно скринридеру (подписи кнопок плеера и т.п.). */
+/* Скрыто визуально, доступно скринридеру (объявления счётчика окна
+   просмотра, подписи кнопок без текста и т.п.). */
 .visually-hidden {
   position: absolute;
   width: var(--line-width-hairline);
@@ -870,7 +871,7 @@ hr {
    -----------------------------------------------------------------------------
    Каждый компонент описан один раз. Классы — только для стилей; скрипты
    цепляются за data-атрибуты (data-reveal, data-countdown, data-gallery,
-   data-lightbox).
+   data-lightbox, data-media).
 
    Состояния одинаковы на обоих форматах:
      hover        — только внутри @media (hover: hover);
@@ -1211,6 +1212,87 @@ a.btn[aria-disabled="true"] {
   color: var(--color-text-muted);
 }
 
+/* --- Плитка медиа: фото и видео ---------------------------------------------
+   .media-tile — ссылка-плитка на файл (вместе с .gallery__link: картинка во
+   всю рамку, кольцо фокуса внутри рамки, увеличение под курсором). Плитка —
+   свой слой: значок и кольцо фокуса не поднимаются над соседями.
+
+   .media-tile--video — ролик: постер, круглый значок ▶ по центру
+   (.media-tile__badge, внутри inline-<svg> .media-tile__icon цвета
+   currentColor), длительность в углу (.media-tile__duration). Значок и
+   длительность лежат поверх постера, поэтому их цвета — роли оверлея, как у
+   кнопок окна просмотра. Нажимается вся плитка: значок нажатия не забирает. */
+.media-tile {
+  isolation: isolate;
+}
+
+.media-tile__badge {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--media-play-size);
+  block-size: var(--media-play-size);
+  margin: auto;
+  border-radius: var(--radius-round);
+  background-color: var(--color-overlay-control);
+  color: var(--color-on-overlay);
+  pointer-events: none;
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.media-tile__icon {
+  inline-size: var(--media-play-icon-size);
+  block-size: var(--media-play-icon-size);
+  fill: currentColor;
+}
+
+/* Длительность ролика; разметка пока её не выводит — длительность появится
+   вместе с чтением её из файла. */
+.media-tile__duration {
+  position: absolute;
+  inset-block-end: var(--space-2xs);
+  inset-inline-end: var(--space-2xs);
+  padding: var(--space-3xs) var(--space-2xs);
+  border-radius: var(--radius-pill);
+  background-color: var(--color-overlay-control);
+  color: var(--color-on-overlay);
+  font-size: var(--text-xs);
+  line-height: var(--line-height-tight);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+@media (hover: hover) {
+  .media-tile:hover .media-tile__badge,
+  .media-tile.is-hover .media-tile__badge {
+    background-color: var(--color-overlay-control-hover);
+  }
+}
+
+.media-tile:active .media-tile__badge,
+.media-tile.is-active .media-tile__badge {
+  background-color: var(--color-overlay-control-hover);
+}
+
+/* --- Одиночный элемент галереи ----------------------------------------------
+   .gallery--single — одна плитка по центру колонки в пропорции своего кадра:
+   --media-ratio («w / h» из размеров в данных) разметка ставит на элемент,
+   без него действует --ratio-video. Плитка не выше --media-max-height и не
+   шире колонки: как у .media, ограничивается ширина (высота × пропорция). */
+.gallery--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.gallery--single > .gallery__item {
+  --media-ratio-used: var(--media-ratio, var(--ratio-video));
+  justify-self: center;
+  inline-size: min(100%, var(--media-max-height) * var(--media-ratio-used));
+  aspect-ratio: var(--media-ratio-used);
+}
+
 /* --- Таймер обратного отсчёта ---------------------------------------------
    Раскладка — по ширине ближайшего контейнера (.container, элемент .grid):
    2×2, пока четыре ячейки с подписями не помещаются в ряд, иначе 4 в ряд.
@@ -1276,84 +1358,6 @@ a.btn[aria-disabled="true"] {
   color: var(--color-text-muted);
 }
 
-/* --- Плеер: блок и кадр ----------------------------------------------------
-   Контейнер и нативный <video controls>. Панель управления — нативная панель
-   браузера: скрипт её не заменяет, со скриптом и без него плеер один и тот
-   же. Своих стилей у панели нет, браузер рисует её поверх кадра.
-
-   Ширина блока = ширина кадра, блок стоит по центру колонки. Кадр не выше
-   --media-max-height и не шире колонки при любой пропорции ролика. Пропорцию
-   в CSS приносит .player__sizer: пустой <svg> с размерами ролика в атрибутах
-   width/height — замещаемый элемент, который браузер вписывает в
-   max-block-size с сохранением пропорции (размеры берутся из атрибутов, так
-   что это работает и до загрузки постера, и без скрипта). Сам он невидим и
-   высоты не занимает (block-size: 0), но по его ширине сжимается блок
-   (fit-content; шире колонки блок стать не может). Остальное содержимое на
-   ширину блока не влияет (.player__body), поэтому загрузка постера НЕ меняет
-   ширину блока и положение кадра.
-
-   Две оговорки к размернику:
-     - на узких экранах он шире блока (ширину ограничивает только колонка),
-       и наружу его не выпускает единственная вещь — overflow: hidden на
-       .player__sizer и на .player. Появится где-то overflow: visible —
-       размерник вылезет;
-     - собственная пропорция inline-<svg> проверена в Chrome; на реальном
-       iOS Safari её нужно подтвердить руками (headless-стенд WebKit не
-       заменяет). */
-.player {
-  position: relative;
-  display: block;
-  inline-size: fit-content;
-  min-inline-size: min(100%, var(--player-min-width));
-  max-inline-size: 100%;
-  margin-inline: auto;
-  overflow: hidden;
-  background-color: var(--color-surface-sunken);
-  border: var(--line-width-hairline) solid var(--color-line);
-  border-radius: var(--radius-lg);
-}
-
-.player__sizer {
-  block-size: 0;
-  overflow: hidden;
-  visibility: hidden;
-}
-
-.player__sizer > svg {
-  inline-size: auto;
-  block-size: auto;
-  max-inline-size: none;
-  max-block-size: var(--media-max-height);
-}
-
-/* Размеров ролика в данных нет — пропорцию задаёт токен. */
-.player__sizer--default > svg {
-  block-size: var(--media-max-height);
-  aspect-ratio: var(--ratio-video);
-}
-
-/* Нулевая собственная ширина и min-inline-size: 100% — содержимое занимает
-   всю ширину блока, но не участвует в её вычислении. */
-.player__body {
-  inline-size: 0;
-  min-inline-size: 100%;
-}
-
-/* Пропорция кадра — из атрибутов width/height самого <video> (браузер
-   резервирует место до загрузки постера); без атрибутов — --ratio-video.
-   Ролик показывается целиком, без кадрирования. */
-.player__media {
-  display: block;
-  inline-size: 100%;
-  block-size: auto;
-  max-block-size: var(--media-max-height);
-  object-fit: contain;
-  background-color: var(--color-surface-sunken);
-}
-
-.player__media:not([width]) {
-  aspect-ratio: var(--ratio-video);
-}
 
 /* --- Контекст «поверх оверлея» --------------------------------------------
    Внутри тёмной подложки (лайтбокс) роли текста и кольца фокуса получают
@@ -1696,8 +1700,8 @@ html.js.cover-animate .cover__inner > :nth-child(4) { --cover-index: 3; }
 /* =============================================================================
    8. Gallery & lightbox
    -----------------------------------------------------------------------------
-   Лента со scroll-snap на мобильном, сетка на десктопе, лайтбокс
-   ([data-gallery], [data-lightbox]).
+   Лента со scroll-snap на мобильном, сетка на десктопе, лайтбокс — окно
+   просмотра фото и видео ([data-gallery], [data-lightbox], [data-media]).
 
    Лайтбокс — <dialog>, который скрипт создаёт прямым потомком <body> и
    открывает через showModal(): окно живёт в верхнем слое браузера и не
@@ -1928,6 +1932,50 @@ html.is-lightbox-open body {
 .lightbox__button[aria-disabled="true"] {
   opacity: var(--opacity-disabled);
   cursor: default;
+}
+
+/* --- Лайтбокс: ролик ----------------------------------------------------------
+   В окне один <video controls> — его создаёт скрипт; панель управления —
+   нативная панель браузера, своих стилей у неё нет. .is-video на окне
+   показывает ролик вместо изображения; .is-error — сообщение вместо кадра.
+
+   Кадр вписан в сцену целиком в пропорции ролика: --lightbox-ratio («w / h»
+   с плитки) ставит скрипт, без неё — --ratio-video. Сцена — контейнер
+   размера, поэтому ширина кадра = min(ширина сцены, высота сцены ×
+   пропорция). Движок без единиц контейнера растягивает <video> на всю сцену,
+   и ролик вписывается в неё сам (полосы по краям). */
+.lightbox__stage {
+  container-type: size;
+}
+
+.lightbox__video {
+  --lightbox-ratio-used: var(--lightbox-ratio, var(--ratio-video));
+  grid-area: 1 / 1;
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  border-radius: var(--radius-sm);
+  background-color: var(--color-overlay-control);
+}
+
+@supports (inline-size: 1cqb) {
+  .lightbox__video {
+    inline-size: min(100cqi, 100cqb * var(--lightbox-ratio-used));
+    block-size: auto;
+    aspect-ratio: var(--lightbox-ratio-used);
+  }
+}
+
+/* Кольцо фокуса — в контексте .on-overlay, как у кнопок окна. */
+.lightbox__video:focus-visible {
+  outline: var(--focus-ring-width) solid var(--color-focus);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.lightbox:not(.is-video) .lightbox__video,
+.lightbox.is-video .lightbox__image,
+.lightbox.is-video.is-error .lightbox__video {
+  display: none;
 }
 
 /* Сокращённое движение: длительности уже обнулены токенами; здесь анимация

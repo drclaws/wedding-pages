@@ -105,6 +105,7 @@ class LightboxSourceTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         code = strip_comments(APP_JS.read_text(encoding="utf-8"))
+        cls.code = code
         cls.module = code[code.index("register('gallery'"):]
         cls.template = TEMPLATE.read_text(encoding="utf-8")
 
@@ -123,17 +124,115 @@ class LightboxSourceTest(unittest.TestCase):
     def test_history_is_left_alone(self):
         self.assertNotRegex(self.module, r"pushState|replaceState|location\.hash|\bhistory\b")
 
+    def function(self, name):
+        """Source of a function of the module, up to the next function."""
+        body = self.module[self.module.index("function %s(" % name):]
+        following = re.search(r"\n    (?:function \w+\(|var \w+ = guarded)", body[1:])
+        return body[:following.start() + 1] if following else body
+
     def test_controls_are_labelled_and_focus_returns(self):
         for fragment in ("'aria-label'", "'aria-live', 'polite'", "'aria-disabled'",
-                         "link.focus({ preventScroll: true })", "ui.close.focus()"):
+                         "link.focus({ preventScroll: true })",
+                         "(items[index].video ? ui.video : ui.close).focus();"):
             self.assertIn(fragment, self.module)
+
+    def test_the_script_announces_the_viewer_on_the_tiles(self):
+        # no dialog without the script, so no aria-haspopup in the markup
+        self.assertIn("link.setAttribute('aria-haspopup', 'dialog');", self.module)
+        guard = self.module[:self.module.index("aria-haspopup")]
+        self.assertIn("typeof Dialog.prototype.showModal !== 'function'", guard)
+        self.assertNotIn("aria-haspopup", self.template)
+
+    def test_media_hooks(self):
+        item = self.code[self.code.index("function readItem("):self.code.index("register('gallery'")]
+        for hook in ("'data-media'", "'data-media-poster'", "'data-media-ratio'"):
+            self.assertIn("link.getAttribute(%s)" % hook, item)
+        self.assertIn("!== 'video'", item)
+        # the ratio reaches CSS only after a check
+        self.assertIn("RATIO_RE.test(ratio)", item)
+        self.assertIn("video.style.setProperty('--lightbox-ratio', item.ratio);", self.module)
+
+    def test_the_video_is_released_when_it_is_left(self):
+        release = self.function("releaseVideo")
+        for step in ("video.pause();", "video.removeAttribute('src');",
+                     "video.removeAttribute('poster');", "video.load();"):
+            self.assertIn(step, release)
+        self.assertLess(release.index("video.pause();"), release.index("video.load();"))
+        # leaving the item (show), closing and failing release it
+        for name in ("show", "onClose", "fail"):
+            with self.subTest(function=name):
+                self.assertIn("releaseVideo();", self.function(name))
+
+    def test_neighbours_load_only_posters(self):
+        preload = self.function("preload")
+        self.assertIn("item.video ? item.poster : item.href", preload)
+
+    def test_play_is_called_in_the_click_handler(self):
+        # the tap opens the window, show(…, true) starts the video, and nothing
+        # asynchronous stands between the click and play()
+        handler = self.function("onLinkClick")
+        self.assertRegex(handler, r"try\s*\{\s*open\(link\);")
+        opening = self.function("open")
+        self.assertIn("show(group.indexOf(link), true);", opening)
+        self.assertLess(opening.index(".showModal();"), opening.index("show(group.indexOf(link), true);"))
+        chain = handler + opening + self.function("show") + self.function("showVideo") + self.function("startVideo")
+        self.assertNotRegex(chain, r"\bawait\b|\bsetTimeout\(|requestAnimationFrame|\.then\(\s*function\s*\(\)\s*\{\s*[^}]*play")
+        self.assertIn("if (autoplay) {\n        startVideo();", self.function("showVideo"))
+        self.assertTrue(self.function("startVideo").split("{", 1)[1].strip().startswith("var promise = ui.video.play();"))
+        # the refusal of the browser is not an error
+        self.assertRegex(self.function("startVideo"), r"promise\.then\(null, function \(\) \{")
+        # moving inside the window never starts a video by itself
+        self.assertIn("show(at, false);", self.function("step"))
+        self.assertIn("show(key === 'Home' ? 0 : items.length - 1, false);", self.function("onKeyDown"))
+        self.assertEqual(len(re.findall(r"\bshow\(.*, true\);", self.module)), 1)
+        self.assertEqual(len(re.findall(r"\bstartVideo\(\);", self.module)), 2)  # tile tap, frame click
+
+    def test_a_not_started_video_starts_from_a_click_on_the_frame(self):
+        click = self.function("onVideoClick")
+        self.assertIn("video.paused && video.readyState === HAVE_NOTHING", click)
+        self.assertIn("startVideo();", click)
+        self.assertRegex(self.code, r"\bvar HAVE_NOTHING = 0;")
+        self.assertIn("video.addEventListener('click', guarded(onVideoClick));", self.module)
+
+    def test_keys_are_heard_on_the_document_while_the_window_is_open(self):
+        self.assertIn("doc.addEventListener('keydown', ui.onKey);", self.function("open"))
+        for name in ("onClose", "fail"):
+            with self.subTest(function=name):
+                self.assertIn("doc.removeEventListener('keydown', ui.onKey);", self.function(name))
+        self.assertIn("onKey: guarded(onKeyDown)", self.module)
+        self.assertNotRegex(self.module, r"dialog\.addEventListener\('keydown'")
+        # keys on the video belong to the player; so does a gesture on its frame
+        self.assertIn("event.target === ui.video", self.function("onKeyDown"))
+        self.assertIn("event.target !== ui.video", self.function("onPointerDown"))
+
+    def test_focus_does_not_stay_in_the_closed_window(self):
+        close = self.function("onClose")
+        self.assertIn("link.getClientRects().length", close)
+        self.assertRegex(close, r"else if \(ui\.dialog\.contains\(doc\.activeElement\)\) \{\s*"
+                                r"doc\.activeElement\.blur\(\);")
+
+    def test_event_handlers_are_guarded(self):
+        listeners = re.findall(r"\.addEventListener\('[a-z]+', ([^;]+)\);", self.module)
+        self.assertTrue(listeners)
+        # onLinkClick catches on its own; revealInRibbon only scrolls the ribbon
+        allowed = {"onLinkClick", "revealInRibbon", "ui.onKey", "onZoom"}
+        for listener in listeners:
+            with self.subTest(listener=listener):
+                self.assertTrue(listener.startswith("guarded(") or listener in allowed, listener)
+        self.assertIn("var onZoom = guarded(", self.module)
 
     def test_template_hooks(self):
         self.assertRegex(self.template, r'<ul class="[^"]*\bgallery--ribbon\b[^"]*"[^>]* data-gallery\b')
-        self.assertRegex(self.template, r'<a class="gallery__link" href="\{\{\.src\}\}" data-lightbox>')
+        self.assertRegex(self.template, r'<a class="gallery__link media-tile" href="\{\{\.src\}\}" data-lightbox>')
         self.assertRegex(self.template,
                          r'<a class="media media--scheme" href="\{\{venue\.directionsSrc\}\}" data-lightbox>')
+        self.assertRegex(self.template,
+                         r'<a class="gallery__link media-tile media-tile--video" href="\{\{video\.src\}\}" '
+                         r'type="video/mp4" data-lightbox data-media="video" '
+                         r'data-media-poster="\{\{video\.posterSrc\}\}" '
+                         r'data-media-ratio="\{\{video\.width\}\} / \{\{video\.height\}\}"')
         self.assertNotIn("<dialog", self.template)
+        self.assertNotIn("<video", self.template)
         maps = self.template[self.template.index("<!-- if:venue.hasMapLinks -->"):]
         maps = maps[:maps.index("<!-- if:venue.directionsSrc -->")]
         self.assertIn('<ul class="venue__maps"', maps)
