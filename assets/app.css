@@ -1642,6 +1642,13 @@ a.btn[aria-disabled="true"] {
   margin-block-start: var(--space-lg);
 }
 
+/* Соседние вводные тексты читаются как один текст: между ними шаг абзаца,
+   а не шаг между виджетами. Только lead + lead: текст и подпись
+   (.text-widget--signature) остаются разнесены. */
+.section__body > .text-widget--lead + .text-widget--lead {
+  margin-block-start: var(--flow-space);
+}
+
 .section--center .section__title,
 .section--center .section__body {
   text-align: center;
