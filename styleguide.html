@@ -840,6 +840,47 @@
         </div>
       </div>
       <!-- /sg:events -->
+
+      <!-- sg:cover-bar -->
+      <div class="sg-demo">
+        <p class="sg-demo__label">Верхняя панель — свёрнутая обложка: .cover-bar, .cover-bar__title, __sep, __date</p>
+        <p class="sg-note">
+          При прокрутке обложка сворачивается в панель у верхнего края окна:
+          текст обложки и фото гаснут, панель проявляется — меняется только
+          <code>opacity</code>, по прогрессу <code>--cover-progress</code>
+          (доли <code>--cover-fade-end</code> и
+          <code>--cover-bar-fade-start</code>). В панели одна строка «имена ·
+          дата», без подписи над именами; нажатие на неё ничего не делает.
+          Высота — <code>--cover-bar-block-size</code>: строка
+          <code>--text-base</code> с полями
+          <code>--cover-bar-padding-block</code>, но не меньше
+          <code>--tap-min</code>, плюс безопасная зона сверху; она растёт с
+          размером шрифта (кнопки масштаба в начале витрины: 150 % и 200 %).
+          Имена, которым не хватает места, обрезаются многоточием, дата и
+          разделитель — нет. Слой — <code>--z-sticky</code>: над страницей,
+          под окном просмотра. Здесь панель показана в свёрнутом виде, без
+          хука <code>data-cover-bar</code>: на странице панель с хуком видна
+          только под маркером <code>cover-bar-on</code>, который ставит
+          скрипт; без скрипта её нет. Само сворачивание проверяют на
+          собранной странице.
+        </p>
+        <div class="cover-bar" aria-hidden="true">
+          <div class="container cover-bar__inner"><span class="cover-bar__title">Алиса и Боб</span><span class="cover-bar__sep">·</span><span class="cover-bar__date">15 июня 2030</span></div>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Панель в узкой колонке: длинные имена с многоточием</p>
+        <div class="sg-cols">
+          <div class="cover-bar" aria-hidden="true">
+            <div class="container cover-bar__inner"><span class="cover-bar__title">Александра Константинопольская и Максимилиан Преображенский</span><span class="cover-bar__sep">·</span><span class="cover-bar__date">15 июня 2030</span></div>
+          </div>
+          <div class="cover-bar" aria-hidden="true">
+            <div class="container cover-bar__inner"><span class="cover-bar__title">Ева и Ян</span><span class="cover-bar__sep">·</span><span class="cover-bar__date">1 мая 2031</span></div>
+          </div>
+        </div>
+      </div>
+      <!-- /sg:cover-bar -->
     </div>
   </section>
 
