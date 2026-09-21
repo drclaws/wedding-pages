@@ -172,6 +172,14 @@ html[data-sg-font-scale="330"] { font-size: var(--sg-font-scale-330); }
   text-align: center;
 }
 
+/* Обложка с фото в демонстрационном блоке: высота — по содержимому, а не
+   доля экрана, как на странице. */
+.cover.sg-cover {
+  min-block-size: 0;
+  padding-block: var(--space-xl);
+  border-radius: var(--radius-lg);
+}
+
 .sg-plate__display {
   font-family: var(--font-heading);
   font-size: var(--text-display);

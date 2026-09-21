@@ -355,6 +355,56 @@
         </ul>
       </div>
 
+      <!-- sg:cover -->
+      <div class="sg-demo">
+        <p class="sg-demo__label">Фото на обложке: .cover__backdrop, .cover__photo (плашки вместо фото)</p>
+        <p class="sg-note">
+          Необязательное фото на фоне обложки (поле <code>background</code>)
+          лежит в подложке <code>.cover__backdrop</code> под содержимым и
+          заполняет обложку при любой пропорции экрана
+          (<code>object-fit: cover</code>). Поверх фото — вуаль цвета
+          <code>--color-cover-veil</code> непрозрачностью
+          <code>--cover-veil-opacity</code>, весь текст обложки на фото —
+          цветом <code>--color-cover-text</code>, вторичного серого на фото нет.
+          Вуаль подобрана под худший кадр — чёрный: контраст текста не ниже
+          4,5:1 на любом фото (расчёт — в комментарии у токена). Фото
+          декоративное: <code>alt=""</code>, подложка скрыта от диктора; при
+          печати фото нет. Здесь фото заменяют плашки: светлая и тёмная.
+        </p>
+        <p class="sg-note">
+          Какая часть кадра остаётся видна, когда экран обрезает фото, задаёт
+          модификатор из перечисления <code>backgroundFocus</code>:
+          <code>.cover__photo--center</code> (по умолчанию),
+          <code>--top</code>, <code>--bottom</code>, <code>--left</code>,
+          <code>--right</code>, <code>--top-left</code>, <code>--top-right</code>,
+          <code>--bottom-left</code>, <code>--bottom-right</code> — ключевые
+          слова <code>object-position</code>. На портретном экране обрезаются
+          края ландшафтного кадра слева и справа, на широком — сверху и снизу.
+          Проверять фокус — на собранной странице основного примера.
+        </p>
+        <div class="sg-cols">
+          <div class="cover sg-cover">
+            <div class="cover__backdrop" aria-hidden="true"><div class="cover__photo sg-plate"></div></div>
+            <div class="container cover__inner">
+              <p class="section__subtitle cover__eyebrow">Светлый кадр</p>
+              <p class="cover__title sg-plate__display">Заголовок обложки</p>
+              <hr class="divider divider--accent cover__divider">
+              <p class="cover__date">15 июня 2030</p>
+            </div>
+          </div>
+          <div class="cover sg-cover">
+            <div class="cover__backdrop" aria-hidden="true"><div class="cover__photo sg-overlay"></div></div>
+            <div class="container cover__inner">
+              <p class="section__subtitle cover__eyebrow">Тёмный кадр</p>
+              <p class="cover__title sg-plate__display">Заголовок обложки</p>
+              <hr class="divider divider--accent cover__divider">
+              <p class="cover__date">15 июня 2030</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- /sg:cover -->
+
       <!-- sg:media-tile -->
       <div class="sg-demo">
         <p class="sg-demo__label">Плитка медиа: .media-tile, .media-tile--video (плашки вместо постеров)</p>
