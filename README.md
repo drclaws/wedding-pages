@@ -182,15 +182,15 @@ mean»)**, повторы ключей, id и ссылки между реест
 В конце печатает счётчики:
 
 ```
-validate: OK - 8 invitation(s), 3 event(s), 9 section(s), 12 media file(s) (data: …, media: …)
+validate: OK - 8 invitation(s), 3 event(s), 8 section(s), 12 media file(s) (data: …, media: …)
 ```
 
 Сообщения имеют вид `<site.json | invitation #N (abcd…)>: field '<путь>'
 <проблема>`, например:
 
 ```
-error: site.json: field 'sections[5].widgets[0].events[1]' refers to an unknown event 'diner' (did you mean 'dinner'?); known: ceremony, dinner, brunch
-error: invitation #3 (48lh…): field 'sections.<unknown key>' refers to an unknown section; known: cover, invite, personal, plus-one, when, where, travel, story, …
+error: site.json: field 'sections[4].widgets[0].events[1]' refers to an unknown event 'diner' (did you mean 'dinner'?); known: ceremony, dinner, brunch
+error: invitation #3 (48lh…): field 'sections.<unknown key>' refers to an unknown section; known: cover, invite, personal, when, where, travel, story, rsvp
 warning: site.json: media item 'story-3' is not shown on any page and its files are not published
 ```
 
@@ -729,10 +729,36 @@ Id **видны**: в атрибутах `id` разметки, в адреса�
   "sections": { "travel": { "visible": true } } }
 ```
 
-Так же делается «+1»: секция `plus-one` с `"visible": false`, включённая тем,
-кто может прийти со спутником. Виджет, который нужен не всем в секции
-(«Для вас забронирован номер»), получает `id` и `"visible": false`, а гостю
-включается через `"widgets": { "hotel-booked": { "visible": true } }`.
+**«+1» — абзац в тексте приглашения.** Текст «+1» — не отдельная секция, а
+часть приглашения: текстовый виджет с `id`, скрытый по умолчанию, между
+основным текстом и «Ждём…». Три соседних виджета `lead` читаются как один
+текст — между ними обычный шаг абзаца, а не шаг между виджетами:
+
+```json
+{ "id": "invite", "title": "{greeting}", "align": "center",
+  "widgets": [
+    { "type": "text", "variant": "lead",
+      "text": { "ty": "Мы, {coupleNames}, приглашаем тебя на наш праздник.",
+                "vy": "Мы, {coupleNames}, приглашаем вас на наш праздник." } },
+    { "id": "plus-one", "type": "text", "variant": "lead", "visible": false,
+      "text": { "ty": "Ты можешь прийти со спутником или спутницей.\nПожалуйста, сообщи нам заранее имя своего гостя.",
+                "vy": "Вы можете прийти со спутником или спутницей.\nПожалуйста, сообщите нам заранее имя вашего гостя." } },
+    { "type": "text", "variant": "lead",
+      "text": { "ty": "Ждём тебя {eventDate} в {eventTime}.",
+                "vy": "Ждём вас {eventDate} в {eventTime}." } } ] }
+```
+
+Тому, кто может прийти со спутником, виджет включается:
+
+```json
+{ "token": "…", "greeting": "Дорогая Кэрол!", "form": "ty",
+  "sections": { "invite": { "widgets": { "plus-one": { "visible": true } } } } }
+```
+
+У остальных этого абзаца нет ни на странице, ни в её HTML. Так же делается
+любой текст «только для некоторых гостей» внутри секции: виджет получает `id`
+и `"visible": false`, а гостю включается через `"widgets"` своей секции — как
+«Для вас забронирован номер» (`hotel-booked`) в секции `travel` примеров.
 
 **Приписка гостю.** К секции — карточка в конце секции; к событию — в
 карточке события:

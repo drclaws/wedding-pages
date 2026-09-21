@@ -39,32 +39,34 @@ SITE = {
                     "variant": "lead",
                     "text": {
                         "ty": "Мы, {coupleNames}, приглашаем тебя на наш праздник.\n"
-                        "Нам очень хочется разделить этот день с тобой.\n\n"
-                        "Ждём тебя {eventDate} в {eventTime}.",
+                        "Нам очень хочется разделить этот день с тобой.",
                         "vy": "Мы, {coupleNames}, приглашаем вас на наш праздник.\n"
-                        "Нам очень хочется разделить этот день с вами.\n\n"
-                        "Ждём вас {eventDate} в {eventTime}.",
+                        "Нам очень хочется разделить этот день с вами.",
                     },
-                }
-            ],
-        },
-        {"id": "personal", "title": "Несколько слов лично", "widgets": []},
-        {
-            "id": "plus-one",
-            "title": "Плюс один",
-            "visible": False,
-            "widgets": [
+                },
                 {
+                    "id": "plus-one",
                     "type": "text",
+                    "variant": "lead",
+                    "visible": False,
                     "text": {
                         "ty": "Ты можешь прийти со спутником или спутницей.\n"
                         "Пожалуйста, сообщи нам заранее имя своего гостя.",
                         "vy": "Вы можете прийти со спутником или спутницей.\n"
                         "Пожалуйста, сообщите нам заранее имя вашего гостя.",
                     },
-                }
+                },
+                {
+                    "type": "text",
+                    "variant": "lead",
+                    "text": {
+                        "ty": "Ждём тебя {eventDate} в {eventTime}.",
+                        "vy": "Ждём вас {eventDate} в {eventTime}.",
+                    },
+                },
             ],
         },
+        {"id": "personal", "title": "Несколько слов лично", "widgets": []},
         {
             "id": "when",
             "title": "Дата и время",
@@ -221,7 +223,7 @@ INVITATIONS = [
         "events": {"brunch": {"visible": True}},
         "sections": {
             "personal": {"note": "Спасибо, что столько лет рядом. Очень ждём! <3"},
-            "plus-one": {"visible": True},
+            "invite": {"widgets": {"plus-one": {"visible": True}}},
         },
     },
     {
@@ -253,7 +255,7 @@ INVITATIONS = [
         "token": "lXG6kSgXRvYCN6GGk5IcBA",
         "greeting": "Дорогой Трент!",
         "form": "ty",
-        "sections": {"plus-one": {"visible": True}, "travel": {"visible": True}},
+        "sections": {"invite": {"widgets": {"plus-one": {"visible": True}}}, "travel": {"visible": True}},
     },
     {
         "token": "uGeJJ1NFz9Q2YYhekmwPtw",
@@ -286,7 +288,7 @@ INVITATIONS = [
         "events": {"ceremony": {"visible": False}},
         "sections": {
             "personal": {"note": "Для нас большая честь пригласить вас на наш праздник."},
-            "plus-one": {"visible": True},
+            "invite": {"widgets": {"plus-one": {"visible": True}}},
         },
     },
     {
@@ -294,7 +296,7 @@ INVITATIONS = [
         "greeting": "Уважаемая Хайди Андреевна!",
         "form": "vy",
         "sections": {
-            "plus-one": {"visible": True},
+            "invite": {"widgets": {"plus-one": {"visible": True}}},
             "travel": {
                 "visible": True,
                 "note": "Трансфер от вокзала будет ждать вас у главного входа.",
@@ -324,29 +326,31 @@ PENDING_SITE = {
                     "type": "text",
                     "variant": "lead",
                     "text": {
-                        "ty": "Мы, {coupleNames}, приглашаем тебя на наш праздник.\n\n"
-                        "Ждём тебя {eventDate} в {eventTime}.",
-                        "vy": "Мы, {coupleNames}, приглашаем вас на наш праздник.\n\n"
-                        "Ждём вас {eventDate} в {eventTime}.",
+                        "ty": "Мы, {coupleNames}, приглашаем тебя на наш праздник.",
+                        "vy": "Мы, {coupleNames}, приглашаем вас на наш праздник.",
                     },
-                }
-            ],
-        },
-        {"id": "personal", "title": "Несколько слов лично", "widgets": []},
-        {
-            "id": "plus-one",
-            "title": "Плюс один",
-            "visible": False,
-            "widgets": [
+                },
                 {
+                    "id": "plus-one",
                     "type": "text",
+                    "variant": "lead",
+                    "visible": False,
                     "text": {
                         "ty": "Ты можешь прийти со спутником или спутницей.",
                         "vy": "Вы можете прийти со спутником или спутницей.",
                     },
-                }
+                },
+                {
+                    "type": "text",
+                    "variant": "lead",
+                    "text": {
+                        "ty": "Ждём тебя {eventDate} в {eventTime}.",
+                        "vy": "Ждём вас {eventDate} в {eventTime}.",
+                    },
+                },
             ],
         },
+        {"id": "personal", "title": "Несколько слов лично", "widgets": []},
         {"id": "when", "title": "Дата и время", "align": "center", "widgets": [{"type": "date"}]},
         {"id": "where", "title": "Где и когда", "width": "wide", "widgets": [{"type": "events"}]},
         {
@@ -417,7 +421,7 @@ PENDING_INVITATIONS = [
         "token": "JhlkiN2-7agdX9Fl6D_Z6Q",
         "greeting": "Уважаемая Джуди Сергеевна!",
         "form": "vy",
-        "sections": {"plus-one": {"visible": True}},
+        "sections": {"invite": {"widgets": {"plus-one": {"visible": True}}}},
     },
 ]
 

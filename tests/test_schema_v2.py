@@ -193,8 +193,8 @@ class VersionTests(SchemaTestCase):
 
 class FieldTests(SchemaTestCase):
     def test_unknown_field_with_a_hint(self):
-        report = run(lambda s, i: s["sections"][6].update(visibel=False))
-        self.assertOneError(report, "site.json: unknown field 'sections[6].visibel' (did you mean 'visible'?)")
+        report = run(lambda s, i: s["sections"][5].update(visibel=False))
+        self.assertOneError(report, "site.json: unknown field 'sections[5].visibel' (did you mean 'visible'?)")
 
     def test_unknown_top_level_field(self):
         report = run(lambda s, i: s.update(coupleName="x"))
@@ -215,7 +215,7 @@ class FieldTests(SchemaTestCase):
             "rsvpDeadline": lambda s: s.update(rsvpDeadline=None),
             "locations.hotel.address": lambda s: s["locations"]["hotel"].update(address=None),
             "events.dinner.end": lambda s: s["events"]["dinner"].update(end=None),
-            "sections[5].widgets[0].events": lambda s: s["sections"][5]["widgets"][0].update(events=None),
+            "sections[4].widgets[0].events": lambda s: s["sections"][4]["widgets"][0].update(events=None),
         }
         for path, change in cases.items():
             with self.subTest(path):
@@ -225,10 +225,10 @@ class FieldTests(SchemaTestCase):
                 self.assertTrue(report.errors[0].endswith("got null"))
 
     def test_type_errors_name_the_type_only(self):
-        report = run(lambda s, i: s["sections"][4].update(titleHidden=SECRET))
+        report = run(lambda s, i: s["sections"][3].update(titleHidden=SECRET))
         self.assertOneError(
             report,
-            "site.json: field 'sections[4].titleHidden' must be a boolean (true or false), "
+            "site.json: field 'sections[3].titleHidden' must be a boolean (true or false), "
             "got a string",
         )
         self.assertNoPrivateData(report, SECRET)
@@ -252,8 +252,8 @@ class FieldTests(SchemaTestCase):
         )
 
     def test_enumerations_do_not_quote_the_value(self):
-        report = run(lambda s, i: s["sections"][5].update(width=SECRET))
-        self.assertOneError(report, "site.json: field 'sections[5].width' must be one of: narrow, wide")
+        report = run(lambda s, i: s["sections"][4].update(width=SECRET))
+        self.assertOneError(report, "site.json: field 'sections[4].width' must be one of: narrow, wide")
         report = run(lambda s, i: s["sections"][1]["widgets"][0].update(variant="big"))
         self.assertOneError(
             report, "site.json: field 'sections[1].widgets[0].variant' must be one of: body, lead, signature"
@@ -277,11 +277,11 @@ class IdentifierTests(SchemaTestCase):
 
     def test_repeated_widget_id_within_a_section(self):
         def change(site, invitations):
-            site["sections"][6]["widgets"][0]["id"] = "hotel-booked"
+            site["sections"][5]["widgets"][0]["id"] = "hotel-booked"
 
         report = run(change)
         self.assertOneError(
-            report, "site.json: field 'sections[6].widgets[2].id' repeats 'hotel-booked' within the section"
+            report, "site.json: field 'sections[5].widgets[2].id' repeats 'hotel-booked' within the section"
         )
 
     def test_same_widget_id_in_two_sections_is_fine(self):
@@ -312,24 +312,24 @@ class IdentifierTests(SchemaTestCase):
 
 class SectionTests(SchemaTestCase):
     def test_unknown_widget_type(self):
-        report = run(lambda s, i: s["sections"][5]["widgets"][0].update(type="evnts"))
+        report = run(lambda s, i: s["sections"][4]["widgets"][0].update(type="evnts"))
         self.assertOneError(
             report,
-            "site.json: field 'sections[5].widgets[0].type' names an unknown widget type "
+            "site.json: field 'sections[4].widgets[0].type' names an unknown widget type "
             "'evnts' (did you mean 'events'?); known: text, date, events, location, schedule, media",
         )
 
     def test_unknown_widget_type_that_is_not_an_id_is_not_quoted(self):
-        report = run(lambda s, i: s["sections"][5]["widgets"][0].update(type=SECRET))
+        report = run(lambda s, i: s["sections"][4]["widgets"][0].update(type=SECRET))
         self.assertEqual(len(report.errors), 1)
         self.assertIn("names an unknown widget type; known:", report.errors[0])
         self.assertNoPrivateData(report, SECRET)
 
     def test_widget_without_type(self):
-        report = run(lambda s, i: s["sections"][5]["widgets"][0].pop("type"))
+        report = run(lambda s, i: s["sections"][4]["widgets"][0].pop("type"))
         self.assertOneError(
             report,
-            "site.json: field 'sections[5].widgets[0].type' is required "
+            "site.json: field 'sections[4].widgets[0].type' is required "
             "(text, date, events, location, schedule, media)",
         )
 
@@ -346,7 +346,7 @@ class SectionTests(SchemaTestCase):
     def test_one_cover_only(self):
         report = run(lambda s, i: s["sections"].append({"id": "cover-2", "type": "cover"}))
         self.assertOneError(
-            report, "site.json: field 'sections[9].type' is 'cover': there may be only one cover"
+            report, "site.json: field 'sections[8].type' is 'cover': there may be only one cover"
         )
 
     def test_no_cover_is_a_warning(self):
@@ -361,13 +361,13 @@ class SectionTests(SchemaTestCase):
         self.assertOneError(report, "site.json: unknown field 'sections[0].title'")
 
     def test_title_is_required(self):
-        report = run(lambda s, i: s["sections"][4].pop("title"))
-        self.assertOneError(report, "site.json: field 'sections[4].title' is required")
+        report = run(lambda s, i: s["sections"][3].pop("title"))
+        self.assertOneError(report, "site.json: field 'sections[3].title' is required")
 
     def test_widgets_are_required_but_may_be_empty(self):
-        report = run(lambda s, i: s["sections"][4].pop("widgets"))
-        self.assertOneError(report, "site.json: field 'sections[4].widgets' is required")
-        report = run(lambda s, i: s["sections"][4].update(widgets=[]))
+        report = run(lambda s, i: s["sections"][3].pop("widgets"))
+        self.assertOneError(report, "site.json: field 'sections[3].widgets' is required")
+        report = run(lambda s, i: s["sections"][3].update(widgets=[]))
         self.assertEqual(report.errors, [])
 
     def test_sections_must_not_be_empty(self):
@@ -375,22 +375,22 @@ class SectionTests(SchemaTestCase):
         self.assertEqual(report.errors[0], "site.json: field 'sections' must list at least one section")
 
     def test_widget_fields_by_type(self):
-        report = run(lambda s, i: s["sections"][4]["widgets"][0].update(items=["story-1"]))
-        self.assertOneError(report, "site.json: unknown field 'sections[4].widgets[0].items'")
+        report = run(lambda s, i: s["sections"][3]["widgets"][0].update(items=["story-1"]))
+        self.assertOneError(report, "site.json: unknown field 'sections[3].widgets[0].items'")
 
 
 class ReferenceTests(SchemaTestCase):
     def test_unknown_location(self):
-        report = run(lambda s, i: s["sections"][6]["widgets"][1].update(location="hotle"))
+        report = run(lambda s, i: s["sections"][5]["widgets"][1].update(location="hotle"))
         self.assertOneError(
             report,
-            "site.json: field 'sections[6].widgets[1].location' refers to an unknown location "
+            "site.json: field 'sections[5].widgets[1].location' refers to an unknown location "
             "'hotle' (did you mean 'hotel'?); known: registry, manor, terrace, hotel",
         )
 
     def test_the_list_of_known_ids_is_short(self):
         def change(site, invitations):
-            site["sections"][7]["widgets"][0]["items"] = ["story-9"]
+            site["sections"][6]["widgets"][0]["items"] = ["story-9"]
 
         report = run(change)
         self.assertEqual(len(report.errors), 1)
@@ -398,15 +398,15 @@ class ReferenceTests(SchemaTestCase):
         self.assertEqual(report.errors[0].count(","), _schema.MAX_LISTED)
 
     def test_a_reference_that_is_not_an_id_is_not_quoted(self):
-        report = run(lambda s, i: s["sections"][6]["widgets"][1].update(location=SECRET))
+        report = run(lambda s, i: s["sections"][5]["widgets"][1].update(location=SECRET))
         self.assertEqual(len(report.errors), 1)
         self.assertIn("must be the id of a location: 1-32 characters", report.errors[0])
         self.assertNoPrivateData(report, SECRET)
 
     def test_a_reference_must_be_a_string(self):
-        report = run(lambda s, i: s["sections"][6]["widgets"][1].update(location=3))
+        report = run(lambda s, i: s["sections"][5]["widgets"][1].update(location=3))
         self.assertOneError(
-            report, "site.json: field 'sections[6].widgets[1].location' must be the id of a location, got a number"
+            report, "site.json: field 'sections[5].widgets[1].location' must be the id of a location, got a number"
         )
 
     def test_directions_must_be_an_image(self):
@@ -417,26 +417,26 @@ class ReferenceTests(SchemaTestCase):
         )
 
     def test_repeat_in_a_list(self):
-        report = run(lambda s, i: s["sections"][5]["widgets"][0].update(events=["dinner", "ceremony", "dinner"]))
-        self.assertOneError(report, "site.json: field 'sections[5].widgets[0].events[2]' repeats 'dinner'")
+        report = run(lambda s, i: s["sections"][4]["widgets"][0].update(events=["dinner", "ceremony", "dinner"]))
+        self.assertOneError(report, "site.json: field 'sections[4].widgets[0].events[2]' repeats 'dinner'")
 
     def test_empty_lists(self):
-        report = run(lambda s, i: s["sections"][5]["widgets"][0].update(events=[]))
-        self.assertOneError(report, "site.json: field 'sections[5].widgets[0].events' must list at least one event")
-        report = run(lambda s, i: s["sections"][7]["widgets"][0].update(items=[]))
-        self.assertOneError(report, "site.json: field 'sections[7].widgets[0].items' must list at least one media item")
+        report = run(lambda s, i: s["sections"][4]["widgets"][0].update(events=[]))
+        self.assertOneError(report, "site.json: field 'sections[4].widgets[0].events' must list at least one event")
+        report = run(lambda s, i: s["sections"][6]["widgets"][0].update(items=[]))
+        self.assertOneError(report, "site.json: field 'sections[6].widgets[0].items' must list at least one media item")
 
     def test_single_layout_takes_one_item(self):
-        report = run(lambda s, i: s["sections"][7]["widgets"][0].update(layout="single"))
+        report = run(lambda s, i: s["sections"][6]["widgets"][0].update(layout="single"))
         self.assertOneError(
             report,
-            "site.json: field 'sections[7].widgets[0].items' must list exactly one media item "
+            "site.json: field 'sections[6].widgets[0].items' must list exactly one media item "
             "for the 'single' layout",
         )
 
     def test_date_schedule_and_photo_references(self):
         cases = {
-            "sections[4].widgets[0].event": lambda s: s["sections"][4]["widgets"][0].update(event="party"),
+            "sections[3].widgets[0].event": lambda s: s["sections"][3]["widgets"][0].update(event="party"),
             "events.dinner.schedule": lambda s: s["events"]["dinner"].update(schedule="evening"),
             "locations.manor.photos[1]": lambda s: s["locations"]["manor"]["photos"].__setitem__(1, "venue-9"),
         }
@@ -448,10 +448,10 @@ class ReferenceTests(SchemaTestCase):
 
     def test_schedule_widget_needs_a_schedule(self):
         def change(site, invitations):
-            site["sections"][5]["widgets"].append({"type": "schedule"})
+            site["sections"][4]["widgets"].append({"type": "schedule"})
 
         report = run(change)
-        self.assertOneError(report, "site.json: field 'sections[5].widgets[1].schedule' is required")
+        self.assertOneError(report, "site.json: field 'sections[4].widgets[1].schedule' is required")
 
     def test_empty_registry_list(self):
         def change(site, invitations):
@@ -683,10 +683,10 @@ class TextTests(SchemaTestCase):
         self.assertNotIn("Masha", report.errors[0])
 
     def test_unclosed_brace(self):
-        report = run(lambda s, i: s["sections"][3]["widgets"][0]["text"].update(vy="Вы можете {со"))
+        report = run(lambda s, i: s["sections"][1]["widgets"][1]["text"].update(vy="Вы можете {со"))
         self.assertOneError(
             report,
-            "site.json: field 'sections[3].widgets[0].text.vy' has an unclosed '{' at character "
+            "site.json: field 'sections[1].widgets[1].text.vy' has an unclosed '{' at character "
             "11 (write '{{' for a literal brace)",
         )
 
@@ -695,16 +695,16 @@ class TextTests(SchemaTestCase):
         self.assertEqual(
             report.errors,
             [
-                "site.json: field 'sections[8].widgets[0].text.ty' uses {rsvpDeadline}, but "
+                "site.json: field 'sections[7].widgets[0].text.ty' uses {rsvpDeadline}, but "
                 "'rsvpDeadline' is not set",
-                "site.json: field 'sections[8].widgets[0].text.vy' uses {rsvpDeadline}, but "
+                "site.json: field 'sections[7].widgets[0].text.vy' uses {rsvpDeadline}, but "
                 "'rsvpDeadline' is not set",
             ],
         )
 
     def test_title_is_one_line(self):
-        report = run(lambda s, i: s["sections"][4].update(title={"ty": "Дата\nи время", "vy": "Дата"}))
-        self.assertOneError(report, "site.json: field 'sections[4].title.ty' must be a single line (no line breaks)")
+        report = run(lambda s, i: s["sections"][3].update(title={"ty": "Дата\nи время", "vy": "Дата"}))
+        self.assertOneError(report, "site.json: field 'sections[3].title.ty' must be a single line (no line breaks)")
 
     def test_literal_braces(self):
         report = run(lambda s, i: s["sections"][1]["widgets"][0].update(text="{{скобки}} {greeting}"))
@@ -763,7 +763,7 @@ class InvitationTests(SchemaTestCase):
         self.assertOneError(
             report,
             f"{GUEST_1}: field 'sections.<unknown key>' refers to an unknown section (did you "
-            "mean 'travel'?); known: cover, invite, personal, plus-one, when, where, travel, story, …",
+            "mean 'travel'?); known: cover, invite, personal, when, where, travel, story, rsvp",
         )
 
     def test_unknown_event(self):
@@ -835,7 +835,7 @@ class InvitationTests(SchemaTestCase):
 
     def test_note_on_hidden_section_or_event(self):
         def change(site, invitations):
-            invitations[2]["sections"]["plus-one"] = {"note": "Приходи с Мартином"}
+            invitations[4]["sections"]["travel"] = {"note": "Встретим вас на вокзале"}
             invitations[1]["events"]["brunch"] = {"note": "Второй день"}
 
         report = run(change)
@@ -844,13 +844,18 @@ class InvitationTests(SchemaTestCase):
             report.warnings,
             [
                 f"{GUEST_2}: field 'events.brunch.note' is set, but the event is hidden for this invitation",
-                "invitation #3 (48lh…): field 'sections.plus-one.note' is set, but the section is hidden for this invitation",
+                "invitation #5 (uGeJ…): field 'sections.travel.note' is set, but the section is hidden for this invitation",
             ],
         )
 
     def test_override_types(self):
-        report = run(lambda s, i: i[0]["sections"]["plus-one"].update(visible="yes"))
-        self.assertOneError(report, f"{GUEST_1}: field 'sections.plus-one.visible' must be a boolean (true or false), got a string")
+        report = run(lambda s, i: i[0]["sections"]["personal"].update(visible="yes"))
+        self.assertOneError(report, f"{GUEST_1}: field 'sections.personal.visible' must be a boolean (true or false), got a string")
+        report = run(lambda s, i: i[0]["sections"]["invite"]["widgets"]["plus-one"].update(visible="yes"))
+        self.assertOneError(
+            report,
+            f"{GUEST_1}: field 'sections.invite.widgets.plus-one.visible' must be a boolean (true or false), got a string",
+        )
         report = run(lambda s, i: i[0].update(events=[]))
         self.assertOneError(report, f"{GUEST_1}: field 'events' must be an object, got an array")
         report = run(lambda s, i: i[0]["sections"].update(travel=True))
@@ -862,11 +867,11 @@ class InvitationTests(SchemaTestCase):
 
     def test_broken_sections_are_not_reported_again_for_the_invitations(self):
         def change(site, invitations):
-            site["sections"][6]["id"] = "Travel"
+            site["sections"][5]["id"] = "Travel"
 
         report = run(change)
         self.assertEqual(len(report.errors), 1)
-        self.assertIn("sections[6].id", report.errors[0])
+        self.assertIn("sections[5].id", report.errors[0])
 
     def test_broken_widgets_are_not_reported_again_for_the_invitations(self):
         cases = {
@@ -875,13 +880,13 @@ class InvitationTests(SchemaTestCase):
         }
         for name, change in cases.items():
             with self.subTest(name):
-                report = run(lambda s, i: change(s["sections"][6]["widgets"][2]))
+                report = run(lambda s, i: change(s["sections"][5]["widgets"][2]))
                 self.assertEqual(len(report.errors), 1, report.errors)
-                self.assertTrue(report.errors[0].startswith("site.json: field 'sections[6].widgets[2]."))
+                self.assertTrue(report.errors[0].startswith("site.json: field 'sections[5].widgets[2]."))
 
     def test_other_sections_still_check_widget_references(self):
         def change(site, invitations):
-            site["sections"][6]["widgets"][2]["type"] = "txt"
+            site["sections"][5]["widgets"][2]["type"] = "txt"
             invitations[1]["sections"] = {"where": {"widgets": {"events": {"visible": False}}}}
 
         report = run(change)
@@ -976,7 +981,7 @@ class PageWarningTests(SchemaTestCase):
 
     def test_event_note_that_no_widget_shows(self):
         def change(site, invitations):
-            site["sections"][5]["widgets"][0]["events"] = ["dinner", "brunch"]
+            site["sections"][4]["widgets"][0]["events"] = ["dinner", "brunch"]
             invitations[1]["events"]["ceremony"] = {"note": "Приходи пораньше"}
 
         warnings = self.warnings(change)
@@ -988,7 +993,7 @@ class PageWarningTests(SchemaTestCase):
 
     def test_unused_parts_of_site_json(self):
         def change(site, invitations):
-            site["sections"].insert(8, {"id": "gifts", "title": "Подарки", "visible": False, "widgets": [{"type": "text", "text": "x"}]})
+            site["sections"].insert(7, {"id": "gifts", "title": "Подарки", "visible": False, "widgets": [{"type": "text", "text": "x"}]})
             site["locations"]["station"] = {"name": "Вокзал"}
             site["schedules"]["spare"] = [{"title": "Сбор"}]
             site["media"]["unused-1"] = {"type": "image", "file": "unused-1.webp", "alt": "x"}
