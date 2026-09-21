@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import unittest
 
-from tests import support  # noqa: F401  (puts the code directory on the path)
+from tests import support
+from tests.support import CliTestCase, TempDirTestCase, build, invitations_data, site_data
 
 from tools import _data as data_tools
 
@@ -545,6 +546,122 @@ class SubstitutionTests(unittest.TestCase):
         )
         with self.assertRaises(data_tools.TextError):
             data_tools.resolve_text(value, "you", self.values, KNOWN)
+
+
+def with_repeated_venue_name(site: dict) -> str:
+    """`site.json` text whose `venue` object has the key `name` twice."""
+    text = json.dumps(site, ensure_ascii=False, indent=2)
+    marker = '"venue": {'
+    assert marker in text
+    return text.replace(marker, marker + f'\n    "name": "{SECRET}",', 1)
+
+
+def with_repeated_greeting(invitations: list) -> str:
+    """`invitations.json` text whose second invitation has `greeting` twice."""
+    text = json.dumps(invitations, ensure_ascii=False)
+    token = json.dumps(invitations[1]["token"])
+    return text.replace(f'"token": {token}', f'"greeting": "{SECRET}", "token": {token}', 1)
+
+
+class ReadJsonTests(TempDirTestCase):
+    def read(self, text: str):
+        path = self.tmp / "site.json"
+        path.write_text(text, encoding="utf-8")
+        report = build.Report()
+        return build.read_json(path, report), report.errors, build.display_path(path)
+
+    def test_a_document_without_repeats_is_read_as_before(self):
+        text = json.dumps(site_data(), ensure_ascii=False, indent=2)
+        value, errors, _shown = self.read(text)
+        self.assertEqual(errors, [])
+        self.assertEqual(value, json.loads(text))
+
+    def test_repeated_keys_are_errors(self):
+        value, errors, shown = self.read(
+            '{"locations": {"hotel": {}, "hotel": {}}, "a": [{"b": 1, "b": 2}], "c": 1, "c": 2}'
+        )
+        self.assertIs(value, build.MISSING)
+        self.assertEqual(
+            errors,
+            [
+                f"{shown}: duplicate key 'c' at the top level {DUPLICATE_TAIL}",
+                f"{shown}: duplicate key 'hotel' in 'locations' {DUPLICATE_TAIL}",
+                f"{shown}: duplicate key 'b' in 'a[0]' {DUPLICATE_TAIL}",
+            ],
+        )
+        self.assertTrue(shown.endswith("site.json"))
+
+    def test_other_problems_are_reported_as_before(self):
+        value, errors, shown = self.read('{"a": 1, "a": ')
+        self.assertIs(value, build.MISSING)
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(errors[0].startswith(f"{shown}: invalid JSON: "), errors)
+        value, errors, shown = self.read('{"a": NaN, "a": 1}')
+        self.assertEqual(errors, [f"{shown}: invalid JSON: NaN is not allowed in JSON data"])
+
+    def test_load_data_stops_at_repeated_keys(self):
+        data_dir = support.write_data(self.tmp / "data")
+        (data_dir / "site.json").write_text(
+            with_repeated_venue_name(site_data()), encoding="utf-8"
+        )
+        (data_dir / "invitations.json").write_text(
+            with_repeated_greeting(invitations_data()), encoding="utf-8"
+        )
+        with self.assertRaises(build.ValidationError) as caught:
+            build.load_data(data_dir)
+        errors = caught.exception.errors
+        # the files are not checked any further: no other messages
+        self.assertEqual(len(errors), 2, errors)
+        self.assertTrue(
+            errors[0].endswith(f"site.json: duplicate key 'name' in 'venue' {DUPLICATE_TAIL}")
+        )
+        self.assertTrue(
+            errors[1].endswith(
+                f"invitations.json: duplicate key 'greeting' in '[1]' {DUPLICATE_TAIL}"
+            )
+        )
+        joined = "\n".join(errors)
+        self.assertNotIn(SECRET, joined)
+        for secret in support.PRIVATE_STRINGS:
+            self.assertNotIn(secret, joined)
+
+
+class RepeatedKeyCommandTests(CliTestCase):
+    def write_repeats(self):
+        (self.data / "site.json").write_text(
+            with_repeated_venue_name(site_data()), encoding="utf-8"
+        )
+        (self.data / "invitations.json").write_text(
+            with_repeated_greeting(invitations_data()), encoding="utf-8"
+        )
+
+    def test_validate_fails(self):
+        self.write_repeats()
+        result = self.run_validate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            f"site.json: duplicate key 'name' in 'venue' {DUPLICATE_TAIL}", result.stderr
+        )
+        self.assertIn(
+            f"invitations.json: duplicate key 'greeting' in '[1]' {DUPLICATE_TAIL}", result.stderr
+        )
+        self.assertIn("failed with 2 error(s)", result.stderr)
+        self.assertNotIn(SECRET, result.stdout + result.stderr)
+        self.assertNoPrivateData(result.stdout, result.stderr)
+
+    def test_build_fails_and_writes_nothing(self):
+        self.write_repeats()
+        result = self.run_build()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("duplicate key 'name' in 'venue'", result.stderr)
+        self.assertFalse(self.out.exists())
+        self.assertNotIn(SECRET, result.stdout + result.stderr)
+        self.assertNoPrivateData(result.stdout, result.stderr)
+
+    def test_equal_keys_in_different_objects_pass(self):
+        # every invitation has the same keys as the others: not a repeat
+        result = self.run_validate()
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":  # pragma: no cover

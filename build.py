@@ -57,6 +57,7 @@ from urllib.parse import quote, unquote, urlsplit
 if str(Path(__file__).resolve().parent) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from tools import _data as data_tools  # noqa: E402
 from tools import _png as png_tools  # noqa: E402
 from tools import gen_assets  # noqa: E402
 
@@ -1765,7 +1766,11 @@ def _reject_constant(name: str) -> Any:
 
 
 def read_json(path: Path, report: Report) -> Any:
-    """Read a JSON document, reporting I/O and syntax problems (never values)."""
+    """Read a JSON document, reporting I/O and syntax problems (never values).
+
+    A key repeated within one object is an error as well: the standard parser
+    would silently keep the last value only.
+    """
     shown = display_path(path)
     try:
         text = path.read_text(encoding="utf-8-sig")
@@ -1782,14 +1787,18 @@ def read_json(path: Path, report: Report) -> Any:
         report.error(f"{shown}: cannot read the file ({exc.strerror})")
         return MISSING
     try:
-        return json.loads(text, parse_constant=_reject_constant)
+        value, duplicates = data_tools.parse_json(text, parse_constant=_reject_constant)
     except json.JSONDecodeError as exc:
         report.error(
             f"{shown}: invalid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})"
         )
+        return MISSING
     except ValueError as exc:
         report.error(f"{shown}: invalid JSON: {exc}")
-    return MISSING
+        return MISSING
+    for duplicate in duplicates:
+        report.error(f"{shown}: {duplicate.describe()}")
+    return MISSING if duplicates else value
 
 
 def load_data(
