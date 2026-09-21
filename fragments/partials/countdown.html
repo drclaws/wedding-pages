@@ -1,0 +1,19 @@
+<!-- Таймер обратного отсчёта; ожидает в `.` виджет даты: event.startISO. Без скрипта скрыт: дата текстом стоит рядом. -->
+<div class="countdown date__countdown" data-countdown="{{.event.startISO}}" role="timer" aria-label="Осталось до начала" hidden>
+  <div class="countdown__cell" data-countdown-unit="days">
+    <span class="countdown__value" data-countdown-value>0</span>
+    <span class="countdown__label" data-countdown-label>дней</span>
+  </div>
+  <div class="countdown__cell" data-countdown-unit="hours">
+    <span class="countdown__value" data-countdown-value>0</span>
+    <span class="countdown__label" data-countdown-label>часов</span>
+  </div>
+  <div class="countdown__cell" data-countdown-unit="minutes">
+    <span class="countdown__value" data-countdown-value>0</span>
+    <span class="countdown__label" data-countdown-label>минут</span>
+  </div>
+  <div class="countdown__cell" data-countdown-unit="seconds">
+    <span class="countdown__value" data-countdown-value>0</span>
+    <span class="countdown__label" data-countdown-label>секунд</span>
+  </div>
+</div>

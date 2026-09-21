@@ -1,0 +1,7 @@
+<!-- Плитка фото; ожидает в `.` медиа: src, thumbSrc, alt, width, height (пустые, если размер неизвестен). Без скрипта — ссылка на файл. -->
+<!-- if:.width -->
+<li class="gallery__item"><a class="gallery__link media-tile" href="{{.src}}" data-lightbox><img src="{{.thumbSrc}}" alt="{{.alt}}" width="{{.width}}" height="{{.height}}" loading="lazy" decoding="async"></a></li>
+<!-- endif -->
+<!-- if:!.width -->
+<li class="gallery__item"><a class="gallery__link media-tile" href="{{.src}}" data-lightbox><img src="{{.thumbSrc}}" alt="{{.alt}}" loading="lazy" decoding="async"></a></li>
+<!-- endif -->

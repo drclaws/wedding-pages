@@ -1,0 +1,16 @@
+<!-- Программа события; ожидает в `.` событие: schedule[] (пункты: time, title, text). Пункты — h5 под подзаголовком «Программа» (h4) карточки события. -->
+<ol class="schedule__list" role="list">
+  <!-- each:.schedule -->
+  <li class="schedule__item">
+    <!-- if:.time -->
+    <span class="time-label schedule__time">{{.time}}</span>
+    <!-- endif -->
+    <div class="stack stack--tight schedule__body">
+      <h5 class="schedule__name">{{.title}}</h5>
+      <!-- if:.text -->
+      <p>{{.text}}</p>
+      <!-- endif -->
+    </div>
+  </li>
+  <!-- endeach -->
+</ol>

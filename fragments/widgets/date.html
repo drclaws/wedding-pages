@@ -1,0 +1,15 @@
+<!-- Виджет даты; ожидает в `.` виджет: event (startISO, dateText, timeText, title, icsPath), showEventTitle, countdown, calendar. Дата текстом видна всегда, таймер показывает скрипт. -->
+<div class="widget date-widget">
+  <!-- if:.showEventTitle -->
+  <p class="section__subtitle date__event">{{.event.title}}</p>
+  <!-- endif -->
+  <p class="date__text"><time datetime="{{.event.startISO}}">{{.event.dateText}}, {{.event.timeText}}</time></p>
+  <!-- if:.countdown -->
+  <!-- include:partials/countdown -->
+  <!-- endif -->
+  <!-- if:.calendar -->
+  <p class="date__actions">
+    <a class="btn btn--secondary" href="{{.event.icsPath}}" type="text/calendar">Добавить в календарь</a>
+  </p>
+  <!-- endif -->
+</div>

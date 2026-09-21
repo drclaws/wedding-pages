@@ -1,0 +1,14 @@
+<!-- Кнопки карт; ожидает в `.` место: hasMapLinks, mapLinks (google, yandex, apple — готовая ссылка или пустая строка). Кнопки без ссылки не выводятся. -->
+<!-- if:.hasMapLinks -->
+<ul class="venue__maps" role="list" aria-label="Открыть на карте">
+  <!-- if:.mapLinks.google -->
+  <li class="venue__map"><a class="btn btn--secondary" href="{{.mapLinks.google}}" target="_blank" rel="noopener noreferrer">Google Карты</a></li>
+  <!-- endif -->
+  <!-- if:.mapLinks.yandex -->
+  <li class="venue__map"><a class="btn btn--secondary" href="{{.mapLinks.yandex}}" target="_blank" rel="noopener noreferrer">Яндекс Карты</a></li>
+  <!-- endif -->
+  <!-- if:.mapLinks.apple -->
+  <li class="venue__map"><a class="btn btn--secondary" href="{{.mapLinks.apple}}" target="_blank" rel="noopener noreferrer">Apple Карты</a></li>
+  <!-- endif -->
+</ul>
+<!-- endif -->

@@ -1,0 +1,7 @@
+<!-- Плитка видео; ожидает в `.` медиа: src, thumbSrc, posterSrc, label, ratio, width, height, durationText (пустые, если неизвестны). Постер со значком ▶ (inline SVG); ролик играет в окне просмотра. Без скрипта — ссылка на файл, его открывает плеер браузера. -->
+<!-- if:.width -->
+<li class="gallery__item"><a class="gallery__link media-tile media-tile--video" href="{{.src}}" type="video/mp4" data-lightbox data-media="video" data-media-poster="{{.posterSrc}}" data-media-ratio="{{.ratio}}" aria-label="{{.label}}"><img src="{{.thumbSrc}}" alt="" width="{{.width}}" height="{{.height}}" loading="lazy" decoding="async"><span class="media-tile__badge" aria-hidden="true"><svg class="media-tile__icon" viewBox="0 0 24 24" focusable="false"><path d="M8 5v14l11-7z"/></svg></span><!-- if:.durationText --><span class="media-tile__duration" aria-hidden="true">{{.durationText}}</span><!-- endif --></a></li>
+<!-- endif -->
+<!-- if:!.width -->
+<li class="gallery__item"><a class="gallery__link media-tile media-tile--video" href="{{.src}}" type="video/mp4" data-lightbox data-media="video" data-media-poster="{{.posterSrc}}" aria-label="{{.label}}"><img src="{{.thumbSrc}}" alt="" loading="lazy" decoding="async"><span class="media-tile__badge" aria-hidden="true"><svg class="media-tile__icon" viewBox="0 0 24 24" focusable="false"><path d="M8 5v14l11-7z"/></svg></span><!-- if:.durationText --><span class="media-tile__duration" aria-hidden="true">{{.durationText}}</span><!-- endif --></a></li>
+<!-- endif -->
