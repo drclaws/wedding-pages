@@ -479,6 +479,8 @@ SITE_IMAGES = {
     "ogImageType": "image/png",
     "ogImageWidth": 1200,
     "ogImageHeight": 630,
+    # not an image, but a site field of the root all the same
+    "themeColor": "#f2efe9",
 }
 DEFAULT_DURATION = timedelta(hours=6)
 

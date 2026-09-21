@@ -1262,6 +1262,17 @@ def site_images_context(
     }
 
 
+def site_colors_context(palette: "gen_assets.Palette") -> dict:
+    """The computed colour fields of the pages, from the design tokens.
+
+    `themeColor` is the colour of the folded cover bar (`--color-cover-veil`,
+    flattened to an opaque `#rrggbb`): the `<meta name="theme-color">` of the
+    pages, so that the browser interface above the page gets the colour of the
+    bar.  The template never holds a colour of its own.
+    """
+    return {"themeColor": gen_assets.hex_color(palette.cover_veil)}
+
+
 def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not allowed in JSON data")
 
@@ -1357,7 +1368,8 @@ def page_settings(
 ) -> page_tools.PageSettings:
     """What the page trees need from the build.
 
-    `images` are the fields of the site images (`site_images_context`),
+    `images` are the site fields of the root of every tree: the site images
+    (`site_images_context`) and the colours (`site_colors_context`);
     `media` the files that `check_media` found: a media file is addressed by
     its published name; `calendars` are the calendar files of the events
     (`calendar_files`), addressed the same way.
@@ -3024,7 +3036,8 @@ def copy_media(
 
 
 def load_palette(assets_dir: Path) -> "gen_assets.Palette":
-    """The colours of the generated images, from the tokens of `app.css`."""
+    """The colours of the pages (`site_colors_context`) and of the generated
+    images, from the tokens of `app.css`."""
     path = Path(assets_dir) / TOKENS_FILE
     if not Path(assets_dir).is_dir():
         raise BuildError(f"assets directory not found: {display_path(assets_dir)}")
@@ -3036,8 +3049,8 @@ def load_palette(assets_dir: Path) -> "gen_assets.Palette":
         return gen_assets.load_palette(path)
     except gen_assets.TokenError as exc:
         raise BuildError(
-            f"{ASSETS_DIRNAME}/{exc} (the icon and the link preview image are "
-            "generated from the design tokens)"
+            f"{ASSETS_DIRNAME}/{exc} (the colour of the browser interface, the icon "
+            "and the link preview image are taken from the design tokens)"
         ) from None
 
 
@@ -3331,14 +3344,15 @@ def build_site(
 
     images = report.site_images
     check_reserved_asset_names(assets_dir)
-    generated = [image.name for image in images if image.source is None]
-    palette = load_palette(assets_dir) if generated else None
-    images_context = site_images_context(images, base_url)
+    # the pages always need the palette (their theme colour), the images only
+    # when they are generated
+    palette = load_palette(assets_dir)
+    site_fields = {**site_images_context(images, base_url), **site_colors_context(palette)}
 
     template = load_template(code_dir / TEMPLATE_FILE)
-    stub = load_stub(code_dir / STUB_FILE, images_context).encode("utf-8")
+    stub = load_stub(code_dir / STUB_FILE, site_fields).encode("utf-8")
     calendars = calendar_files(data)
-    settings = page_settings(data.site, images_context, data.media, calendars)
+    settings = page_settings(data.site, site_fields, data.media, calendars)
     trees, _usage = page_tools.build_pages(data.site, data.invitations, settings)
     pages = render_pages(template, data.invitations, trees)
     media_name = data.site["mediaDir"]

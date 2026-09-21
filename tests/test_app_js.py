@@ -585,6 +585,30 @@ class CoverBarTest(unittest.TestCase):
         printed = self.layout[self.layout.index("@media print"):]
         self.assertRegex(printed, r"\.cover-bar,[^{}]*\{\s*display: none;")
 
+    def test_the_canvas_of_an_invitation_has_the_colour_of_the_bar(self):
+        # the canvas (beyond the edges of the page, the under-page colour of
+        # WebKit) gets the token of the bar, on the invitation pages only: the
+        # stub and the styleguide keep the canvas of their body
+        rules = [(" ".join(selector.split()), body)
+                 for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", self.css)]
+        backgrounds = [selector for selector, body in rules
+                       if re.match(r"html\b", selector) and re.search(r"\bbackground(?:-color)?\s*:", body)]
+        self.assertEqual(backgrounds, ["html.invitation"])
+        canvas = dict(rules)["html.invitation"]
+        self.assertEqual(canvas.strip(), "background-color: var(--color-cover-veil);")
+        # with a background of <html> the one of body no longer reaches the
+        # canvas: body is at least as tall as the window, so a short page shows
+        # its own background below the content, as before
+        self.assertEqual(dict(rules)["html.invitation body"].strip(),
+                         "min-block-size: var(--viewport-height-dynamic);")
+        self.assertIn("color-scheme: only light;", self.css)
+        template = (ROOT / "template.html").read_text(encoding="utf-8")
+        self.assertIn('<html lang="ru" class="invitation">', template)
+        for other in ("stub.html", "styleguide.html"):
+            with self.subTest(page=other):
+                self.assertNotIn("invitation", re.search(r"<html[^>]*>", (ROOT / other).read_text(
+                    encoding="utf-8")).group(0))
+
     def test_the_timeline_covers_the_cover_itself(self):
         self.assertIn("view-timeline-inset: 0;", self.motion)
         self.assertIn("view-timeline-name: --cover;", self.motion)

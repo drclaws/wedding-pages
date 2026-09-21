@@ -11,7 +11,7 @@ address is picked and the placeholders are filled in.
 Everything outside the data comes in through `PageSettings`: the URL of a
 media file and of the calendar file of an event, the facts of the media files (sizes, durations), the default
 duration of an event, the path of the pages and the fields of the site
-images.  The module reads no files.
+images and colours.  The module reads no files.
 
 `Usage` records what the trees show; `warn_unused` reports the parts of
 `site.json` that no page shows (their media files are not published).
@@ -45,6 +45,11 @@ SITE_IMAGE_FIELDS = (
     "ogImageWidth",
     "ogImageHeight",
 )
+#: The colour fields of the site at the root of every tree: `themeColor`, the
+#: colour of the browser interface above the page (`<meta name="theme-color">`).
+SITE_COLOR_FIELDS = ("themeColor",)
+#: Everything `PageSettings.site_images` copies to the root of every tree.
+SITE_FIELDS = SITE_IMAGE_FIELDS + SITE_COLOR_FIELDS
 #: Joins the parts of a DOM id.  An id of the data never holds `--`, so the
 #: parts are always told apart: `s-where--w1--e-dinner--l-manor` is the place
 #: `manor` of the event `dinner` in the first widget of the section `where`.
@@ -87,7 +92,8 @@ class PageSettings:
     #: Duration of an event without an end.
     default_duration: timedelta
     #: `faviconPath`, `faviconType`, `ogImage`, `ogImageType`, `ogImageWidth`,
-    #: `ogImageHeight`: copied to the root of every tree.
+    #: `ogImageHeight` and `themeColor` (`SITE_FIELDS`): copied to the root of
+    #: every tree; a missing one is "".
     site_images: Mapping[str, Any]
     #: File name from the data -> its URL; by default the name under
     #: `mediaPath`.
@@ -384,7 +390,7 @@ class _Page:
                 sections.append(resolved)
                 self.usage.sections.add(section["id"])
         self._warn_notes()
-        images = {key: self.settings.site_images.get(key, "") for key in SITE_IMAGE_FIELDS}
+        images = {key: self.settings.site_images.get(key, "") for key in SITE_FIELDS}
         return {
             "greeting": self.invitation["greeting"],
             "form": self.form,

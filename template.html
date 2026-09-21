@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" class="invitation">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="only light">
+  <meta name="theme-color" content="{{themeColor}}">
   <meta name="text-scale" content="scale">
   <meta name="robots" content="noindex, nofollow">
   <meta name="referrer" content="no-referrer">
@@ -23,7 +24,10 @@
 <!-- Каркас страницы. Секции по порядку из site.json выводит partials/sections:
      каждая — фрагментом своего типа (sections/cover, sections/custom), виджеты —
      фрагментами widgets/<тип>, плитки — media/<тип>. Разметка секций и виджетов
-     живёт в fragments/, здесь только <head> и <main>. -->
+     живёт в fragments/, здесь только <head> и <main>.
+     theme-color — цвет свёрнутой панели: значение подставляет сборка из токена
+     --color-cover-veil (app.css); класс invitation у <html> красит в тот же цвет
+     холст страницы (app.css, секция 3). Своих цветов в шаблоне нет. -->
 <main class="page">
 <!-- include:partials/sections -->
 </main>
