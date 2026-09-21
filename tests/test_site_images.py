@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import struct
 from html.parser import HTMLParser
 
@@ -26,12 +27,18 @@ class _Head(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.meta: dict[str, str] = {}
+        self.names: dict[str, list[str]] = {}
         self.icons: list[dict[str, str]] = []
+        self.root: dict[str, str] = {}
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
+        if tag == "html":
+            self.root = values
         if tag == "meta" and "property" in values:
             self.meta[values["property"]] = values.get("content", "")
+        if tag == "meta" and "name" in values:
+            self.names.setdefault(values["name"], []).append(values.get("content", ""))
         if tag == "link" and values.get("rel") == "icon":
             self.icons.append(values)
 
@@ -93,7 +100,7 @@ class GeneratedImagesTests(SiteImagesTestCase):
         self.assertNoPrivateData(self.stub())
 
     def test_stub_may_use_the_icon_fields_only(self):
-        for field in ("ogImage", "ogImageType", "mediaPath", "coupleNames"):
+        for field in ("ogImage", "ogImageType", "themeColor", "mediaPath", "coupleNames"):
             with self.subTest(field=field):
                 (self.code / "stub.html").write_text(
                     support.STUB.replace("</body>", f"<p>{{{{{field}}}}}</p></body>"),
@@ -234,11 +241,17 @@ class MediaOverrideTests(SiteImagesTestCase):
             (f"{BASE_URL}/assets/og.jpg", "image/jpeg", "1000", "600"),
         )
 
-    def test_overrides_need_no_design_tokens(self):
+    def test_overrides_still_need_the_design_tokens(self):
+        """Both images replaced: the pages still take their theme colour from
+        the tokens, so broken tokens fail the build all the same."""
         (self.media / "favicon.svg").write_text(PLAIN_SVG, encoding="utf-8")
         (self.media / "og.jpg").write_bytes(TINY_JPEG)
         (self.code / "assets" / "app.css").write_text("body{}", encoding="utf-8")
-        self.build()
+        result = self.build_in_process()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("design token '--color-bg' is not defined", result.stderr)
+        self.assertIn("the colour of the browser interface", result.stderr)
+        self.assertFalse(self.out.exists())
 
     def test_bad_overrides(self):
         def symlink(path):
@@ -510,3 +523,117 @@ class ContextFieldTests(support.TempDirTestCase):
         self.assertIn('<meta property="og:image:width" content="{{ogImageWidth}}">', template)
         self.assertNotIn("og:", stub)
         self.assertEqual(set(re.findall(r"\{\{(.*?)\}\}", stub)), set(build.STUB_FIELDS))
+
+
+class ThemeColorTests(SiteImagesTestCase):
+    """`<meta name="theme-color">`: the colour of the folded cover bar, taken
+    by the build from the design tokens (`--color-cover-veil`)."""
+
+    #: the fixture: `--color-cover-veil: var(--color-surface)`
+    FIXTURE_COLOUR = support.TOKEN_COLORS["--color-surface"]
+
+    def theme_colors(self, token: str = support.TOKEN_A) -> list[str]:
+        return self.page(token).names.get("theme-color", [])
+
+    def test_every_page_gets_the_colour_of_the_bar(self):
+        self.build()
+        palette = gen_assets.load_palette(self.code / "assets" / "app.css")
+        self.assertEqual(gen_assets.hex_color(palette.cover_veil), self.FIXTURE_COLOUR)
+        for token in (support.TOKEN_A, support.TOKEN_B, support.TOKEN_C):
+            with self.subTest(token=token):
+                self.assertEqual(self.theme_colors(token), [self.FIXTURE_COLOUR])
+
+    def test_the_stub_has_no_theme_colour(self):
+        self.build()
+        self.assertNotIn("theme-color", self.stub())
+        self.assertNotIn(self.FIXTURE_COLOUR, self.stub())
+
+    def test_changing_the_token_changes_only_the_meta_tag(self):
+        self.build()
+        before = tree_digest(self.out)
+        pages = {
+            token: (self.out / "i" / token / "index.html").read_text(encoding="utf-8")
+            for token in (support.TOKEN_A, support.TOKEN_B, support.TOKEN_C)
+        }
+        support.write_app_css(self.code, cover_veil="#123abc")
+        self.build()
+        after = tree_digest(self.out)
+        changed = sorted(name for name in before if before[name] != after[name])
+        self.assertEqual(
+            changed,
+            ["assets/app.css"] + sorted(f"i/{token}/index.html" for token in pages),
+        )
+        for token, page in pages.items():
+            with self.subTest(token=token):
+                self.assertEqual(self.theme_colors(token), ["#123abc"])
+                now = (self.out / "i" / token / "index.html").read_text(encoding="utf-8")
+                self.assertEqual(
+                    now.replace('content="#123abc"', f'content="{self.FIXTURE_COLOUR}"'), page
+                )
+
+    def test_the_colour_is_resolved_and_made_opaque(self):
+        cases = {
+            "var(--color-accent)": support.TOKEN_COLORS["--color-accent"],
+            "#ABC": "#aabbcc",
+            "rgb(18 52 86)": "#123456",
+            # flattened on the page background (#fdfcfa) like the images
+            "rgba(0, 0, 0, 0.5)": "#7f7e7d",
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                support.write_app_css(self.code, cover_veil=value)
+                self.build()
+                self.assertEqual(self.theme_colors(), [expected])
+
+    def test_token_problems_fail_the_build(self):
+        cases = {
+            "hsl(200 50% 30%)": "design token '--color-cover-veil': unsupported colour 'hsl(200 50% 30%)'",
+            "color-mix(in srgb, #fff, #000)": "design token '--color-cover-veil': unsupported colour",
+            "var(--brand)": "'--brand' is not defined on :root (referenced by '--color-cover-veil')",
+        }  # fmt: skip
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                support.write_app_css(self.code, cover_veil=value)
+                result = self.build_in_process()
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(expected, result.stderr)
+                self.assertNotIn("internal error", result.stderr)
+                self.assertFalse(self.out.exists())
+        css =support.tokens_css().replace("--color-cover-veil:", "--color-cover-veil-x:")
+        (self.code / "assets" / "app.css").write_text(css, encoding="utf-8")
+        result = self.build_in_process()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("design token '--color-cover-veil' is not defined", result.stderr)
+
+
+class RealTemplateThemeColorTests(SiteImagesTestCase):
+    """The same with the real `template.html` and `app.css`."""
+
+    template = (support.ROOT / "template.html").read_text(encoding="utf-8")
+
+    def test_the_meta_tag_and_the_class_of_the_page(self):
+        for name in ("app.css", "app.js"):
+            shutil.copyfile(support.ROOT / "assets" / name, self.code / "assets" / name)
+        self.build()
+        expected = gen_assets.hex_color(
+            gen_assets.load_palette(support.ROOT / "assets" / "app.css").cover_veil
+        )
+        for token in (support.TOKEN_A, support.TOKEN_B, support.TOKEN_C):
+            with self.subTest(token=token):
+                head = self.page(token)
+                self.assertEqual(head.names.get("theme-color"), [expected])
+                self.assertEqual(head.root.get("class"), "invitation")
+
+    def test_the_template_holds_no_colour(self):
+        self.assertEqual(
+            self.template.count('<meta name="theme-color" content="{{themeColor}}">'), 1
+        )
+        self.assertIsNone(
+            re.search(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(",
+                      self.template)
+        )
+
+    def test_the_stub_keeps_its_own_canvas(self):
+        stub = (support.ROOT / "stub.html").read_text(encoding="utf-8")
+        self.assertNotIn("theme-color", stub)
+        self.assertNotIn("invitation", stub)

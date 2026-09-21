@@ -170,9 +170,17 @@ class OgImageTests(unittest.TestCase):
         self.assertEqual(gen_assets.og_png(self.palette), first)
 
     def test_every_role_is_used(self):
-        """Changing any token changes the picture."""
+        """Changing any token of the images changes the picture.
+
+        `cover_veil` is the colour of the browser interface (`themeColor` of
+        the pages), not a colour of the images."""
         first = gen_assets.og_png(self.palette)
         for role in self.palette._fields:
+            if role == "cover_veil":
+                self.assertEqual(
+                    gen_assets.og_png(self.palette._replace(cover_veil=(1, 2, 3))), first
+                )
+                continue
             with self.subTest(role=role):
                 changed = self.palette._replace(**{role: (1, 2, 3)})
                 self.assertNotEqual(gen_assets.og_png(changed), first)

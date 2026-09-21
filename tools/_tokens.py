@@ -1,7 +1,7 @@
 """Read the design tokens (CSS custom properties on `:root`) of `app.css`.
 
-Only what the image generators need is supported: the top-level `:root`
-rules, `var(--name)` references and the colour notations `#rgb`, `#rgba`,
+Only what the image generators and the build need is supported: the
+top-level `:root` rules, `var(--name)` references and the colour notations `#rgb`, `#rgba`,
 `#rrggbb`, `#rrggbbaa`, `rgb()` and `rgba()`.  Anything else is reported with
 the name of the token, so that a change of the tokens that the generators do
 not understand fails the build instead of producing wrong colours.
@@ -18,7 +18,9 @@ from typing import Dict, Mapping, NamedTuple, Tuple
 RGB = Tuple[int, int, int]
 RGBA = Tuple[int, int, int, float]
 
-#: Colour roles used by the generated images: attribute -> token name.
+#: Colour roles used by the generated images and by the colour of the
+#: browser interface (`cover_veil`, the `theme-color` of the pages):
+#: attribute -> token name.
 PALETTE_TOKENS: Dict[str, str] = {
     "bg": "--color-bg",
     "surface": "--color-surface",
@@ -28,6 +30,7 @@ PALETTE_TOKENS: Dict[str, str] = {
     "accent": "--color-accent",
     "on_accent": "--color-on-accent",
     "line": "--color-line",
+    "cover_veil": "--color-cover-veil",
 }
 
 
@@ -46,6 +49,7 @@ class Palette(NamedTuple):
     accent: RGB
     on_accent: RGB
     line: RGB
+    cover_veil: RGB
 
 
 _COMMENT_RE = re.compile(r"/\*.*?(?:\*/|\Z)", re.DOTALL)

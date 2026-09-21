@@ -17,7 +17,7 @@ from tools._media import MediaInfo
 ROOT_FIELDS = {
     "greeting", "form", "ty", "vy", "coupleNames", "rsvpDeadline", "mediaPath",
     "faviconPath", "faviconType", "ogImage", "ogImageType", "ogImageWidth",
-    "ogImageHeight", "primaryEvent", "sections",
+    "ogImageHeight", "themeColor", "primaryEvent", "sections",
 }  # fmt: skip
 SECTION_FIELDS = {
     "id", "type", "domId", "titleId", "title", "titleHidden", "align", "width",

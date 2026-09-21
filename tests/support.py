@@ -209,6 +209,7 @@ TEMPLATE = """<!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<meta name="theme-color" content="{{themeColor}}">
 <meta name="robots" content="noindex, nofollow">
 <title>Приглашение</title>
 <meta property="og:image" content="{{ogImage}}">
@@ -256,6 +257,7 @@ TOKEN_COLORS = {
     "--color-accent": "#7a3e2b",
     "--color-on-accent": "#ffffff",
     "--color-line": "#cfc8bb",
+    "--color-cover-veil": "var(--color-surface)",
 }
 
 

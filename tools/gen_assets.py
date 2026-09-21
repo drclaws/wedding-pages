@@ -45,6 +45,7 @@ __all__ = [
     "Palette",
     "TokenError",
     "favicon_svg",
+    "hex_color",
     "load_palette",
     "og_png",
     "poster_canvas",
