@@ -131,10 +131,15 @@ _MAP_ID_RULES = {
 }
 SCHEDULE_ITEM_FIELDS = ("time", "title", "text")
 MEDIA_FIELDS = {
-    "image": ("type", "file", "thumb", "width", "height", "alt", "caption"),
-    "video": ("type", "file", "poster", "thumb", "width", "height", "alt", "caption"),
+    "image": ("type", "file", "thumb", "width", "height", "alt"),
+    "video": ("type", "file", "poster", "thumb", "width", "height", "alt"),
 }
-MEDIA_HINTS = {"image": {"poster": "is not allowed: only a video has a poster"}}
+#: A tile has a fixed proportion and shows no text under it.
+_CAPTION_HINT = "is not supported: a tile shows no caption; describe the picture in 'alt'"
+MEDIA_HINTS = {
+    "image": {"poster": "is not allowed: only a video has a poster", "caption": _CAPTION_HINT},
+    "video": {"caption": _CAPTION_HINT},
+}
 #: Largest difference between the proportions of a video and its poster.
 RATIO_TOLERANCE = 0.01
 
@@ -604,7 +609,6 @@ def _check_media(check: _Checker, site: dict) -> dict | None:
                 (*parts, "alt"),
                 "is not set: the tile gets a neutral label instead of a description",
             )
-        check.value(item, "caption", "string", parts)
     return media
 
 

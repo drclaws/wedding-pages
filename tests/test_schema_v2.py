@@ -575,6 +575,16 @@ class MediaDataTests(SchemaTestCase):
             report, "site.json: field 'media.story-1.poster' is not allowed: only a video has a poster"
         )
 
+    def test_a_tile_has_no_caption(self):
+        for media_id in ("story-1", "proposal"):
+            with self.subTest(media_id):
+                report = run(lambda s, i: s["media"][media_id].update(caption="Энск, 2024"))
+                self.assertOneError(
+                    report,
+                    f"site.json: field 'media.{media_id}.caption' is not supported: a tile "
+                    "shows no caption; describe the picture in 'alt'",
+                )
+
     def test_size_is_a_pair_of_positive_numbers(self):
         report = run(lambda s, i: s["media"]["proposal"].pop("height"))
         self.assertOneError(

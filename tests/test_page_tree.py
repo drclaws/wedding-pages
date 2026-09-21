@@ -43,7 +43,7 @@ LOCATION_FIELDS = {
 }  # fmt: skip
 MEDIA_FIELDS = {
     "id", "type", "isVideo", "src", "posterSrc", "thumbSrc", "width", "height",
-    "ratio", "durationText", "label", "alt", "caption",
+    "ratio", "durationText", "label", "alt",
 }  # fmt: skip
 ITEM_FIELDS = {"time", "title", "text"}
 

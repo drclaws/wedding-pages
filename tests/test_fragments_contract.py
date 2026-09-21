@@ -64,7 +64,7 @@ LOCATION_FIELDS = (
 MAP_LINK_FIELDS = ("google", "yandex", "apple")
 MEDIA_FIELDS = (
     "id", "type", "isVideo", "src", "posterSrc", "thumbSrc", "width", "height", "ratio",
-    "durationText", "label", "alt", "caption",
+    "durationText", "label", "alt",
 )
 SCHEDULE_ITEM_FIELDS = ("time", "title", "text")
 #: The program of an event (`null` when it has none).
@@ -133,7 +133,7 @@ MEDIA = {
     "directions": {"type": "image", "file": "directions.png", "size": (1600, 900),
                    "alt": "Схема проезда от станции"},
     "story-1": {"type": "image", "file": "story-1.png", "size": (1200, 900),
-                "alt": "Первая встреча", "caption": "Энск, 2024"},
+                "alt": "Первая встреча"},
     "proposal": {"type": "video", "file": "proposal.mp4", "poster": "proposal-poster.png",
                  "size": (720, 1280), "duration": "0:20", "alt": "предложение"},
     # the size of this one is unknown: the tile goes without width and height
@@ -282,7 +282,7 @@ def media_node(media_id: str, url: Callable[[str], str] = hashed_url) -> Strict:
         posterSrc=poster, thumbSrc=poster or src, width=width, height=height,
         ratio=f"{width} / {height}" if width else "", durationText=duration,
         label=f"Видео: {item['alt']}" + (f", {duration}" if duration else "") if video else "",
-        alt=item["alt"], caption=item.get("caption", ""),
+        alt=item["alt"],
     )
 
 
@@ -540,7 +540,7 @@ def bare_media(kind: str = "image", sized: bool = True, duration: str = "0:20") 
         thumbSrc="/assets/m/p.png" if video else "/assets/m/a.png",
         width=640 if sized else "", height=480 if sized else "",
         ratio="640 / 480" if sized else "", durationText=duration if video else "",
-        label="Видео: кадр, 0:20" if video else "", alt="Кадр", caption="",
+        label="Видео: кадр, 0:20" if video else "", alt="Кадр",
     )
 
 

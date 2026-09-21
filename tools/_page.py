@@ -373,7 +373,6 @@ class _Page:
             "durationText": duration,
             "label": label,
             "alt": alt,
-            "caption": _text(item.get("caption")),
         }
 
     # -- sections and widgets ------------------------------------------------------
