@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import hmac
 import json
 import re
 import shutil
@@ -222,7 +223,13 @@ class PrivacyTests(ExamplePagesTestCase):
                 for path in published:
                     self.assertRegex(path, rf"\Aassets/{re.escape(site['mediaDir'])}/[0-9a-f]{{16}}\.ics\Z")
                     name_hash = path.rsplit("/", 1)[1][:16]
-                    self.assertEqual(name_hash, hashlib.sha256(files[path].encode()).hexdigest()[:16])
+                    key = hashlib.sha256(
+                        "\n".join(sorted(item["token"] for item in invitations)).encode()
+                    ).digest()
+                    expected = hmac.new(key, files[path].encode(), hashlib.sha256).hexdigest()[:16]
+                    self.assertEqual(name_hash, expected)
+                    # a plain hash of the contents is not the name
+                    self.assertNotEqual(name_hash, hashlib.sha256(files[path].encode()).hexdigest()[:16])
 
     def test_hidden_events_are_where_they_are_shown(self):
         site, invitations, files = self.built["data"]

@@ -1,9 +1,10 @@
 """Tests for the calendar files: one per event that at least one invitation
-sees, for the whole site (`assets/<mediaDir>/<sha256[:16]>.ics`)."""
+sees, for the whole site (`assets/<mediaDir>/<HMAC-SHA256[:16]>.ics`)."""
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 import unittest
 from datetime import timedelta
@@ -54,12 +55,18 @@ class CalendarFileTests(unittest.TestCase):
         del invitations[0]["events"]
         self.assertEqual(list(calendars(site, invitations)), ["dinner", "brunch"])
 
-    def test_the_name_is_the_hash_of_the_contents(self):
+    def test_the_name_is_a_keyed_hash_of_the_contents(self):
         found = support.fixture_calendars()
+        tokens = sorted(item["token"] for item in invitations_data())
+        key = hashlib.sha256("\n".join(tokens).encode("utf-8")).digest()
+        self.assertEqual(build.calendar_key(reversed(tokens)), key)  # the order does not matter
         for event_id, entry in found.items():
             with self.subTest(event=event_id):
-                digest = hashlib.sha256(entry.content).hexdigest()[:16]
+                digest = hmac.new(key, entry.content, hashlib.sha256).hexdigest()[:16]
                 self.assertEqual(entry.name, f"{digest}.ics")
+                self.assertEqual(build.calendar_name(key, entry.content), entry.name)
+                # a plain hash of the contents, which anybody could try, is not it
+                self.assertNotEqual(entry.name[:16], hashlib.sha256(entry.content).hexdigest()[:16])
                 # the id of the event and the media directory are not in it
                 self.assertNotIn(event_id, entry.name)
         self.assertNotEqual(found["dinner"].name, found["brunch"].name)
@@ -74,6 +81,48 @@ class CalendarFileTests(unittest.TestCase):
         invitations[1]["events"]["dinner"]["note"] = "Другая приписка."
         invitations[0]["greeting"] = "Привет!"
         self.assertEqual(support.fixture_calendars(invitations=invitations), found)
+
+    def test_the_name_depends_on_every_token(self):
+        found = support.fixture_calendars()
+        # the same file with another set of tokens gets another name: without
+        # all the tokens the name cannot be worked out
+        for index in range(3):
+            with self.subTest(changed=index):
+                invitations = invitations_data()
+                invitations[index]["token"] += "x"
+                other = support.fixture_calendars(invitations=invitations)
+                self.assertEqual(other["dinner"].content, found["dinner"].content)
+                self.assertNotEqual(other["dinner"].name, found["dinner"].name)
+        # a new invitation renames every file, the contents stay
+        invitations = invitations_data()
+        invitations.append({"token": "NewGuestToken-0123456789", "greeting": "Привет!", "form": "ty"})
+        other = support.fixture_calendars(invitations=invitations)
+        for event_id in found:
+            self.assertEqual(other[event_id].content, found[event_id].content)
+            self.assertNotEqual(other[event_id].name, found[event_id].name)
+        # the key is unambiguous: tokens cannot be glued into other tokens
+        self.assertNotEqual(build.calendar_key(["ab", "c"]), build.calendar_key(["a", "bc"]))
+
+    def test_names_are_deterministic(self):
+        self.assertEqual(support.fixture_calendars(), support.fixture_calendars())
+        key = build.calendar_key(["a", "b"])
+        self.assertEqual(build.calendar_name(key, b"x"), build.calendar_name(key, b"x"))
+        self.assertRegex(build.calendar_name(key, b"x"), r"\A[0-9a-f]{16}\.ics\Z")
+
+    def test_the_build_never_names_a_file_after_its_event(self):
+        site = site_data()
+        calendars = support.fixture_calendars(site)
+        settings = build.page_settings(site, calendars=calendars)
+        self.assertEqual(
+            settings.calendar_src("dinner"), f"/assets/{support.MEDIA_DIR}/{calendars['dinner'].name}"
+        )
+        # an event without a file is an error, not `brunch.ics`
+        del calendars["brunch"]
+        with self.assertRaises(build.BuildError) as caught:
+            build.page_settings(site, calendars=calendars).calendar_src("brunch")
+        self.assertIn("'brunch' is on a page, but has no calendar file", str(caught.exception))
+        # trees that are never rendered get no address at all
+        self.assertEqual(build.page_settings(site).calendar_src("brunch"), "")
 
     def test_structure(self):
         payload = calendars()["dinner"]

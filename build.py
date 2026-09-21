@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import hashlib
+import hmac
 import html
 import json
 import os
@@ -1367,8 +1368,17 @@ def page_settings(
         return media_url(media_path, entry.published if entry is not None else name)
 
     def calendar_src(event_id: str) -> str:
-        entry = (calendars or {}).get(event_id)
-        return media_url(media_path, entry.name if entry is not None else event_id + CALENDAR_SUFFIX)
+        # the build never names a calendar file after its event: without the
+        # files (trees that are only looked at, never rendered) there is no
+        # address, and an event without a file is a bug
+        if calendars is None:
+            return ""
+        entry = calendars.get(event_id)
+        if entry is None:
+            raise BuildError(
+                f"the event {data_tools.show_id(event_id)} is on a page, but has no calendar file"
+            )
+        return media_url(media_path, entry.name)
 
     return page_tools.PageSettings(
         default_duration=ICS_DEFAULT_DURATION,
@@ -1501,11 +1511,35 @@ def event_calendar(media_dir: str, event: dict) -> bytes:
 class CalendarFile(NamedTuple):
     """The calendar file of an event that at least one invitation sees."""
 
-    #: `<sha256[:16]>.ics` of the contents: nobody can work the name out
-    #: without knowing the event (the media directory and the ids are not
-    #: secret, the title, the time and the place are).
+    #: `<HMAC-SHA256(calendar_key(tokens), contents)[:16]>.ics` (see
+    #: `calendar_name`).
     name: str
     content: bytes
+
+
+#: Hex digits of the name of a calendar file.
+CALENDAR_NAME_DIGITS = 16
+
+
+def calendar_key(tokens: Iterable[str]) -> bytes:
+    """The key of the names of the calendar files: sha256 of the tokens of
+    all invitations, sorted and joined with a line feed (a token never holds
+    one).
+
+    The contents of a calendar file are easy to guess (a title, a time, a
+    place), so a plain hash of them could be found by trying; with this key,
+    working a name out takes every token, and whoever knows them all can
+    open every page anyway.  The file of an event is thus exactly as safe as
+    the pages of the guests.  A new invitation renames every calendar file,
+    which is harmless: the pages are built together with them.
+    """
+    return hashlib.sha256("\n".join(sorted(tokens)).encode("utf-8")).digest()
+
+
+def calendar_name(key: bytes, content: bytes) -> str:
+    """`<HMAC-SHA256(key, content)[:16]>.ics`: the published name of a calendar file."""
+    digest = hmac.new(key, content, hashlib.sha256).hexdigest()
+    return f"{digest[:CALENDAR_NAME_DIGITS]}{CALENDAR_SUFFIX}"
 
 
 def calendar_files(data: Data) -> dict[str, CalendarFile]:
@@ -1513,12 +1547,11 @@ def calendar_files(data: Data) -> dict[str, CalendarFile]:
     invitation sees, in the order of their start.  An event nobody sees gets
     no file."""
     settings = page_settings(data.site)
+    key = calendar_key(invitation["token"] for invitation in data.invitations)
     files = {}
     for event in page_tools.calendar_events(data.site, data.invitations, settings):
         content = event_calendar(data.site["mediaDir"], event)
-        files[event["id"]] = CalendarFile(
-            media_tools.hashed_name(content, f"{event['id']}{CALENDAR_SUFFIX}"), content
-        )
+        files[event["id"]] = CalendarFile(calendar_name(key, content), content)
     return files
 
 
