@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import timedelta
+from unittest import mock
 
 from tests import fixtures_v2 as F
 from tools import _page, _schema
@@ -182,7 +183,7 @@ class PrimaryEventTests(unittest.TestCase):
         self.assertEqual(widgets(page, "date")[0]["event"]["id"], "ceremony")
         kinds = {item["id"]: item["kind"] for item in events_widget(page)["items"]}
         self.assertEqual(kinds, {"ceremony": "primary", "dinner": "regular", "brunch": "regular"})
-        self.assertEqual(events_widget(page)["primaryDomId"], "s-where-w1-ceremony")
+        self.assertEqual(events_widget(page)["primaryDomId"], "s-where--w1--e-ceremony")
 
     def test_texts_use_the_primary_event(self):
         pages = build()
@@ -202,7 +203,7 @@ class PrimaryEventTests(unittest.TestCase):
     def test_primary_card_is_not_among_the_cards(self):
         pages = build(lambda s, i: s["sections"][5]["widgets"][0].update(events=["dinner"]))
         self.assertEqual(events_widget(pages[2])["primaryDomId"], "")
-        self.assertEqual(events_widget(pages[0])["primaryDomId"], "s-where-w1-dinner")
+        self.assertEqual(events_widget(pages[0])["primaryDomId"], "s-where--w1--e-dinner")
 
 
 class HiddenEventTests(unittest.TestCase):
@@ -270,8 +271,8 @@ class OverrideTests(unittest.TestCase):
         pages = build()
         travel_3 = [w["domId"] for w in section(pages[2], "travel")["widgets"]]
         travel_6 = [w["domId"] for w in section(pages[5], "travel")["widgets"]]
-        self.assertEqual(travel_3, ["s-travel-w1", "s-travel-w2"])
-        self.assertEqual(travel_6, ["s-travel-w1", "s-travel-w2", "s-travel-w3"])
+        self.assertEqual(travel_3, ["s-travel--w1", "s-travel--w2"])
+        self.assertEqual(travel_6, ["s-travel--w1", "s-travel--w2", "s-travel--w3"])
         self.assertIn("Для вас забронирован номер", section(pages[5], "travel")["widgets"][2]["text"])
 
     def test_widget_switched_off(self):
@@ -326,34 +327,127 @@ class TextTests(unittest.TestCase):
         self.assertEqual(rsvp[0]["variant"], "body")
 
 
+def parse_dom_id(dom_id):
+    """The path of a DOM id: its parts, split at `--`."""
+    return dom_id.split("--")
+
+
 class DomIdTests(unittest.TestCase):
     def test_ids_are_unique_and_follow_the_path(self):
         for page in build():
             ids = list(walk_dom_ids(page["sections"]))
             self.assertEqual(len(ids), len(set(ids)))
+            self.assertEqual(_page.repeated_ids(page), [])
             for dom_id in ids:
-                self.assertTrue(dom_id.startswith("s-"), dom_id)
+                parts = parse_dom_id(dom_id)
+                self.assertTrue(parts[0].startswith("s-"), dom_id)
+                for part in parts[1:]:
+                    self.assertRegex(part, r"\A(?:w[0-9]+|e-.+|l-.+|title|program)\Z")
 
     def test_one_event_in_two_widgets(self):
         page = build()[0]
-        self.assertEqual(widgets(page, "date")[0]["event"]["domId"], "s-when-w1-dinner")
-        self.assertEqual(events_widget(page)["items"][1]["domId"], "s-where-w1-dinner")
-        self.assertEqual(events_widget(page)["items"][1]["location"]["domId"], "s-where-w1-dinner-manor")
-        self.assertEqual(events_widget(page)["items"][1]["program"]["domId"], "s-where-w1-dinner-program")
-        self.assertEqual(section(page, "cover")["event"]["domId"], "s-cover-dinner")
+        self.assertEqual(widgets(page, "date")[0]["event"]["domId"], "s-when--w1--e-dinner")
+        dinner = events_widget(page)["items"][1]
+        self.assertEqual(dinner["domId"], "s-where--w1--e-dinner")
+        self.assertEqual(dinner["location"]["domId"], "s-where--w1--e-dinner--l-manor")
+        self.assertEqual(dinner["program"]["domId"], "s-where--w1--e-dinner--program")
+        self.assertEqual(section(page, "cover")["event"]["domId"], "s-cover--e-dinner")
 
     def test_sections_and_widgets(self):
         page = build()[0]
         invite = section(page, "invite")
-        self.assertEqual((invite["domId"], invite["titleId"]), ("s-invite", "s-invite-title"))
-        self.assertEqual(invite["widgets"][0]["domId"], "s-invite-w1")
+        self.assertEqual((invite["domId"], invite["titleId"]), ("s-invite", "s-invite--title"))
+        self.assertEqual(invite["widgets"][0]["domId"], "s-invite--w1")
 
     def test_location_widget(self):
         page = build()[2]
         place = widgets(page, "location")[0]
-        self.assertEqual(place["domId"], "s-travel-w2")
-        self.assertEqual(place["location"]["domId"], "s-travel-w2-hotel")
+        self.assertEqual(place["domId"], "s-travel--w2")
+        self.assertEqual(place["location"]["domId"], "s-travel--w2--l-hotel")
         self.assertTrue(place["location"]["compact"])
+
+    def test_number_is_the_position_in_the_data(self):
+        def change(site, invitations):
+            site["sections"][1]["widgets"].insert(0, {"type": "text", "text": "x", "visible": False})
+
+        invite = section(build(change)[0], "invite")
+        self.assertEqual([widget["domId"] for widget in invite["widgets"]], ["s-invite--w2"])
+
+
+class DomIdCollisionTests(unittest.TestCase):
+    """Ids that end or start like the fixed parts of a DOM id do not collide."""
+
+    def check(self, mutate):
+        site, invitations = F.site(), F.invitations()
+        mutate(site, invitations)
+        report = F.Collector()
+        index = _schema.check_data(site, invitations, report)
+        self.assertTrue(index.ok, report.errors)
+        pages, _usage = _page.build_pages(site, invitations, F.settings(), report)
+        self.assertEqual(report.errors, [])
+        for page in pages:
+            self.assertEqual(_page.repeated_ids(page), [])
+        return pages
+
+    @staticmethod
+    def rename_event(site, invitations, old, new):
+        site["events"][new] = site["events"].pop(old)
+        if site["mainEvent"] == old:
+            site["mainEvent"] = new
+        for invitation in invitations:
+            overrides = invitation.get("events", {})
+            if old in overrides:
+                overrides[new] = overrides.pop(old)
+
+    def test_section_named_like_a_widget(self):
+        def change(site, invitations):
+            site["sections"].append({"id": "invite-w1", "title": "Ещё", "widgets": [{"type": "text", "text": "x"}]})
+
+        page = self.check(change)[0]
+        self.assertEqual(section(page, "invite-w1")["domId"], "s-invite-w1")
+        self.assertEqual(section(page, "invite")["widgets"][0]["domId"], "s-invite--w1")
+
+    def test_event_named_title_on_the_cover(self):
+        page = self.check(lambda s, i: self.rename_event(s, i, "dinner", "title"))[0]
+        cover = section(page, "cover")
+        self.assertNotEqual(cover["event"]["domId"], cover["titleId"])
+
+    def test_place_named_program(self):
+        def change(site, invitations):
+            site["locations"]["program"] = site["locations"].pop("manor")
+            site["events"]["dinner"]["location"] = "program"
+
+        page = self.check(change)[0]
+        dinner = events_widget(page)["items"][1]
+        self.assertEqual(dinner["location"]["id"], "program")
+        self.assertNotEqual(dinner["location"]["domId"], dinner["program"]["domId"])
+
+    def test_event_named_after_another_event_and_its_place(self):
+        def change(site, invitations):
+            site["events"]["dinner-manor"] = dict(
+                site["events"]["ceremony"],
+                start="2030-06-15T13:00:00+03:00",
+                end="2030-06-15T14:00:00+03:00",
+            )
+
+        page = self.check(change)[0]
+        ids = [item["domId"] for item in events_widget(page)["items"]]
+        self.assertIn("s-where--w1--e-dinner-manor", ids)
+        dinner = next(item for item in events_widget(page)["items"] if item["id"] == "dinner")
+        self.assertEqual(dinner["location"]["domId"], "s-where--w1--e-dinner--l-manor")
+
+    def test_safeguard_reports_repeated_ids(self):
+        site, invitations = F.site(), F.invitations()
+        site["sections"].append({"id": "invite-w1", "title": "Ещё", "widgets": [{"type": "text", "text": "x"}]})
+        report = F.Collector()
+        with mock.patch.object(_page, "DOM_SEPARATOR", "-"):  # the old, ambiguous joining
+            _page.build_pages(site, invitations, F.settings(), report)
+        self.assertEqual(len(report.errors), len(invitations))
+        self.assertEqual(
+            report.errors[0],
+            "invitation #1 (0R-p…): ids of the markup repeat on the page ('s-invite-w1'); "
+            "rename one of the ids in site.json",
+        )
 
 
 class DateTextTests(unittest.TestCase):

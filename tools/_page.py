@@ -21,6 +21,7 @@ Standard library only.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Callable, Mapping, Sequence
@@ -43,6 +44,36 @@ SITE_IMAGE_FIELDS = (
     "ogImageWidth",
     "ogImageHeight",
 )
+#: Joins the parts of a DOM id.  An id of the data never holds `--`, so the
+#: parts are always told apart: `s-where--w1--e-dinner--l-manor` is the place
+#: `manor` of the event `dinner` in the first widget of the section `where`.
+DOM_SEPARATOR = "--"
+
+
+def dom_id(*parts: str) -> str:
+    """A DOM id from its parts; "" when the first part is "" (no id)."""
+    return DOM_SEPARATOR.join(parts) if parts and parts[0] else ""
+
+
+def section_part(section_id: str) -> str:
+    return f"s-{section_id}"
+
+
+def widget_part(number: int) -> str:
+    return f"w{number}"
+
+
+def event_part(event_id: str) -> str:
+    return f"e-{event_id}"
+
+
+def location_part(location_id: str) -> str:
+    return f"l-{location_id}"
+
+
+TITLE_PART = "title"
+PROGRAM_PART = "program"
+
 #: Labels of a media tile without a description.
 DEFAULT_ALT = {"image": "Фотография", "video": "Видео"}
 VIDEO_LABEL = "Видео"
@@ -202,7 +233,9 @@ class _Page:
                     "text gets an empty string)"
                 )
 
-    def event(self, event_id: str, dom_id: str, same_day: bool | None = None) -> dict:
+    def event(self, event_id: str, parent_id: str, same_day: bool | None = None) -> dict:
+        """An event inside the element `parent_id` ("" at the root: no ids)."""
+        own_id = dom_id(parent_id, event_part(event_id))
         raw = self.events[event_id]
         self.usage.events.add(event_id)
         entry = self.ends[event_id]
@@ -212,7 +245,7 @@ class _Page:
         is_primary = event_id == self.primary_id
         return {
             "id": event_id,
-            "domId": dom_id,
+            "domId": own_id,
             "title": raw["title"],
             "description": _text(raw.get("description")),
             "note": self.resolve_note(self.event_overrides.get(event_id, {}).get("note")),
@@ -229,19 +262,19 @@ class _Page:
             "tabText": _dates.format_tab(entry.start, same_day),
             "icsPath": f"{self.settings.pages_path}/{self.invitation['token']}/{event_id}.ics",
             "location": self.location(
-                raw["location"], f"{dom_id}-{raw['location']}" if dom_id else "", nested=True
+                raw["location"], dom_id(own_id, location_part(raw["location"])), nested=True
             ),
-            "program": self.program(raw, dom_id),
+            "program": self.program(raw, own_id),
         }
 
-    def program(self, raw: dict, dom_id: str) -> dict | None:
+    def program(self, raw: dict, event_dom_id: str) -> dict | None:
         """The programme of an event; null when it has none (or it is empty)."""
         if not _text(raw.get("schedule")):
             return None
         items = self.schedule(raw["schedule"])
         if not items:
             return None
-        return {"domId": f"{dom_id}-program" if dom_id else "", "items": items, "nested": True}
+        return {"domId": dom_id(event_dom_id, PROGRAM_PART), "items": items, "nested": True}
 
     def cover_event(self) -> str:
         # default: the cover shows the primary event of the invitation, even
@@ -250,13 +283,13 @@ class _Page:
 
     # -- registries ------------------------------------------------------------
 
-    def location(self, location_id: str, dom_id: str, *, nested: bool, compact: bool = False) -> dict:
+    def location(self, location_id: str, own_id: str, *, nested: bool, compact: bool = False) -> dict:
         place = self.site.get("locations", {})[location_id]
         self.usage.locations.add(location_id)
         ready = place.get("ready", True) is not False
         tree = {
             "id": location_id,
-            "domId": dom_id,
+            "domId": own_id,
             "ready": ready,
             "name": "",
             "address": "",
@@ -373,12 +406,12 @@ class _Page:
         if not override.get("visible", section.get("visible", True)):
             return None
         kind = section.get("type", "custom")
-        dom_id = f"s-{section_id}"
+        own_id = section_part(section_id)
         tree = {
             "id": section_id,
             "type": kind,
-            "domId": dom_id,
-            "titleId": f"{dom_id}-title",
+            "domId": own_id,
+            "titleId": dom_id(own_id, TITLE_PART),
             "title": "",
             "titleHidden": False,
             "align": "start",
@@ -393,7 +426,7 @@ class _Page:
             event_id = self.cover_event()
             tree.update(
                 eyebrow=self.resolve(section.get("eyebrow"), (*parts, "eyebrow")),
-                event=self.event(event_id, f"{dom_id}-{event_id}"),
+                event=self.event(event_id, own_id),
             )
             return tree
         # default: an invitation switches the widgets of a section by their id
@@ -404,8 +437,12 @@ class _Page:
             shown = widget_overrides.get(widget_id, {}).get("visible") if widget_id else None
             if not (shown if shown is not None else widget.get("visible", True)):
                 continue
+            # the number is the position in the data, hidden widgets included
             resolved = self.widget(
-                widget, f"{dom_id}-w{number}", tree["titleId"], (*parts, "widgets", number - 1)
+                widget,
+                dom_id(own_id, widget_part(number)),
+                tree["titleId"],
+                (*parts, "widgets", number - 1),
             )
             if resolved is not None:
                 widgets.append(resolved)
@@ -427,9 +464,9 @@ class _Page:
         )
         return tree
 
-    def widget(self, widget: dict, dom_id: str, labelled_by: str, parts: tuple) -> dict | None:
+    def widget(self, widget: dict, own_id: str, labelled_by: str, parts: tuple) -> dict | None:
         kind = widget["type"]
-        base = {"type": kind, "domId": dom_id, "labelledBy": labelled_by}
+        base = {"type": kind, "domId": own_id, "labelledBy": labelled_by}
         if kind == "text":
             text = self.resolve(widget["text"], (*parts, "text"))
             if not text.strip():
@@ -441,7 +478,7 @@ class _Page:
                 return None
             return {
                 **base,
-                "event": self.event(event_id, f"{dom_id}-{event_id}"),
+                "event": self.event(event_id, own_id),
                 "countdown": widget.get("countdown", True),
                 "calendar": widget.get("calendar", True),
                 "showEventTitle": len(self.visible) > 1,
@@ -453,7 +490,7 @@ class _Page:
                 return None
             self.cards.update(ids)
             same_day = _dates.same_local_day(self.ends[item].start for item in ids)
-            items = [self.event(item, f"{dom_id}-{item}", same_day) for item in ids]
+            items = [self.event(item, own_id, same_day) for item in ids]
             primary = next((item["domId"] for item in items if item["isPrimary"]), "")
             return {
                 **base,
@@ -468,7 +505,7 @@ class _Page:
                 **base,
                 "location": self.location(
                     location_id,
-                    f"{dom_id}-{location_id}",
+                    dom_id(own_id, location_part(location_id)),
                     nested=False,
                     compact=widget.get("variant") == "compact",
                 ),
@@ -531,7 +568,8 @@ def build_pages(
 
     The data must have passed `tools._schema.check_data`.  With a `report`,
     the warnings that need the finished trees are reported to it, including
-    `warn_unused`.
+    `warn_unused`, and an error for DOM ids that repeat on a page (a
+    safeguard: `dom_id` makes the ids unique by construction).
     """
     usage = Usage()
     warn = report_warning(report) if report is not None else None
@@ -540,10 +578,43 @@ def build_pages(
     for number, invitation in enumerate(invitations, start=1):
         label = invitation_label(number, invitation.get("token"))
         page = _Page(site, invitation, settings, usage, warn, label, place_warnings)
-        pages.append(page.tree())
+        tree = page.tree()
+        repeated = repeated_ids(tree)
+        if repeated and report is not None:
+            # a safeguard: the ids are built so that this cannot happen
+            listed = ", ".join(f"'{item}'" for item in repeated if _SAFE_DOM_ID_RE.fullmatch(item))
+            report.error(
+                f"{label}: ids of the markup repeat on the page ({listed or 'not shown'}); "
+                "rename one of the ids in site.json"
+            )
+        pages.append(tree)
     if report is not None:
         warn_unused(site, usage, report)
     return pages, usage
+
+
+#: What a DOM id built from valid ids looks like (safe to show in a message).
+_SAFE_DOM_ID_RE = re.compile(r"[a-z0-9-]{1,300}")
+
+
+def repeated_ids(tree: Any) -> list[str]:
+    """The DOM ids (`domId`, `titleId`) that occur more than once in a tree."""
+    seen: set[str] = set()
+    repeated: list[str] = []
+    stack = [tree]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            for key in ("domId", "titleId"):
+                item = value.get(key)
+                if isinstance(item, str) and item:
+                    if item in seen and item not in repeated:
+                        repeated.append(item)
+                    seen.add(item)
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+    return sorted(repeated)
 
 
 def warn_unused(site: dict, usage: Usage, report: Any) -> None:
