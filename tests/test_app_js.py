@@ -100,6 +100,14 @@ class AppJsSourceTest(unittest.TestCase):
             self.assertIn("window.removeEventListener('%s', onViewportChange)" % event, self.code)
         self.assertIn("requestAnimationFrame(onFrame)", self.code)
 
+    def test_every_countdown_starts_in_its_own_try(self):
+        # several date widgets give several timers: one failing leaves the others
+        init = self.code[self.code.index("register('countdown'"):]
+        init = init[:init.index("\n  });")]
+        self.assertRegex(init, r"forEach\.call\([^;]*function \(container\) \{\s*try \{\s*"
+                               r"startCountdown\(container\);\s*\}\s*catch \(error\) \{")
+        self.assertIn("container.hidden = true;", init)
+        self.assertIn("report('countdown', error);", init)
 
 class LightboxSourceTest(unittest.TestCase):
     @classmethod

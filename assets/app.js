@@ -480,9 +480,16 @@
     tick();
   }
 
+  /* Таймеров на странице может быть несколько (виджет даты в разных
+     секциях): сбой одного не мешает остальным. */
   register('countdown', function (doc) {
     Array.prototype.forEach.call(doc.querySelectorAll('[data-countdown]'), function (container) {
-      startCountdown(container);
+      try {
+        startCountdown(container);
+      } catch (error) {
+        container.hidden = true;
+        report('countdown', error);
+      }
     });
   });
 
