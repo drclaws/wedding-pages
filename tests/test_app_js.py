@@ -249,8 +249,8 @@ class GalleryStylesTest(unittest.TestCase):
     def setUpClass(cls):
         css = APP_CSS.read_text(encoding="utf-8")
         start = css.index("\n   8. Gallery & lightbox")
-        end = css.index("\n   9. Player behaviour")
-        cls.section = strip_comments("/*" + css[start:end] + "*/")
+        end = css.find("\n   9. ", start)  # the last section, unless one is added after it
+        cls.section = strip_comments("/*" + (css[start:] if end == -1 else css[start:end] + "*/"))
         cls.css = strip_comments(css)
 
     def test_ribbon_needs_js_class_and_stays_below_the_layout_breakpoint(self):

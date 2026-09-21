@@ -12,9 +12,8 @@
      6. Page layout         — раскладка блоков страницы
      7. Motion & reveal     — появление блоков, анимация обложки
      8. Gallery & lightbox  — лента/сетка галереи и лайтбокс
-     9. Player behaviour    — состояния плеера, управляемые скриптом
 
-   Правило: «сырых» значений (цвета, размеры, длительности) в секциях 3–9 нет —
+   Правило: «сырых» значений (цвета, размеры, длительности) в секциях 3–8 нет —
    только токены из секции 1, calc() над ними и ключевые слова. Единственные
    исключения: закомментированный @font-face и пороги в условиях @media и
    @container (в условиях запросов var() не работает).
@@ -63,7 +62,7 @@
      px    — волосяные линии и рамки, кольцо фокуса, радиусы, тени, --tap-min
              (44px — требование к физическому размеру цели нажатия; рост
              вместе со шрифтом только отнимал бы ширину у текста), амплитуды
-             движения, дорожка и ползунок плеера. От шрифта не зависят.
+             движения. От шрифта не зависят.
      em/ch — трекинг и ширины «в знаках»: следуют за шрифтом самого элемента.
    При размере шрифта по умолчанию и ширине окна от --vw-min все формулы дают
    ровно числа из пар.
@@ -457,32 +456,10 @@
   --safe-inset-left: env(safe-area-inset-left, 0px);
 
   /* --- Токены компонентов -------------------------------------------------- */
-  /* Плеер. Панель строит сторонняя библиотека (секция 9); дорожка и ползунок —
-     в px: от размера шрифта не зависят. */
-  --player-track-height-mobile: 6;    /* TEMP */
-  --player-track-height-desktop: 8;   /* TEMP */
-  --player-track-height: clamp(min(var(--player-track-height-mobile) * 1px, var(--player-track-height-desktop) * 1px),
-    calc(var(--player-track-height-mobile) * 1px + (var(--player-track-height-desktop) - var(--player-track-height-mobile)) * var(--fluid)),
-    max(var(--player-track-height-mobile) * 1px, var(--player-track-height-desktop) * 1px));
-  --player-thumb-size-mobile: 14;     /* TEMP */
-  --player-thumb-size-desktop: 18;    /* TEMP */
-  --player-thumb-size: clamp(min(var(--player-thumb-size-mobile) * 1px, var(--player-thumb-size-desktop) * 1px),
-    calc(var(--player-thumb-size-mobile) * 1px + (var(--player-thumb-size-desktop) - var(--player-thumb-size-mobile)) * var(--fluid)),
-    max(var(--player-thumb-size-mobile) * 1px, var(--player-thumb-size-desktop) * 1px));
-  /* Уже этого блок плеера не становится (узкий вертикальный кадр при низком
-     окне): в панель должны помещаться три кнопки, время и дорожка. */
+  /* Плеер. Панель управления — нативная панель браузера. Уже этого блок
+     плеера не становится (узкий вертикальный кадр при низком окне): в панели
+     должны помещаться кнопки, время и дорожка перемотки. */
   --player-min-width: 16.25rem;  /* TEMP */
-  /* Пороги состава панели по ширине САМОГО плеера (вертикальный ролик узок и
-     на большом экране). Только для чтения: повторены буквально в @container
-     (секция 9). Ниже --player-time-min дорожке перемотки нужно всё место,
-     выше --player-wide-min его хватает ещё и на громкость с длительностью. */
-  --player-time-min: 19rem;      /* TEMP */
-  --player-wide-min: 30rem;      /* TEMP */
-  --player-panel-padding: var(--space-2xs);
-  /* Высота панели в одну строку — на половину этой величины большая кнопка
-     Play поднята, чтобы стоять по центру кадра, а не кадра с панелью. */
-  --player-panel-height: calc(var(--tap-min) + var(--player-panel-padding) + var(--player-panel-padding) + var(--line-width-hairline));
-  --player-play-size: calc(var(--tap-min) + var(--icon-size));
 
   /* Ширина полосы прокрутки страницы, скрытой на время показа лайтбокса;
      задаётся скриптом галереи, чтобы раскладка под окном не сдвигалась. */
@@ -893,7 +870,7 @@ hr {
    -----------------------------------------------------------------------------
    Каждый компонент описан один раз. Классы — только для стилей; скрипты
    цепляются за data-атрибуты (data-reveal, data-countdown, data-gallery,
-   data-lightbox, data-player).
+   data-lightbox).
 
    Состояния одинаковы на обоих форматах:
      hover        — только внутри @media (hover: hover);
@@ -1300,9 +1277,9 @@ a.btn[aria-disabled="true"] {
 }
 
 /* --- Плеер: блок и кадр ----------------------------------------------------
-   Здесь — только контейнер и нативный <video controls> (так плеер выглядит
-   без скрипта). Панель управления строит сторонняя библиотека; её оформление
-   и состояния — в секции 9.
+   Контейнер и нативный <video controls>. Панель управления — нативная панель
+   браузера: скрипт её не заменяет, со скриптом и без него плеер один и тот
+   же. Своих стилей у панели нет, браузер рисует её поверх кадра.
 
    Ширина блока = ширина кадра, блок стоит по центру колонки. Кадр не выше
    --media-max-height и не шире колонки при любой пропорции ролика. Пропорцию
@@ -1312,12 +1289,8 @@ a.btn[aria-disabled="true"] {
    что это работает и до загрузки постера, и без скрипта). Сам он невидим и
    высоты не занимает (block-size: 0), но по его ширине сжимается блок
    (fit-content; шире колонки блок стать не может). Остальное содержимое на
-   ширину блока не влияет (.player__body), поэтому ни загрузка постера, ни
-   появление панели НЕ меняют ширину блока и положение кадра. Высоту
-   появление панели меняет: она встаёт под кадром и сдвигает вниз то, что
-   ниже. Место под неё намеренно не резервируется — иначе при незагрузившейся
-   библиотеке осталась бы пустая полоса; при обычной загрузке (скрипт с defer
-   в том же документе) сдвиг происходит до первой отрисовки.
+   ширину блока не влияет (.player__body), поэтому загрузка постера НЕ меняет
+   ширину блока и положение кадра.
 
    Две оговорки к размернику:
      - на узких экранах он шире блока (ширину ограничивает только колонка),
@@ -1983,223 +1956,5 @@ html.is-lightbox-open body {
 
   html.is-lightbox-open body {
     padding-inline-end: 0;
-  }
-}
-
-
-/* =============================================================================
-   9. Player behaviour
-   -----------------------------------------------------------------------------
-   Панель плеера строит сторонняя библиотека Plyr (/assets/vendor/): скрипт
-   ([data-player]) заменяет ею нативные controls. Её стили не правятся —
-   здесь она только настраивается:
-     - переменные --plyr-* привязаны к токенам сайта;
-     - классы .plyr* упоминаются там, где переменных не хватает: размер целей
-       нажатия, кольцо фокуса, раскладка панели. Это привязка к версии
-       библиотеки: при обновлении секцию нужно перепроверить.
-
-   Два вида панели:
-     .player                  — светлая панель под кадром, видна всегда
-                                (по умолчанию);
-     .player.player--overlay  — штатный вид библиотеки: тёмная панель поверх
-                                кадра, во время воспроизведения прячется.
-   На весь экран (.is-fullscreen ставит скрипт) панель всегда поверх кадра.
-   ========================================================================== */
-
-.player {
-  --plyr-color-main: var(--color-accent);
-  --plyr-font-family: var(--font-body);
-  --plyr-font-size-base: var(--text-sm);
-  --plyr-font-size-small: var(--text-sm);
-  --plyr-font-size-time: var(--text-sm);
-  --plyr-font-weight-regular: var(--font-weight-body);
-  --plyr-line-height: var(--line-height-tight);
-  --plyr-video-background: var(--color-surface-sunken);
-  --plyr-control-icon-size: var(--icon-size);
-  --plyr-control-radius: var(--radius-round);
-  --plyr-control-spacing: var(--space-xs);
-  --plyr-range-track-height: var(--player-track-height);
-  --plyr-range-thumb-height: var(--player-thumb-size);
-  --plyr-range-thumb-shadow: var(--shadow-sm);
-  --plyr-tooltip-background: var(--color-bg);
-  --plyr-tooltip-color: var(--color-text);
-  --plyr-tooltip-radius: var(--radius-sm);
-  --plyr-tooltip-shadow: var(--shadow-md);
-
-  /* Светлая панель под кадром. */
-  --plyr-video-control-color: var(--color-text);
-  --plyr-video-control-color-hover: var(--color-accent-hover);
-  --plyr-video-control-background-hover: var(--color-surface-sunken);
-  --plyr-video-range-track-background: var(--color-line-strong);
-  --plyr-range-thumb-background: var(--color-accent);
-  --plyr-focus-visible-color: var(--color-focus);
-}
-
-/* Панель поверх кадра. */
-.player--overlay,
-.player.is-fullscreen {
-  --plyr-video-control-color: var(--color-on-overlay);
-  --plyr-video-control-color-hover: var(--color-on-accent);
-  --plyr-video-control-background-hover: var(--color-accent);
-  /* initial возвращает переменную в «не задано»: библиотека берёт свой
-     полупрозрачный белый, рассчитанный на кадр под панелью. */
-  --plyr-video-range-track-background: initial;
-  --plyr-range-thumb-background: var(--color-on-overlay);
-  --plyr-focus-visible-color: var(--color-focus-on-overlay);
-}
-
-/* Контейнер библиотеки — контейнер для @container: состав панели зависит от
-   ширины самого плеера (вертикальный ролик узок и на широком экране). */
-.player .plyr {
-  container-type: inline-size;
-  min-inline-size: 0;
-  border-radius: inherit;
-}
-
-/* Кадр: та же граница по высоте, что у нативного <video>; на весь экран
-   ограничение снимается. */
-.player:not(.is-fullscreen) .plyr__video-wrapper {
-  max-block-size: var(--media-max-height);
-}
-
-.player .plyr video {
-  max-block-size: none;
-  object-fit: contain;
-}
-
-/* --- Цели нажатия не меньше --tap-min, общее кольцо фокуса ----------------- */
-.player .plyr__controls .plyr__control {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-inline-size: var(--tap-min);
-  min-block-size: var(--tap-min);
-  padding: 0;
-}
-
-.player .plyr__controls input[type="range"] {
-  block-size: var(--tap-min);
-}
-
-.player .plyr__control:focus-visible {
-  outline: var(--focus-ring-width) solid var(--plyr-focus-visible-color);
-  outline-offset: var(--focus-ring-offset);
-}
-
-/* Фокус ползунков библиотека рисует на дорожке; правила раздельные, потому
-   что незнакомый псевдоэлемент отменяет весь список селекторов. */
-.player .plyr input[type="range"]:focus-visible::-webkit-slider-runnable-track {
-  outline: var(--focus-ring-width) solid var(--plyr-focus-visible-color);
-  outline-offset: var(--focus-ring-offset);
-}
-
-.player .plyr input[type="range"]:focus-visible::-moz-range-track {
-  outline: var(--focus-ring-width) solid var(--plyr-focus-visible-color);
-  outline-offset: var(--focus-ring-offset);
-}
-
-/* Большая кнопка Play — акцентная в обоих видах панели. */
-.player .plyr--full-ui.plyr--video .plyr__control--overlaid {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  inline-size: var(--player-play-size);
-  block-size: var(--player-play-size);
-  padding: 0;
-  background: var(--color-accent);
-  color: var(--color-on-accent);
-  box-shadow: var(--shadow-md);
-}
-
-@media (hover: hover) {
-  .player .plyr--full-ui.plyr--video .plyr__control--overlaid:hover {
-    background: var(--color-accent-hover);
-  }
-}
-
-/* --- Состав панели по ширине плеера -----------------------------------------
-   В узком плеере остаются: Play, дорожка, текущее время, звук, полный экран
-   (громкость на телефоне регулируется кнопками устройства). */
-.player .plyr__volume input[type="range"],
-.player .plyr__controls .plyr__time + .plyr__time {
-  display: none;
-}
-
-/* В совсем узком плеере (портретный ролик в ландшафтной ориентации телефона)
-   время уступает место дорожке перемотки.
-   Значение должно совпадать с --player-time-min = 19rem. */
-@container (max-width: 19rem) {
-  .player .plyr__time {
-    display: none;
-  }
-}
-
-/* Значение должно совпадать с --player-wide-min = 30rem. */
-@container (min-width: 30rem) {
-  .player .plyr__volume input[type="range"],
-  .player .plyr__controls .plyr__time + .plyr__time {
-    display: block;
-  }
-}
-
-/* --- Светлая панель под кадром ----------------------------------------------
-   Панель стоит в потоке под кадром и не прячется во время воспроизведения
-   (класс plyr--hide-controls библиотека ставит по-прежнему — он обезврежен).
-   При увеличенном шрифте панель переносится на вторую строку. */
-.player:not(.player--overlay):not(.is-fullscreen) .plyr__controls {
-  position: static;
-  order: 1; /* в разметке библиотеки панель стоит перед кадром */
-  flex-wrap: wrap;
-  inline-size: 100%;
-  padding: var(--player-panel-padding);
-  background: var(--color-surface);
-  border-block-start: var(--line-width-hairline) solid var(--color-line);
-  border-radius: 0;
-}
-
-.player:not(.player--overlay):not(.is-fullscreen) .plyr--hide-controls .plyr__controls {
-  opacity: 1;
-  pointer-events: auto;
-  transform: none;
-}
-
-.player:not(.player--overlay):not(.is-fullscreen) .plyr__time {
-  color: var(--color-text-muted);
-}
-
-.player:not(.player--overlay):not(.is-fullscreen) .plyr__control--overlaid {
-  inset-block-start: calc(50% - var(--player-panel-height) / 2);
-}
-
-/* Нажатие: как у остальных кнопок сайта. */
-.player:not(.player--overlay):not(.is-fullscreen) .plyr__controls .plyr__control:active {
-  background: var(--color-surface-sunken);
-  color: var(--color-accent-hover);
-}
-
-/* --- Движение ---------------------------------------------------------------
-   Длительности библиотеки заменены токеном сайта; при prefers-reduced-motion
-   токен обнулён (секция 1), а циклическая анимация загрузки отключается. */
-.player .plyr,
-.player .plyr__controls,
-.player .plyr__control,
-.player .plyr__poster,
-.player .plyr__tooltip {
-  transition-duration: var(--duration-fast);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .player .plyr *,
-  .player .plyr *::before,
-  .player .plyr *::after {
-    animation: none;
-    transition: none;
-  }
-}
-
-@media print {
-  .player .plyr__controls,
-  .player .plyr--full-ui.plyr--video .plyr__control--overlaid {
-    display: none;
   }
 }
