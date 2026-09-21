@@ -70,6 +70,18 @@ class FixtureTests(SchemaTestCase):
         self.assertMessages(report)
         self.assertTrue(report.index.ok)
 
+    def test_ok_counts_the_errors_of_both_documents(self):
+        report = run(lambda s, i: i[1].update(form="tu"))
+        self.assertEqual((report.index.errors, report.index.invitation_errors), (0, 1))
+        self.assertFalse(report.index.ok)
+        report = run(lambda s, i: i.append("x"))
+        self.assertEqual(report.index.invitation_errors, 1)
+        report = run(lambda s, i: s.update(coupleNames=""))
+        self.assertEqual((report.index.errors, report.index.invitation_errors), (1, 0))
+        self.assertFalse(report.index.ok)
+        report = run(invitations={})
+        self.assertFalse(report.index.ok)
+
     def test_the_set_without_places_is_valid(self):
         report = run(site=F.pending_site(), invitations=F.pending_invitations())
         self.assertMessages(report)

@@ -428,9 +428,13 @@ class SiteIndex:
     #: Placeholders that have a value.
     available: frozenset[str] = frozenset(PLACEHOLDERS)
 
+    #: Number of errors in `invitations.json` (set by `check_invitations`).
+    invitation_errors: int = 0
+
     @property
     def ok(self) -> bool:
-        return self.version_ok and not self.errors
+        """No error in `site.json` nor in `invitations.json`: pages can be built."""
+        return self.version_ok and not self.errors and not self.invitation_errors
 
     def declared_ids(self) -> frozenset[str]:
         """Ids an invitation may refer to: safe to show in its messages."""
@@ -942,8 +946,22 @@ def _check_widget(
 def check_invitations(
     invitations: Any, index: SiteIndex, report: Any, where: str = INVITATIONS_FILE
 ) -> None:
-    """Check `invitations.json` against what `check_site` found."""
+    """Check `invitations.json` against what `check_site` found.
+
+    The number of errors is kept in `index.invitation_errors`.
+    """
+    checkers: list[_Checker] = []
+    try:
+        _check_invitations(invitations, index, report, where, checkers)
+    finally:
+        index.invitation_errors = sum(check.errors for check in checkers)
+
+
+def _check_invitations(
+    invitations: Any, index: SiteIndex, report: Any, where: str, checkers: list[_Checker]
+) -> None:
     top = _Checker(report, where)
+    checkers.append(top)
     if not isinstance(invitations, list):
         top.raw_error(
             "the top-level value must be an array of invitations, "
@@ -977,6 +995,7 @@ def check_invitations(
             )
             continue
         check = _Checker(report, invitation_label(number, invitation.get("token")), known)
+        checkers.append(check)
         _check_invitation(check, invitation, index, number, seen)
 
 
@@ -1151,8 +1170,13 @@ def check_data(
     site_where: str = SITE_FILE,
     invitations_where: str = INVITATIONS_FILE,
 ) -> SiteIndex:
-    """`check_site`, then `check_invitations`; the result says if the data
-    can be used (`SiteIndex.ok` and no errors in the invitations)."""
+    """`check_site`, then `check_invitations`.
+
+    `SiteIndex.ok` of the result is true when neither document has an error
+    reported through these checks, that is when the page trees can be built.
+    Problems the caller reports itself (reading the files, missing media) are
+    not counted: the build decides by its report.
+    """
     index = check_site(site, report, site_where)
     check_invitations(invitations, index, report, invitations_where)
     return index
