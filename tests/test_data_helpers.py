@@ -137,6 +137,27 @@ class DuplicateKeyTests(unittest.TestCase):
         )
         self.assertNotIn(SECRET, found[0].describe())
 
+    def test_strict_mode_shows_only_the_known_keys(self):
+        # a key of an invitation may be a name even when it looks like an id
+        text = (
+            '[{"token": "t", "events": {"IvanPetrov": {}, "IvanPetrov": {}},'
+            ' "sections": {"ivan": {"note": "a", "note": "b"}}}]'
+        )
+        _value, found = data_tools.parse_json(text)
+        known = {"events", "sections", "note"}
+        self.assertEqual(
+            [item.describe(known) for item in found],
+            [
+                f"duplicate key <unknown key> in '[0].events' {DUPLICATE_TAIL}",
+                f"duplicate key 'note' in '[0].sections.<unknown key>' {DUPLICATE_TAIL}",
+            ],
+        )
+        self.assertIn("'IvanPetrov'", found[0].describe())  # the lenient mode shows it
+        self.assertEqual(
+            found[1].describe(known | {"ivan"}),
+            f"duplicate key 'note' in '[0].sections.ivan' {DUPLICATE_TAIL}",
+        )
+
 
 class KeyAndPathTests(unittest.TestCase):
     def test_keys_that_look_like_names_of_fields_are_shown(self):

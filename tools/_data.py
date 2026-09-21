@@ -137,10 +137,11 @@ class DuplicateKey(NamedTuple):
     path: tuple[PathPart, ...]
     key: str
 
-    def describe(self) -> str:
-        where = f"in '{format_path(self.path)}'" if self.path else "at the top level"
+    def describe(self, known: Collection[str] | None = None) -> str:
+        """The message; `known` switches on the strict mode of `show_key`."""
+        where = f"in '{format_path(self.path, known)}'" if self.path else "at the top level"
         return (
-            f"duplicate key {show_key(self.key)} {where} "
+            f"duplicate key {show_key(self.key, known)} {where} "
             "(JSON keeps only the last one; merge or rename them)"
         )
 
