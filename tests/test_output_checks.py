@@ -1103,9 +1103,7 @@ class SvgFileTests(unittest.TestCase):
             with self.subTest(markup=markup[:40]):
                 self.assertEqual(svg_problems(f"{self.SVG}{markup}</svg>"), [])
 
-    def test_the_vendored_sprite_and_the_generated_icon_pass(self):
-        sprite = support.ROOT / "assets" / "vendor" / "plyr-3.8.4" / "plyr.svg"
-        self.assertEqual(svg_problems(sprite.read_text(encoding="utf-8")), [])
+    def test_the_generated_icon_passes(self):
         palette = build.load_palette(support.ROOT / "assets")
         icon = gen_assets.favicon_svg(palette).decode("utf-8")
         self.assertEqual(svg_problems(icon), [])

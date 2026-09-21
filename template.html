@@ -15,13 +15,7 @@
   <meta property="og:image:width" content="{{ogImageWidth}}">
   <meta property="og:image:height" content="{{ogImageHeight}}">
   <link rel="icon" href="{{faviconPath}}" type="{{faviconType}}">
-  <!-- if:video.file -->
-  <link rel="stylesheet" href="/assets/vendor/plyr-3.8.4/plyr.css">
-  <!-- endif -->
   <link rel="stylesheet" href="/assets/app.css">
-  <!-- if:video.file -->
-  <script src="/assets/vendor/plyr-3.8.4/plyr.min.js" defer></script>
-  <!-- endif -->
   <script src="/assets/app.js" defer></script>
 </head>
 <body>
@@ -226,7 +220,7 @@
   <section class="section video" aria-labelledby="video-title">
     <div class="container video__inner" data-reveal>
       <h2 class="section__title" id="video-title">Видео</h2>
-      <div class="player" data-player>
+      <div class="player">
         <!-- if:video.width -->
         <div class="player__sizer" aria-hidden="true"><svg width="{{video.width}}" height="{{video.height}}"></svg></div>
         <div class="player__body">

@@ -118,7 +118,7 @@ class CiWorkflowTest(unittest.TestCase):
             r"  cancel-in-progress: \$\{\{ github\.ref != 'refs/heads/main' \}\}$",
         )
 
-    def test_hygiene_allows_only_vendored_library_files(self):
+    def test_hygiene_checks_every_tracked_file_for_media(self):
         hygiene = [block for block in self.runs if "ls-files" in block]
         self.assertEqual(len(hygiene), 1)
         block = hygiene[0]
@@ -127,12 +127,13 @@ class CiWorkflowTest(unittest.TestCase):
         for listing in listings:
             self.assertRegex(listing, r"^git -c core\.quotePath=false ls-files -z\b")
         self.assertIn("must not contain line breaks or carriage returns", block)
-        self.assertIn("tracked | grep -av '^assets/vendor/' | grep -aEi "
-                      "'\\.(png|jpe?g|webp|gif|avif|mp4|mov|webm|ico|svg)$'", block)
-        self.assertIn("tracked assets/vendor | grep -aEv "
-                      "'(\\.(js|css|svg|txt|woff2)|/\\.gitkeep)$'", block)
+        # the whole tree: no path given to the listing, no directory filtered out
+        self.assertIn("media=\"$(tracked | grep -aEi "
+                      "'\\.(png|jpe?g|webp|gif|avif|mp4|mov|webm|ico|svg)$' || true)\"", block)
+        self.assertNotRegex(block, r"grep\s+-[A-Za-z]*v")
+        self.assertNotIn("assets/vendor", self.raw)
         self.assertIn('tracked dist examples/media', block)
-        self.assertEqual(block.count("exit 1"), 4)
+        self.assertEqual(block.count("exit 1"), 3)
 
     def test_absolute_site_address_build_is_checked(self):
         blocks = [block for block in self.runs if "--base-url" in block]
