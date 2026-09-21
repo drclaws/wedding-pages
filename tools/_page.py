@@ -586,7 +586,7 @@ def build_pages(
     place_warnings: set[tuple[str, str]] = set()
     pages = []
     for number, invitation in enumerate(invitations, start=1):
-        label = invitation_label(number, invitation.get("token"))
+        label = invitation_label(number)
         page = _Page(site, invitation, settings, usage, warn, label, place_warnings)
         tree = page.tree()
         repeated = repeated_ids(tree)

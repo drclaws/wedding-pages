@@ -87,9 +87,10 @@ class ExternalResourceTests(FailingBuildTestCase):
             "<img src>: external URL 'https://cdn.example.invalid/…'",
             "every resource must be a local file",
         )
-        # the same problem on every page is reported once, tokens are shortened
+        # the same problem on every page is reported once, tokens are hidden
         self.assertIn("3 files:", result.stderr)
-        self.assertIn(f"first: i/{support.TOKEN_A[:4]}…/index.html line ", result.stderr)
+        self.assertIn("first: i/…/index.html line ", result.stderr)
+        self.assertNotIn(support.TOKEN_A[:4], result.stderr)
         self.assertIn("failed with 1 error(s)", result.stderr)
 
     def test_stylesheet_from_a_cdn(self):
@@ -683,7 +684,7 @@ class CheckOutputTreeTests(TempDirTestCase):
         (out / "i" / "event.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
         problems = self.problems(out)
         self.assertIn(
-            "i/Stra…: unexpected directory (only one directory per invitation is "
+            "i/…: unexpected directory (only one directory per invitation is "
             "allowed in i/)",
             problems,
         )
@@ -694,9 +695,12 @@ class CheckOutputTreeTests(TempDirTestCase):
         )
         for name in ("extra.html", "brunch.ics"):
             self.assertTrue(
-                any(p.startswith(f"i/EveT…/{name}: unexpected file") for p in problems), name
+                any(p.startswith(f"i/…/{name}: unexpected file") for p in problems), name
             )
         self.assertTrue(any(p.startswith("i/event.ics: unexpected file") for p in problems))
+        for problem in problems:
+            self.assertNotIn("Stra", problem)
+            self.assertNotIn(self.TOKEN[:3], problem)
 
     def test_no_calendar_file_among_the_assets(self):
         out = self.make_tree()
@@ -720,8 +724,8 @@ class CheckOutputTreeTests(TempDirTestCase):
         os.remove(out / "i" / self.TOKEN / "dinner.ics")
         problems = self.problems(out)
         self.assertIn("404.html: missing from the output", problems)
-        self.assertIn("i/EveT…/index.html: missing from the output", problems)
-        self.assertIn("i/EveT…/dinner.ics: missing from the output", problems)
+        self.assertIn("i/…/index.html: missing from the output", problems)
+        self.assertIn("i/…/dinner.ics: missing from the output", problems)
 
     def test_data_files_anywhere(self):
         out = self.make_tree()
@@ -729,7 +733,7 @@ class CheckOutputTreeTests(TempDirTestCase):
         (out / "assets" / "app.css.map").write_text("{}", encoding="utf-8")
         (out / "assets" / "UPPER.JSON").write_text("{}", encoding="utf-8")
         problems = self.problems(out)
-        self.assertIn("i/EveT…/guest.json: '.json' files must not be published", problems)
+        self.assertIn("i/…/guest.json: '.json' files must not be published", problems)
         self.assertIn("assets/app.css.map: '.map' files must not be published", problems)
         self.assertIn("assets/UPPER.JSON: '.json' files must not be published", problems)
 
@@ -751,9 +755,9 @@ class CheckOutputTreeTests(TempDirTestCase):
         )
         problems = self.problems(out)
         self.assertIn(
-            "i/EveT…/index.html line 1: template syntax left in the output: '{{'", problems
+            "i/…/index.html line 1: template syntax left in the output: '{{'", problems
         )
-        self.assertIn("i/EveT…/index.html line 2: HTML comment left in the output", problems)
+        self.assertIn("i/…/index.html line 2: HTML comment left in the output", problems)
 
     HASHED = "0123456789abcdef.png"
 

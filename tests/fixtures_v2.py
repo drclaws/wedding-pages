@@ -401,7 +401,8 @@ PENDING_SITE = {
 
 PENDING_INVITATIONS = [
     {
-        "token": "La3RLfA0TFqFpSnKW6s7Dw",
+        # a readable token with a random tail (`build.py token --prefix heron`)
+        "token": "heron-4tx9",
         "greeting": "Дорогая Сибил!",
         "form": "ty",
         "sections": {
@@ -412,7 +413,8 @@ PENDING_INVITATIONS = [
         },
     },
     {
-        "token": "X6dmISN6LtAhyCg5XyXHwA",
+        # a short readable token: counted in the summary of validate and build
+        "token": "quokka",
         "greeting": "Дорогие Уолтер и Венди!",
         "form": "vy",
         "sections": {"personal": {"note": "Очень ждём вас!"}},

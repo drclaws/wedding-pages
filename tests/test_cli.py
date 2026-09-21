@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import unittest
 from pathlib import Path
@@ -14,6 +16,7 @@ from tests.support import (
     build,
     invitations_data,
     run_cli,
+    run_main,
     site_data,
     write_data,
     write_json,
@@ -28,6 +31,75 @@ class TokenCommandTests(CliTestCase):
         token = result.stdout.strip()
         self.assertEqual(len(result.stdout.splitlines()), 1)
         self.assertIsNone(data_tools.check_token(token))
+        self.assertGreaterEqual(len(token), 20)  # fully random, as before
+
+    def test_prefix_prints_a_readable_token_with_a_random_tail(self):
+        result = run_cli(self.code, "token", "--prefix", "otter", cwd=self.work)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 1)
+        token = result.stdout.strip()
+        self.assertRegex(token, r"\Aotter-[23456789abcdefghjkmnpqrstuvwxyz]{4}\Z")
+        self.assertIsNone(data_tools.check_token(token))
+
+    def test_prefixed_tokens_differ(self):
+        tokens = {data_tools.generate_prefixed_token("otter") for _ in range(100)}
+        self.assertEqual(len(tokens), 100)
+        for token in tokens:
+            self.assertTrue(token.startswith("otter-"))
+            self.assertTrue(set(token[6:]) <= set(data_tools.TOKEN_SUFFIX_ALPHABET))
+            self.assertIsNone(data_tools.check_token(token))
+        # the tail has no characters that are easy to confuse
+        self.assertFalse(set("0o1li") & set(data_tools.TOKEN_SUFFIX_ALPHABET))
+
+    def test_prefix_with_the_longest_name(self):
+        name = "x" * data_tools.MAX_TOKEN_PREFIX_LENGTH
+        self.assertIsNone(data_tools.check_token(data_tools.generate_prefixed_token(name)))
+        with self.assertRaises(ValueError):
+            data_tools.generate_prefixed_token(name + "x")
+
+    def test_invalid_prefix_is_a_usage_error(self):
+        for name in ("", "otter king", "otter.king", "выдра", "otter/king", "x" * 300):
+            with self.subTest(name=name[:10]):
+                result = run_main(self.code, "token", "--prefix", name)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("--prefix", result.stderr)
+                if name:
+                    self.assertNotIn(name, result.stderr)
+
+
+class ShortTokenSummaryTests(CliTestCase):
+    SUMMARY = "tokens: 3 (2 shorter than 12 characters, see README 3.3)"
+
+    def test_summary_counts_the_short_tokens(self):
+        invitations = invitations_data()
+        invitations[0]["token"] = "zyzzyva"
+        invitations[1]["token"] = "kumquat_jx9"  # 11 characters
+        write_data(self.data, invitations=invitations)
+        for command, result in (("validate", self.run_validate()), ("build", self.run_build())):
+            with self.subTest(command=command):
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"{command}: {self.SUMMARY}\n", result.stdout)
+                self.assertEqual(result.stderr, "")
+                self.assertNotIn("zyz", result.stdout)
+                self.assertNotIn("kumq", result.stdout)
+
+    def test_no_summary_without_short_tokens(self):
+        invitations = invitations_data()
+        invitations[0]["token"] = "zyzzyva-kumquat"  # 15 characters
+        write_data(self.data, invitations=invitations)
+        for result in (self.run_validate(), self.run_build()):
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("tokens:", result.stdout)
+
+    def test_summary_helper(self):
+        summary = data_tools.short_token_summary
+        self.assertIsNone(summary([]))
+        self.assertIsNone(summary([{"token": "x" * 12}]))
+        self.assertEqual(
+            summary([{"token": "x" * 11}, {"token": "x" * 12}, {"token": "x" * 5}]),
+            self.SUMMARY,
+        )
 
 
 class ValidateCommandTests(CliTestCase):
@@ -55,7 +127,7 @@ class ValidateCommandTests(CliTestCase):
         result = self.run_validate()
         self.assertEqual(result.returncode, 1)
         self.assertIn("duplicate token", result.stderr)
-        self.assertIn("invitation #3 (Gosh…): field 'form' must be one of: ty, vy", result.stderr)
+        self.assertIn("invitation #3: field 'form' must be one of: ty, vy", result.stderr)
         self.assertIn("failed with 2 error(s)", result.stderr)
         self.assertNotIn("'tu'", result.stderr)
         self.assertNoPrivateData(result.stdout, result.stderr)
@@ -123,7 +195,7 @@ class ValidateCommandTests(CliTestCase):
         write_data(self.data, invitations=invitations)
         result = self.run_validate()
         self.assertEqual(result.returncode, 1)
-        self.assertIn("invitation #1 (ZZZZ…): 'token' is too long", result.stderr)
+        self.assertIn("invitation #1: 'token' is too long", result.stderr)
         self.assertNotIn("Z" * 10, result.stderr)
 
     def test_repeated_ids_of_the_markup_stop_the_build(self):
@@ -137,7 +209,7 @@ class ValidateCommandTests(CliTestCase):
             result = self.build_in_process()
         self.assertEqual(result.returncode, 1)
         self.assertIn(
-            "error: invitation #1 (EveT…): ids of the markup repeat on the page ('s-invite-w1')",
+            "error: invitation #1: ids of the markup repeat on the page ('s-invite-w1')",
             result.stderr,
         )
         self.assertFalse(self.out.exists())
@@ -150,7 +222,7 @@ class ValidateCommandTests(CliTestCase):
         result = self.run_validate()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "warning: invitation #2 (Karl…): field 'events.brunch.note' is set, but the event "
+            "warning: invitation #2: field 'events.brunch.note' is set, but the event "
             "is hidden for this invitation",
             result.stderr,
         )
@@ -168,7 +240,7 @@ class ValidateCommandTests(CliTestCase):
             "site.json: unknown field 'coupleName' (did you mean 'coupleNames'?)", result.stderr
         )
         # a key of an invitation may be somebody's name: it is not shown
-        self.assertIn("invitation #1 (EveT…): unknown field '<unknown key>'", result.stderr)
+        self.assertIn("invitation #1: unknown field '<unknown key>'", result.stderr)
         self.assertNotIn("surpriseField", result.stderr)
         self.assertNotIn("VALUE-MUST-NOT-LEAK", result.stderr)
 
@@ -278,7 +350,7 @@ class BuildCommandTests(CliTestCase):
         self.assertIn("missingField", result.stderr)
         self.assertIn("template.html line 2", result.stderr)
         self.assertIn("3 invitation(s):", result.stderr)
-        self.assertIn(f"first: invitation #1 ({support.TOKEN_A[:4]}…)", result.stderr)
+        self.assertIn("first: invitation #1\n", result.stderr)
         errors = [line for line in result.stderr.splitlines() if line.startswith("error:")]
         self.assertEqual(len(errors), 1, result.stderr)
         self.assertFalse(self.out.exists())
@@ -292,7 +364,7 @@ class BuildCommandTests(CliTestCase):
         )
         result = self.run_build()
         self.assertEqual(result.returncode, 1)
-        self.assertIn(f"error: invitation #2 ({support.TOKEN_B[:4]}…): template.html", result.stderr)
+        self.assertIn("error: invitation #2: template.html", result.stderr)
         self.assertNotIn("invitation(s):", result.stderr)
 
     def test_template_that_is_not_utf8(self):
@@ -500,7 +572,7 @@ class NoPersonalDataInLogsTests(CliTestCase):
         cases = []
 
         invitations = invitations_data()
-        invitations[0]["token"] = "short"
+        invitations[0]["token"] = "tiny"
         write_data(self.data, invitations=invitations)
         cases.append(self.run_build())
         cases.append(self.run_validate())
@@ -519,6 +591,95 @@ class NoPersonalDataInLogsTests(CliTestCase):
         for result in cases:
             self.assertEqual(result.returncode, 1, result.stdout)
             self.assertNoPrivateData(result.stdout, result.stderr)
+
+    #: Short readable tokens: no piece of three characters may reach the log.
+    SHORT_TOKENS = ("zyzzyva", "kumquat_jx")
+
+    def assertNoPieceOfTheTokens(self, *outputs: str) -> None:
+        for output in outputs:
+            # the random name of the temporary directory is not a token
+            output = output.replace(str(self.tmp), "<tmp>")
+            for token in self.SHORT_TOKENS:
+                for start in range(len(token) - 2):
+                    self.assertNotIn(token[start : start + 3], output, token)
+
+    def write_short_tokens(self, **changes) -> None:
+        invitations = invitations_data()
+        for invitation, token in zip(invitations, self.SHORT_TOKENS):
+            invitation["token"] = token
+            invitation.update(changes)
+        write_data(self.data, invitations=invitations)
+
+    def test_short_tokens_stay_out_of_the_log(self):
+        cases = []
+        # an error in the data of the guests with short tokens
+        self.write_short_tokens(form="tu")
+        cases += [self.run_validate(), self.run_build()]
+        for result in cases:
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("error: invitation #1: field 'form' must be one of", result.stderr)
+            self.assertIn("error: invitation #2: field 'form' must be one of", result.stderr)
+
+        # the same token in another letter case
+        invitations = invitations_data()
+        invitations[0]["token"] = "Zyzzyva"
+        invitations[2]["token"] = "zyzzyva"
+        write_data(self.data, invitations=invitations)
+        result = self.run_validate()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("error: invitation #3: duplicate token (same as invitation #1;", result.stderr)
+        cases.append(result)
+
+        # a problem of the finished output in the pages i/<token>/
+        self.write_short_tokens()
+        (self.code / "template.html").write_text(
+            support.TEMPLATE.replace(
+                "</body>", '<img src="https://cdn.example.invalid/x.png" alt="">\n</body>'
+            ),
+            encoding="utf-8",
+        )
+        result = self.run_build()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("3 files: ", result.stderr)
+        self.assertIn("first: i/…/index.html line ", result.stderr)
+        cases.append(result)
+
+        for result in cases:
+            self.assertNoPieceOfTheTokens(result.stdout, result.stderr)
+            self.assertNoPrivateData(result.stdout, result.stderr)
+
+    def test_paths_in_warnings_are_redacted(self):
+        # e.g. a leftover directory next to an --out inside a pages directory
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            build._cli_report().warn(
+                "could not remove dist/i/zyzzyva/.old; delete dist/I/kumquat_jx by hand"
+            )
+        self.assertEqual(
+            stderr.getvalue(),
+            "warning: could not remove dist/i/…/.old; delete dist/I/… by hand\n",
+        )
+
+    def test_output_directory_named_like_a_token_stays_out_of_the_log(self):
+        self.write_short_tokens()
+        self.out = self.work / "fresh" / "i" / "zyzzyva"
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"to {Path('fresh', 'i', '…', 'i')}{os.sep}", result.stdout)
+        self.assertIn(f"build: OK -> {Path('fresh', 'i', '…')} ", result.stdout)
+        self.assertNoPieceOfTheTokens(result.stdout, result.stderr)
+        result = run_cli(
+            self.code, "validate", "--data", str(self.data), "--media",
+            str(self.work / "media" / "i" / "kumquat_jx"), cwd=self.work,
+        )  # fmt: skip
+        self.assertNoPieceOfTheTokens(result.stdout, result.stderr)
+
+    def test_successful_runs_with_short_tokens_stay_clean(self):
+        self.write_short_tokens()
+        for result in (self.run_validate(), self.run_build()):
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("tokens: 3 (2 shorter than 12 characters", result.stdout)
+            self.assertNoPieceOfTheTokens(result.stdout, result.stderr)
 
     def test_successful_runs_stay_clean(self):
         site = site_data()
