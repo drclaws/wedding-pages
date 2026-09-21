@@ -13,7 +13,9 @@
   `json_type`, `format_size` and `check_media_name`.
 
 Messages never quote the data.  A key is shown only when it looks like a
-field name or an id (`is_plain_key`), an id only when it follows the id rule,
+field name or an id (`is_plain_key`); in strict mode (`known`), where a key
+may be somebody's name, only when it is one of the known names.  An id is
+shown only when it follows the id rule,
 and the name of an unknown placeholder never, because it is a part of the
 text.  Messages have the form `field '<path>' <problem>`; the caller puts the
 name of the file or the invitation in front.
@@ -56,19 +58,40 @@ def is_plain_key(key: Any) -> bool:
     )
 
 
-def show_key(key: Any) -> str:
-    """A key for a message: `'hotel'`, or `HIDDEN_KEY` for any other key."""
-    return f"'{key}'" if is_plain_key(key) else HIDDEN_KEY
+#: Shown in strict mode instead of a key that is not one of the known names.
+UNKNOWN_KEY = "<unknown key>"
 
 
-def format_path(parts: Iterable[PathPart]) -> str:
-    """`("sections", 3, "id")` -> `sections[3].id`; no parts -> `top level`."""
+def _key_text(key: Any, known: Collection[str] | None) -> str:
+    """The key itself, or the neutral label that stands for it."""
+    if known is None:
+        return key if is_plain_key(key) else HIDDEN_KEY
+    # strict mode: in data where a key may be somebody's name, only the names
+    # that the caller knows to be safe are ever shown
+    return key if is_plain_key(key) and key in known else UNKNOWN_KEY
+
+
+def show_key(key: Any, known: Collection[str] | None = None) -> str:
+    """A key for a message: `'hotel'`, or a neutral label for any other key.
+
+    With `known` (strict mode) a key is shown only when it is one of `known`,
+    whatever it looks like: `UNKNOWN_KEY` stands for every other key.
+    """
+    text = _key_text(key, known)
+    return f"'{text}'" if text == key else text
+
+
+def format_path(parts: Iterable[PathPart], known: Collection[str] | None = None) -> str:
+    """`("sections", 3, "id")` -> `sections[3].id`; no parts -> `top level`.
+
+    `known` switches on the strict mode of `show_key` for the keys.
+    """
     text = ""
     for part in parts:
         if isinstance(part, int) and not isinstance(part, bool):
             text += f"[{part}]"
         else:
-            name = part if is_plain_key(part) else HIDDEN_KEY
+            name = _key_text(part, known)
             text += f".{name}" if text else name
     return text or "top level"
 
