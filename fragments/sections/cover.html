@@ -1,5 +1,6 @@
-<!-- Обложка; ожидает в `.` секцию-обложку: domId, titleId, eyebrow, event (первостепенное событие гостя: startISO, dateText); из корня — coupleNames. Имена пары — единственный h1 страницы. Метки появления нет: у обложки своя анимация. -->
-<section class="cover" id="{{.domId}}" aria-labelledby="{{.titleId}}">
+<!-- Обложка; ожидает в `.` секцию-обложку: domId, titleId, eyebrow, event (первостепенное событие гостя: startISO, dateText), background (медиа-картинка или null), backgroundFocus (перечисление: какая часть фото остаётся видна); из корня — coupleNames. Имена пары — единственный h1 страницы. Метки появления нет: у обложки своя анимация. Фото — фон: alt пустой, подложка скрыта от диктора; не «ленивое» — это первый экран. Условие подложки стоит в строках разметки, а не отдельными строками: без фото обложка выводится ровно как прежде, без пустой строки. -->
+<section class="cover" id="{{.domId}}" aria-labelledby="{{.titleId}}"><!-- if:.background -->
+  <div class="cover__backdrop" aria-hidden="true"><img class="cover__photo cover__photo--{{.backgroundFocus}}" src="{{.background.src}}" alt="" fetchpriority="high"></div><!-- endif -->
   <div class="container cover__inner">
     <!-- if:.eyebrow -->
     <p class="section__subtitle cover__eyebrow">{{.eyebrow}}</p>

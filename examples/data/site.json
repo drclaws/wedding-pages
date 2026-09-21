@@ -7,7 +7,9 @@
   "sections": [
     {
       "id": "cover",
-      "type": "cover"
+      "type": "cover",
+      "background": "cover",
+      "backgroundFocus": "center"
     },
     {
       "id": "invite",
@@ -219,6 +221,10 @@
     ]
   },
   "media": {
+    "cover": {
+      "type": "image",
+      "file": "cover.png"
+    },
     "registry-1": {
       "type": "image",
       "file": "registry-1.png",

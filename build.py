@@ -997,6 +997,7 @@ def check_media(
 
     lowercase = {name.lower() for name in listing}
     found: dict[str, Path] = {}
+    sizes: dict[str, int] = {}
     for path, name in files:
         entry = listing.get(name)
         problem = None
@@ -1021,13 +1022,14 @@ def check_media(
                     )
         if problem is None:
             found[name] = Path(entry.path)
+            sizes[name] = size
         else:
             report.error(f"{where}: field '{path}': the file {problem}")
     if len(report.errors) > errors:
         return {}
 
     infos = {name: media_tools.inspect(source, name) for name, source in found.items()}
-    schema.check_media_files(site, infos, report, shown=usage.media, where=where)
+    schema.check_media_files(site, infos, report, shown=usage.media, where=where, sizes=sizes)
     if len(report.errors) > errors:
         return {}
     media: dict[str, MediaFile] = {}

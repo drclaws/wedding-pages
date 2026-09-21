@@ -4,8 +4,9 @@ Reads ``site.json`` (the data format 2) from the data directory and creates
 in the output directory exactly the files of its media registry
 (``media.<id>``), in the order of the registry:
 
-* a picture (``"type": "image"``)  -- ``file``: a photo, or a map when a
-  place uses the item as its ``directions``;
+* a picture (``"type": "image"``)  -- ``file``: a photo, a map when a
+  place uses the item as its ``directions``, or a dark landscape picture
+  when the cover shows the item as its ``background``;
 * a video (``"type": "video"``)    -- ``file``: a short test-pattern clip, and
   ``poster``: its first-frame picture;
 * ``thumb`` of either type         -- the picture of the tile.
@@ -24,7 +25,10 @@ are skipped with a warning and the exit code stays 0.
 
 Images are neutral gradient cards with a simple geometric pattern (frame,
 grid, centre cross, off-centre focal mark, index number), so cropping and
-``object-position`` are easy to see on the page.  Their colours come from the
+``object-position`` are easy to see on the page.  The background of the cover
+is darker and has more contrast (a light grid on a dark field, a mark in
+every corner and in the middle), so that the veil over it and the part of
+the picture that stays in view are easy to see.  Their colours come from the
 design tokens of ``assets/app.css``.  Files are overwritten on every run;
 files the registry does not name are left untouched.  A data set without a
 media registry creates nothing.
@@ -71,6 +75,7 @@ PHOTO_SIZE = (1600, 1067)  # 3:2 landscape
 PHOTO_PORTRAIT_SIZE = (1067, 1600)  # 2:3 portrait
 PORTRAIT_PHOTO_INDEX = 1  # the second photo of the registry is portrait
 DIRECTIONS_SIZE = (1200, 900)  # 4:3
+COVER_SIZE = (2400, 1600)  # 3:2 landscape, the long side of a real cover photo
 
 # Video parameters: by default a portrait clip, as filmed on a phone.  The
 # poster is generated separately with the size of the clip.
@@ -200,6 +205,30 @@ def draw_directions(width: int, height: int, palette: Palette) -> Canvas:
     return canvas
 
 
+def draw_cover(width: int, height: int, palette: Palette) -> Canvas:
+    """Cover background placeholder: a light grid on a dark field, a ring in
+    the middle and a numbered mark in every corner (the page crops the
+    picture; the marks show which part stays in view)."""
+    canvas = Canvas(width, height, palette.text)
+    canvas.vertical_gradient(palette.text_muted, palette.text)
+    unit = min(width, height)
+    canvas.grid(max(8, unit // 10), max(2, unit // 300), palette.surface)
+
+    cx, cy = width / 2, height / 2
+    canvas.ring(cx, cy, unit * 0.06, unit * 0.045, palette.bg)
+
+    size, margin = unit * 0.07, unit * 0.12
+    corners = ((margin, margin), (width - margin, margin),
+               (margin, height - margin), (width - margin, height - margin))  # fmt: skip
+    for number, (x, y) in enumerate(corners, start=1):
+        canvas.disc(x, y, size, palette.bg)
+        scale = max(1, unit // 120)
+        draw_digits(canvas, str(number), x - 2.5 * scale, y - 3.5 * scale, scale, palette.text)
+    # no frame: a light edge would look like a gap between the photo and the
+    # edge of the cover
+    return canvas
+
+
 def draw_poster(width: int, height: int, palette: Palette) -> Canvas:
     """Video poster placeholder of any proportion: dark gradient, grid, frame.
 
@@ -219,7 +248,7 @@ def draw_poster(width: int, height: int, palette: Palette) -> Canvas:
 
 
 class MediaItem(NamedTuple):
-    kind: str  # "photo" | "directions" | "thumb" | "poster" | "video"
+    kind: str  # "photo" | "directions" | "cover" | "thumb" | "poster" | "video"
     name: str
     field: str  # data field the name comes from, for messages
     size: Tuple[int, int]  # (width, height) in pixels
@@ -287,11 +316,26 @@ def _directions_ids(site: dict) -> set:
     return ids
 
 
+def _cover_ids(site: dict) -> set:
+    """Ids of the media items that a cover shows as its background."""
+    sections = site.get("sections", [])
+    if not isinstance(sections, list):
+        raise GenerationError("sections: expected an array")
+    return {
+        section["background"]
+        for section in sections
+        if isinstance(section, dict)
+        and section.get("type") == "cover"
+        and isinstance(section.get("background"), str)
+    }
+
+
 def plan_media(site: dict) -> List[MediaItem]:
     """List the files of the media registry of ``site`` (registry order, no
     duplicates), each with its role and size."""
     image_extensions = PNG_EXTENSIONS | FFMPEG_IMAGE_EXTENSIONS
     directions = _directions_ids(site)
+    covers = _cover_ids(site)
     items: List[MediaItem] = []
     photos = 0
 
@@ -304,6 +348,9 @@ def plan_media(site: dict) -> List[MediaItem]:
             if media_id in directions:
                 size = _item_size(item, field, DIRECTIONS_SIZE, even=False)
                 role, index = "directions", 0
+            elif media_id in covers:
+                size = _item_size(item, field, COVER_SIZE, even=False)
+                role, index = "cover", 0
             else:
                 default = PHOTO_PORTRAIT_SIZE if photos == PORTRAIT_PHOTO_INDEX else PHOTO_SIZE
                 size = _item_size(item, field, default, even=False)
@@ -356,6 +403,8 @@ def _draw_image(item: MediaItem, palette: Palette) -> Canvas:
         return draw_poster(*item.size, palette)
     if item.kind == "directions":
         return draw_directions(*item.size, palette)
+    if item.kind == "cover":
+        return draw_cover(*item.size, palette)
     raise ValueError(f"not an image: {item.kind}")
 
 

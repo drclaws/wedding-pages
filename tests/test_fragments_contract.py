@@ -43,7 +43,8 @@ ROOT_FIELDS = (
     "ogImageHeight", "primaryEvent", "sections",
 )
 SECTION_FIELDS = {
-    "cover": ("id", "type", "domId", "titleId", "eyebrow", "event"),
+    "cover": ("id", "type", "domId", "titleId", "eyebrow", "event", "background",
+              "backgroundFocus"),
     "custom": ("id", "type", "domId", "titleId", "title", "titleHidden", "align", "width",
                "note", "widgets"),
 }
@@ -84,6 +85,7 @@ ENUM_FIELDS = {
     "variant": ("body", "lead", "signature"),
     "layout": ("grid", "ribbon", "single"),
     "kind": ("primary", "regular"),
+    "backgroundFocus": _schema.COVER_FOCUSES,
 }
 
 #: Script hooks whose elements must never carry the reveal mark.
@@ -127,6 +129,9 @@ def hashed_url(file: str) -> str:
 
 
 MEDIA = {
+    # the photo behind the cover: no description of its own (the tree has the
+    # neutral label, the page an empty alt)
+    "cover": {"type": "image", "file": "cover.png", "size": (2400, 1600), "alt": "Фотография"},
     "registry-1": {"type": "image", "file": "registry-1.png", "size": (1200, 900),
                    "alt": "Дворец бракосочетания"},
     "venue-1": {"type": "image", "file": "venue-1.png", "size": (1200, 800),
@@ -197,7 +202,8 @@ EVENTS = {
 }
 
 SECTIONS = [
-    {"id": "cover", "type": "cover", "eyebrow": "Приглашение"},
+    {"id": "cover", "type": "cover", "eyebrow": "Приглашение", "background": "cover",
+     "backgroundFocus": "top"},
     {"id": "invite", "title": "{greeting}", "align": "center", "widgets": [
         {"type": "text", "variant": "lead", "text": {
             "ty": "Мы, {coupleNames}, приглашаем тебя на наш праздник.\n\n"
@@ -405,7 +411,10 @@ class PageTree:
                 result.append(node(
                     SECTION_FIELDS["cover"], id=section_id, type="cover", domId=dom_id,
                     titleId=join_id(dom_id, "title"), eyebrow=config["eyebrow"],
-                    event=self.event(self.primary, join_id(dom_id, f"e-{self.primary}"))))
+                    event=self.event(self.primary, join_id(dom_id, f"e-{self.primary}")),
+                    background=media_node(config["background"], self.url)
+                    if config.get("background") else None,
+                    backgroundFocus=config.get("backgroundFocus", "center")))
                 continue
             override = overrides.get(section_id, {})
             if not override.get("visible", config.get("visible", True)):
@@ -616,8 +625,16 @@ def widget_variants() -> list[Strict]:
 def section_variants() -> list[Strict]:
     sections = [
         node(SECTION_FIELDS["cover"], id="cover", type="cover", domId="s-cover",
-             titleId="s-cover--title", eyebrow=eyebrow, event=bare_event("e", True, True))
+             titleId="s-cover--title", eyebrow=eyebrow, event=bare_event("e", True, True),
+             background=None, backgroundFocus="center")
         for eyebrow in ("Приглашение", "")
+    ]
+    sections += [
+        node(SECTION_FIELDS["cover"], id="cover", type="cover", domId="s-cover",
+             titleId="s-cover--title", eyebrow="Приглашение", event=bare_event("e", True, True),
+             background=bare_media("image", sized=sized), backgroundFocus=focus)
+        for focus in ENUM_FIELDS["backgroundFocus"]
+        for sized in (True, False)
     ]
     widget = bare_widget("text", text="Текст", variant="body")
     for align in ENUM_FIELDS["align"]:
@@ -764,6 +781,8 @@ class FragmentContractTests(unittest.TestCase):
             self.assertIn(f"section--{align}", document)
         for width in ENUM_FIELDS["width"]:
             self.assertIn(f"container--{width}", document)
+        for focus in ENUM_FIELDS["backgroundFocus"]:
+            self.assertIn(f"cover__photo--{focus}", document)
 
     def test_the_events_widget_works_without_a_script(self):
         many = [bare_event("a", True, primary=True), bare_event("b", False)]
@@ -858,6 +877,51 @@ class FragmentContractTests(unittest.TestCase):
         self.assertIn("15 июня 2030, 16:00", off)
         for part in ("data-countdown", "text/calendar", "date__event"):
             self.assertNotIn(part, off)
+
+    def cover(self, background, focus: str = "center") -> str:
+        return self.render("sections", [node(
+            SECTION_FIELDS["cover"], id="cover", type="cover", domId="s-cover",
+            titleId="s-cover--title", eyebrow="", event=bare_event("e", True, True),
+            background=background, backgroundFocus=focus)])
+
+    def test_the_cover_without_a_photo_has_no_backdrop(self):
+        document = self.cover(None)
+        for part in ("cover__backdrop", "cover__photo", "<img"):
+            self.assertNotIn(part, document)
+        self.assertRegex(document, r'<section class="cover" [^>]*>\s*<div class="container '
+                                   r'cover__inner">')
+
+    def test_the_cover_photo_is_a_decorative_backdrop(self):
+        document = self.cover(bare_media("image"))
+        backdrop = re.search(r'<div class="cover__backdrop"[^>]*>(<img [^>]*>)</div>', document)
+        self.assertIsNotNone(backdrop)
+        self.assertIn('aria-hidden="true"', backdrop.group(0))
+        photo = backdrop.group(1)
+        self.assertIn('src="/assets/m/a.png"', photo)
+        # decoration: an empty alt, not the label of the media item
+        self.assertIn('alt=""', photo)
+        self.assertNotIn("Кадр", photo)
+        # the first screen: loaded first, never lazily; the cover gives the size
+        self.assertIn('fetchpriority="high"', photo)
+        for attribute in ("loading=", "width=", "height=", "style="):
+            self.assertNotIn(attribute, photo)
+        # the backdrop comes before the content of the cover (the styles rely on it)
+        self.assertLess(document.index("cover__backdrop"), document.index("cover__inner"))
+        self.assertEqual(Outline(document).headings, [1])
+
+    def test_the_focus_of_the_cover_photo_is_a_modifier(self):
+        for focus in _schema.COVER_FOCUSES:
+            with self.subTest(focus=focus):
+                document = self.cover(bare_media("image"), focus)
+                self.assertIn(f'class="cover__photo cover__photo--{focus}"', document)
+
+    def test_the_cover_photo_is_on_the_full_pages(self):
+        tree = page_tree(GUESTS[0])
+        page = render_page(tree)
+        cover = tree["sections"][0]
+        self.assertIn(f'<img class="cover__photo cover__photo--top" src="{cover["background"]["src"]}" '
+                      'alt="" fetchpriority="high">', page)
+        self.assertIn(cover["background"]["src"].lstrip("/"), published_files(tree))
 
     def test_the_video_tile(self):
         document = self.render("media", [bare_media("video")])
@@ -1038,6 +1102,8 @@ def nodes_of(tree: dict):
         yield "section", section
         if section["event"] is not None:
             yield from event(section["event"])
+        if section["background"] is not None:
+            yield "media", section["background"]
         for widget in section["widgets"]:
             yield f"widget:{widget['type']}", widget
             if widget["type"] == "date":

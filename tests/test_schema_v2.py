@@ -350,7 +350,11 @@ class SectionTests(SchemaTestCase):
         )
 
     def test_no_cover_is_a_warning(self):
-        report = run(lambda s, i: s["sections"].pop(0))
+        def change(site, invitations):
+            site["sections"].pop(0)
+            site["media"].pop("cover")  # else: a photo without a description
+
+        report = run(change)
         self.assertMessages(
             report,
             warnings=["site.json: field 'sections' has no 'cover' section: the page will have no main heading"],
@@ -359,6 +363,95 @@ class SectionTests(SchemaTestCase):
     def test_cover_fields(self):
         report = run(lambda s, i: s["sections"][0].update(title="Обложка"))
         self.assertOneError(report, "site.json: unknown field 'sections[0].title'")
+
+    def test_background_is_only_for_the_cover(self):
+        report = run(lambda s, i: s["sections"][1].update(background="cover"))
+        self.assertOneError(report, "site.json: unknown field 'sections[1].background'")
+
+
+class CoverPhotoTests(SchemaTestCase):
+    """`background` and `backgroundFocus` of the cover."""
+
+    @staticmethod
+    def cover(**fields):
+        def change(site, invitations):
+            site["sections"][0].update(fields)
+
+        return change
+
+    def test_background_refers_to_a_media_item(self):
+        report = run(self.cover(background="covr"))
+        self.assertOneError(
+            report,
+            "site.json: field 'sections[0].background' refers to an unknown media item 'covr' "
+            "(did you mean 'cover'?); known: cover, registry-1, venue-1, venue-2, venue-3, "
+            "venue-4, directions, story-1, …",
+        )
+
+    def test_background_is_an_id(self):
+        report = run(self.cover(background=["cover"]))
+        self.assertOneError(
+            report, "site.json: field 'sections[0].background' must be the id of a media item, got an array"
+        )
+        report = run(self.cover(background=""))
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("'sections[0].background' must be the id of a media item", report.errors[0])
+
+    def test_background_must_be_an_image(self):
+        report = run(self.cover(background="walk"))
+        self.assertOneError(
+            report, "site.json: field 'sections[0].background' must be an image, but 'walk' is a video"
+        )
+
+    def test_every_focus_is_accepted(self):
+        for focus in _schema.COVER_FOCUSES:
+            with self.subTest(focus=focus):
+                self.assertMessages(run(self.cover(backgroundFocus=focus)))
+
+    def test_focus_is_one_of_the_list(self):
+        for value in ("middle", "Top", "top left", 1, None):
+            with self.subTest(value=value):
+                report = run(self.cover(backgroundFocus=value))
+                self.assertOneError(
+                    report,
+                    "site.json: field 'sections[0].backgroundFocus' must be one of: center, top, "
+                    "bottom, left, right, top-left, top-right, bottom-left, bottom-right",
+                )
+
+    def test_focus_without_a_photo_is_a_warning(self):
+        def change(site, invitations):
+            site["sections"][0].pop("background")
+            site["media"].pop("cover")
+
+        report = run(change)
+        self.assertMessages(
+            report,
+            warnings=["site.json: field 'sections[0].backgroundFocus' has no effect without 'background'"],
+        )
+
+    def test_the_photo_needs_no_description(self):
+        # decoration: the page gives it an empty alt, no warning about it
+        self.assertNotIn("alt", F.SITE["media"]["cover"])
+        self.assertMessages(run())
+        # shown as a tile as well: the tile needs a description
+        report = run(lambda s, i: s["locations"]["manor"]["photos"].append("cover"))
+        self.assertMessages(
+            report,
+            warnings=[
+                "site.json: field 'media.cover.alt' is not set: the tile gets a neutral label "
+                "instead of a description"
+            ],
+        )
+        report = run(lambda s, i: s["sections"][6]["widgets"][0]["items"].append("cover"))
+        self.assertEqual(len(report.warnings), 1)
+        self.assertIn("'media.cover.alt' is not set", report.warnings[0])
+
+    def test_the_guest_cannot_change_the_photo(self):
+        report = run(lambda s, i: i[0].setdefault("sections", {}).update(cover={"background": "venue-1"}))
+        self.assertOneError(
+            report,
+            f"{GUEST_1}: field 'sections.cover' cannot be set: the cover is the same for everybody",
+        )
 
     def test_title_is_required(self):
         report = run(lambda s, i: s["sections"][3].pop("title"))
@@ -1157,6 +1250,22 @@ class MediaFileTests(SchemaTestCase):
             ],
         )
         self.assertEqual(report.warnings, [])
+
+    def test_a_large_cover_photo_is_a_warning(self):
+        limit = _schema.COVER_BACKGROUND_WARN_BYTES
+        report = F.Collector()
+        _schema.check_media_files(F.site(), F.MEDIA_INFO, report, sizes={"cover.png": limit})
+        self.assertMessages(report)
+        _schema.check_media_files(F.site(), F.MEDIA_INFO, report, sizes={"cover.png": limit + 1})
+        self.assertEqual(len(report.warnings), 1)
+        self.assertTrue(report.warnings[0].startswith("site.json: field 'media.cover.file' is 1.0 MiB;"))
+        self.assertIn("first screen: keep it under ~400 KB", report.warnings[0])
+        self.assertNotIn(".png", report.warnings[0])
+        # any other picture of that size is fine; so is an unknown size
+        report = F.Collector()
+        _schema.check_media_files(F.site(), F.MEDIA_INFO, report, sizes={"venue-1.png": limit * 5})
+        _schema.check_media_files(F.site(), F.MEDIA_INFO, report)
+        self.assertMessages(report)
 
     def test_only_shown_items(self):
         infos = dict(F.MEDIA_INFO)
