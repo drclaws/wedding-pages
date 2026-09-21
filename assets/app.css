@@ -1693,8 +1693,15 @@ a.btn[aria-disabled="true"] {
   margin-block-start: var(--space-2xs);
 }
 
+/* Размеры следуют уровням заголовков: событие (h3) крупнее своего места
+   (h4) — в отдельном виджете место само h3 и остаётся крупным. */
 .events__title {
   margin-block-end: 0;
+  font-size: var(--text-lg);
+}
+
+.event .venue__name {
+  font-size: var(--text-md);
 }
 
 .events__when {
