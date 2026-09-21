@@ -149,6 +149,11 @@ class EventsSourceTest(unittest.TestCase):
             self.assertIn(query, ("widget", "tablist"))
         self.assertNotRegex(self.module, r"\bdocument\.querySelector")
 
+    def test_runs_before_reveal_measures_the_page(self):
+        # hiding the cards shortens the page; reveal must measure the final layout
+        code = strip_comments(APP_JS.read_text(encoding="utf-8"))
+        self.assertLess(code.index("register('events'"), code.index("register('reveal'"))
+
     def test_the_module_has_no_text_of_its_own(self):
         # the labels «past» / «now» live in the markup; the module only toggles hidden
         self.assertNotRegex(self.module, r"[А-Яа-яЁё]")
