@@ -443,7 +443,7 @@ class MotionStylesTest(unittest.TestCase):
         rules = re.findall(r"([^{}]+)\{[^{}]*\bopacity:\s*0\b[^{}]*\}", self.section)
         self.assertTrue(rules)
         for selector in rules:
-            if selector.strip() == "from":
+            if selector.strip() in ("from", "to"):  # a keyframe runs only under a marker rule
                 continue
             for part in selector.split(","):
                 self.assertRegex(part.strip(), r"^html\.js\.[a-z-]+ ")
@@ -482,13 +482,13 @@ class MotionStylesTest(unittest.TestCase):
         self.assertNotRegex(cover, r"var\(--reveal-stagger\)\s*\*\s*\d")
 
     def test_only_opacity_and_vertical_transform_are_animated(self):
-        # keyframes change the opacity, a vertical offset or the progress of the cover
+        # keyframes change the opacity or a vertical offset
         keyframes = re.findall(r"@keyframes [\w-]+\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}", self.section)
-        self.assertEqual(len(keyframes), 2)  # cover-in, cover-progress
+        self.assertEqual(len(keyframes), 4)  # cover-in; the veil, the cover content, the bar
         for body in keyframes:
             for prop, value in re.findall(r"([\w-]+):\s*([^;]+);", body):
                 with self.subTest(prop=prop):
-                    self.assertIn(prop, ("opacity", "transform", "--cover-progress"))
+                    self.assertIn(prop, ("opacity", "transform"))
                     if prop == "transform":
                         self.assertRegex(value, r"^translateY\(")
         # transitions run on the same two properties
@@ -567,19 +567,50 @@ class CoverBarTest(unittest.TestCase):
         self.assertIn("view-timeline-inset: 0;", self.motion)
         self.assertIn("view-timeline-name: --cover;", self.motion)
         self.assertIn("timeline-scope: --cover;", self.motion)
-        self.assertRegex(self.motion, r"animation-range:\s*exit-crossing 0%\s*"
-                                      r"exit-crossing calc\(100% - var\(--cover-bar-block-size\)\);")
+        self.assertIn("--cover-span: calc(100% - var(--cover-bar-block-size));", self.motion)
+
+    def test_the_css_driver_animates_the_opacity_of_three_elements(self):
+        # no inherited property animated on the whole subtree of the cover:
+        # each element fades by the timeline on its own part of the course
+        driver = self.motion[self.motion.index("@supports"):self.motion.index("@media")]
+        self.assertNotIn("--cover-progress", driver)
+        self.assertNotRegex(self.motion, r"@keyframes [\w-]+\s*\{[^@]*--cover-progress:")
+        span = "exit-crossing 0% exit-crossing var(--cover-span)"
+        expected = {
+            r"\.cover__backdrop::after": ("cover-veil", span),
+            r"\.cover__inner": ("cover-fade",
+                                "exit-crossing 0% exit-crossing calc(var(--cover-span) * var(--cover-fade-end))"),
+            r"\.cover-bar\[data-cover-bar\]": ("cover-bar-in",
+                                            "exit-crossing calc(var(--cover-span) * var(--cover-bar-fade-start)) "
+                                            "exit-crossing var(--cover-span)"),
+        }
+        for selector, (name, animation_range) in expected.items():
+            with self.subTest(animation=name):
+                rule = re.search(r"html\.js\.cover-bar-on %s \{([^}]*)\}" % selector, driver).group(1)
+                self.assertIn("animation: %s linear both;" % name, rule)
+                self.assertIn("animation-timeline: --cover;", rule)
+                found = re.search(r"animation-range:\s*([^;]+);", rule).group(1)
+                self.assertEqual(" ".join(found.split()), animation_range)
+        keyframes = dict(re.findall(r"@keyframes ([\w-]+) \{\s*(from \{[^}]*\}\s*to \{[^}]*\})", self.motion))
+        self.assertEqual(" ".join(keyframes["cover-veil"].split()),
+                         "from { opacity: var(--cover-veil-opacity); } to { opacity: 1; }")
+        self.assertEqual(" ".join(keyframes["cover-fade"].split()), "from { opacity: 1; } to { opacity: 0; }")
+        self.assertEqual(" ".join(keyframes["cover-bar-in"].split()), "from { opacity: 0; } to { opacity: 1; }")
         self.assertRegex(self.motion, r'@property --cover-progress \{\s*syntax: "<number>";\s*'
                                       r"inherits: true;\s*initial-value: 0;\s*\}")
 
     def test_reduced_motion_steps_and_print_unfolds(self):
         reduced = re.findall(r"@media \(prefers-reduced-motion: reduce\)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}",
                              self.motion)
-        self.assertTrue(any("animation-timing-function: steps(1, jump-end);" in block for block in reduced))
+        three = (r"html\.js\.cover-bar-on \.cover__backdrop::after,\s*html\.js\.cover-bar-on \.cover__inner,\s*"
+                 r"html\.js\.cover-bar-on \.cover-bar\[data-cover-bar\] \{")
+        # with reduced motion all three run over the whole course and step at its end
+        self.assertTrue(any(re.search(three + r"\s*animation-timing-function: steps\(1, jump-end\);\s*"
+                                      r"animation-range: exit-crossing 0% exit-crossing var\(--cover-span\);",
+                                      block) for block in reduced))
         printed = re.findall(r"@media print\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}", self.motion)
         self.assertEqual(len(printed), 1)
-        self.assertRegex(printed[0], r"html\.js\.cover-bar-on \.cover,\s*"
-                                     r"html\.js\.cover-bar-on \.cover-bar\[data-cover-bar\] \{\s*animation: none;")
+        self.assertRegex(printed[0], three + r"\s*animation: none;")
         self.assertRegex(printed[0], r"html\.js\.cover-bar-on \.cover__inner \{\s*opacity: 1;")
         # the module counts in steps too
         self.assertIn("value = value >= 1 ? 1 : 0;", self.function("progress"))

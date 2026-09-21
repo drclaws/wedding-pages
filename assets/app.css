@@ -2132,18 +2132,21 @@ html.js.cover-animate .cover__inner > :nth-child(3) { --cover-index: 2; }
 html.js.cover-animate .cover__inner > :nth-child(4) { --cover-index: 3; }
 
 /* --- Сворачивание обложки в верхнюю панель ---------------------------------
-   Прогресс --cover-progress: 0 — обложка на месте, 1 — от неё осталась полоса
-   высотой панели. Его читают три правила: вуаль фото на обложке сгущается до
-   полной, содержимое обложки гаснет, панель проявляется. Меняется только
-   opacity, раскладка стоит на месте.
-   Прогресс задаёт один из двух «приводов», правила-потребители общие:
-     - CSS — анимация зарегистрированного свойства по временной шкале
-       прокрутки обложки (view-timeline; панели, соседке обложки, шкала видна
-       через timeline-scope);
+   Прогресс сворачивания: 0 — обложка на месте, 1 — от неё осталась полоса
+   высотой панели. По нему вуаль фото на обложке сгущается до полной,
+   содержимое обложки гаснет к доле --cover-fade-end, панель проявляется
+   начиная с доли --cover-bar-fade-start. Меняется только opacity, раскладка
+   стоит на месте.
+   Прогресс задаёт один из двух «приводов» с одинаковым результатом:
+     - CSS — там, где есть временные шкалы прокрутки: три анимации opacity
+       прямо по шкале обложки (view-timeline; панели, соседке обложки, шкала
+       видна через timeline-scope). Каждая идёт на своём отрезке шкалы, а не
+       через общее наследуемое свойство — так браузеру не нужно каждый кадр
+       пересчитывать стили всего поддерева обложки;
      - скрипт (модуль coverBar) — там, где таких шкал нет: считает прогресс по
-       положению обложки раз в кадр и пишет его через CSSOM на обложку и
-       панель (не на <html>: иначе каждый кадр пересчитывались бы стили всей
-       страницы).
+       положению обложки раз в кадр и пишет --cover-progress через CSSOM на
+       обложку и панель (не на <html>: иначе каждый кадр пересчитывались бы
+       стили всей страницы); его читают три правила ниже.
    Всё — под маркером cover-bar-on: его ставит модуль coverBar, без скрипта
    обложка неподвижна, панели нет. Анимация cover-in (дети .cover__inner) и
    гашение самого .cover__inner перемножаются и не спорят. */
@@ -2153,6 +2156,8 @@ html.js.cover-animate .cover__inner > :nth-child(4) { --cover-index: 3; }
   initial-value: 0;
 }
 
+/* Привод «скрипт»: прозрачность из --cover-progress. На пути CSS свойство
+   остаётся 0, а значения задают анимации ниже (анимация сильнее правила). */
 html.js.cover-bar-on .cover__backdrop::after {
   opacity: calc(var(--cover-veil-opacity) + (1 - var(--cover-veil-opacity)) * var(--cover-progress));
 }
@@ -2165,14 +2170,25 @@ html.js.cover-bar-on .cover-bar[data-cover-bar] {
   opacity: clamp(0, (var(--cover-progress) - var(--cover-bar-fade-start)) / (1 - var(--cover-bar-fade-start)), 1);
 }
 
-@keyframes cover-progress {
-  from { --cover-progress: 0; }
-  to { --cover-progress: 1; }
+@keyframes cover-veil {
+  from { opacity: var(--cover-veil-opacity); }
+  to { opacity: 1; }
 }
 
-/* Привод CSS. Диапазон — от «верх обложки у верха окна» до «от обложки
-   осталась полоса высотой панели»: exit-crossing меряет высоту самой обложки,
-   а не окна, поэтому верен и для обложки выше окна (ландшафт, крупный шрифт).
+@keyframes cover-fade {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes cover-bar-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Привод CSS. Весь ход — от «верх обложки у верха окна» до «от обложки
+   осталась полоса высотой панели» (--cover-span): exit-crossing меряет высоту
+   самой обложки, а не окна, поэтому верен и для обложки выше окна (ландшафт,
+   крупный шрифт). Доли хореографии — отрезки этого хода.
    То же условие @supports повторено в модуле coverBar: он выбирает привод. */
 @supports (animation-timeline: --a) and (timeline-scope: --a) {
   html.js.cover-bar-on .page {
@@ -2186,13 +2202,28 @@ html.js.cover-bar-on .cover-bar[data-cover-bar] {
     view-timeline-inset: 0;
   }
 
-  html.js.cover-bar-on .cover,
+  html.js.cover-bar-on .page {
+    --cover-span: calc(100% - var(--cover-bar-block-size));
+  }
+
+  html.js.cover-bar-on .cover__backdrop::after {
+    animation: cover-veil linear both;
+    animation-timeline: --cover;
+    animation-range: exit-crossing 0% exit-crossing var(--cover-span);
+  }
+
+  html.js.cover-bar-on .cover__inner {
+    animation: cover-fade linear both;
+    animation-timeline: --cover;
+    animation-range: exit-crossing 0% exit-crossing calc(var(--cover-span) * var(--cover-fade-end));
+  }
+
   html.js.cover-bar-on .cover-bar[data-cover-bar] {
-    animation: cover-progress linear both;
+    animation: cover-bar-in linear both;
     animation-timeline: --cover;
     animation-range:
-      exit-crossing 0%
-      exit-crossing calc(100% - var(--cover-bar-block-size));
+      exit-crossing calc(var(--cover-span) * var(--cover-bar-fade-start))
+      exit-crossing var(--cover-span);
   }
 }
 
@@ -2210,11 +2241,13 @@ html.js.cover-bar-on .cover-bar[data-cover-bar] {
   }
 
   /* Сворачивание — ступенькой: фото и текст обложки от прокрутки не меняются,
-     панель появляется сразу, когда обложка ушла (прогресс 0 или 1; в скрипте
-     — то же самое). */
-  html.js.cover-bar-on .cover,
+     панель появляется сразу, когда обложка ушла. Все три анимации — на весь
+     ход, со ступенькой в конце (в скрипте — прогресс 0 или 1). */
+  html.js.cover-bar-on .cover__backdrop::after,
+  html.js.cover-bar-on .cover__inner,
   html.js.cover-bar-on .cover-bar[data-cover-bar] {
     animation-timing-function: steps(1, jump-end);
+    animation-range: exit-crossing 0% exit-crossing var(--cover-span);
   }
 }
 
@@ -2231,7 +2264,8 @@ html.js.cover-bar-on .cover-bar[data-cover-bar] {
   }
 
   /* Печать с середины страницы: обложка — как без скрипта, не свёрнутая. */
-  html.js.cover-bar-on .cover,
+  html.js.cover-bar-on .cover__backdrop::after,
+  html.js.cover-bar-on .cover__inner,
   html.js.cover-bar-on .cover-bar[data-cover-bar] {
     animation: none;
   }
