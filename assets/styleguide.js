@@ -30,7 +30,7 @@
     ['Высота экрана, обложка, предел медиа', /^--(viewport-|cover-height-|cover-min-|media-max-)/],
     ['Движение', /^--(duration-|ease-|reveal-|cover-distance|hover-scale)/],
     ['Доступность и слои', /^--(tap-|z-|safe-inset-)/],
-    ['Токены компонентов', /^--(player-|icon-|countdown-cell|schedule-|divider-|card-|btn-)/]
+    ['Токены компонентов', /^--(media-play-|icon-|countdown-cell|schedule-|divider-|card-|btn-)/]
   ];
   var OTHER = 'Прочее';
 

@@ -155,7 +155,7 @@
         <!-- if:venue.photos -->
         <ul class="gallery gallery--ribbon venue__gallery" role="list" data-gallery data-reveal>
           <!-- each:venue.photos -->
-          <li class="gallery__item"><a class="gallery__link" href="{{.src}}" data-lightbox><img src="{{.src}}" alt="Фотография места проведения" loading="lazy" decoding="async"></a></li>
+          <li class="gallery__item"><a class="gallery__link media-tile" href="{{.src}}" data-lightbox><img src="{{.src}}" alt="Фотография места проведения" loading="lazy" decoding="async"></a></li>
           <!-- endeach -->
         </ul>
         <!-- endif -->
@@ -220,24 +220,14 @@
   <section class="section video" aria-labelledby="video-title">
     <div class="container video__inner" data-reveal>
       <h2 class="section__title" id="video-title">Видео</h2>
-      <div class="player">
+      <ul class="gallery gallery--single" role="list">
         <!-- if:video.width -->
-        <div class="player__sizer" aria-hidden="true"><svg width="{{video.width}}" height="{{video.height}}"></svg></div>
-        <div class="player__body">
-          <video class="player__media" controls playsinline preload="none" poster="{{video.posterSrc}}" width="{{video.width}}" height="{{video.height}}">
-            <source src="{{video.src}}">
-          </video>
-        </div>
+        <li class="gallery__item"><svg class="gallery__sizer" width="{{video.width}}" height="{{video.height}}" viewBox="0 0 {{video.width}} {{video.height}}" aria-hidden="true" focusable="false"></svg><a class="gallery__link media-tile media-tile--video" href="{{video.src}}" type="video/mp4" data-lightbox data-media="video" data-media-poster="{{video.posterSrc}}" data-media-ratio="{{video.width}} / {{video.height}}" aria-label="Видео"><img src="{{video.posterSrc}}" alt="" width="{{video.width}}" height="{{video.height}}" loading="lazy" decoding="async"><span class="media-tile__badge" aria-hidden="true"><svg class="media-tile__icon" viewBox="0 0 24 24" focusable="false"><path d="M8 5v14l11-7z"/></svg></span></a></li>
         <!-- endif -->
         <!-- if:!video.width -->
-        <div class="player__sizer player__sizer--default" aria-hidden="true"><svg width="16" height="9"></svg></div>
-        <div class="player__body">
-          <video class="player__media" controls playsinline preload="none" poster="{{video.posterSrc}}">
-            <source src="{{video.src}}">
-          </video>
-        </div>
+        <li class="gallery__item"><span class="gallery__sizer gallery__sizer--default" aria-hidden="true"></span><a class="gallery__link media-tile media-tile--video" href="{{video.src}}" type="video/mp4" data-lightbox data-media="video" data-media-poster="{{video.posterSrc}}" aria-label="Видео"><img src="{{video.posterSrc}}" alt="" loading="lazy" decoding="async"><span class="media-tile__badge" aria-hidden="true"><svg class="media-tile__icon" viewBox="0 0 24 24" focusable="false"><path d="M8 5v14l11-7z"/></svg></span></a></li>
         <!-- endif -->
-      </div>
+      </ul>
     </div>
   </section>
   <!-- endif -->

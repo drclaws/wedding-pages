@@ -15,7 +15,7 @@ names inside the media directory); the extension selects the format.
 video (``.mp4``) is a short portrait test-pattern clip with a sine tone and
 also needs ``ffmpeg``; if ``ffmpeg`` is not in ``PATH`` the video is skipped
 with a warning and the exit code stays 0.  The poster has the proportions of
-the video.
+the video and no play mark: the page puts its own over it.
 
 Images are neutral gradient cards with a simple geometric pattern (frame,
 grid, centre cross, off-centre focal mark, index number), so cropping and
@@ -54,7 +54,6 @@ if str(REPO_ROOT) not in sys.path:  # run as a script: `build` and `tools` live 
 from build import check_media_name, video_dimension  # noqa: E402
 from tools._png import PNG_SIGNATURE, Canvas, encode_png, write_png  # noqa: E402,F401
 from tools._tokens import Palette, TokenError, load_palette  # noqa: E402
-from tools.gen_assets import poster_canvas  # noqa: E402
 
 DEFAULT_DATA_DIR = REPO_ROOT / "examples" / "data"
 DEFAULT_OUT_DIR = REPO_ROOT / "examples" / "media"
@@ -198,6 +197,19 @@ def draw_directions(width: int, height: int, palette: Palette) -> Canvas:
     return canvas
 
 
+def draw_poster(width: int, height: int, palette: Palette) -> Canvas:
+    """Video poster placeholder of any proportion: dark gradient, grid, frame.
+
+    No play mark of its own: the page draws one over the poster.
+    """
+    canvas = Canvas(width, height, palette.text)
+    canvas.vertical_gradient(palette.text_muted, palette.text)
+    unit = min(width, height)
+    canvas.grid(max(8, unit // 6), max(1, unit // 360), palette.text)
+    canvas.frame(max(4, unit // 60), palette.line)
+    return canvas
+
+
 # --------------------------------------------------------------------------
 # Data -> list of files
 # --------------------------------------------------------------------------
@@ -331,7 +343,7 @@ def _draw_image(item: MediaItem, palette: Palette, poster_size: Tuple[int, int])
         width, height = PHOTO_PORTRAIT_SIZE if portrait else PHOTO_SIZE
         return draw_photo(width, height, item.index, palette)
     if item.kind == "poster":
-        return poster_canvas(*poster_size, palette)
+        return draw_poster(*poster_size, palette)
     if item.kind == "directions":
         return draw_directions(*DIRECTIONS_SIZE, palette)
     raise ValueError(f"not an image: {item.kind}")

@@ -488,17 +488,29 @@
 
 
   /* ==========================================================================
-     Модуль gallery — лайтбокс для ссылок a[data-lightbox]
+     Модуль gallery — окно просмотра фото и видео для ссылок a[data-lightbox]
      --------------------------------------------------------------------------
-     Ссылка ведёт на файл изображения и без скрипта открывает его как обычно.
-     Ссылки внутри одного [data-gallery] листаются как группа; ссылка вне
-     [data-gallery] — одиночное изображение без стрелок и счётчика.
+     Ссылка-плитка ведёт на файл и без скрипта открывает его как обычно:
+     картинку браузер показывает, ролик играет своим плеером. Ссылки внутри
+     одного [data-gallery] листаются как группа; ссылка вне [data-gallery] —
+     одиночный элемент без стрелок и счётчика.
+
+     Ролик помечен на плитке: data-media="video" (href — файл ролика),
+     data-media-poster — постер, data-media-ratio — пропорция кадра «w / h»
+     до загрузки метаданных.
 
      Окно — нативный <dialog>, открытый через showModal(): верхний слой,
      фокус внутри окна и закрытие по Esc (и кнопкой «Назад» на Android) даёт
      браузер; история не меняется. Нет showModal — модуль не включается.
      Окно создаётся при первом открытии; при любой ошибке модуль отключается,
      а переход по ссылке не отменяется.
+
+     Ролик играет в одном на всё окно <video controls> с нативной панелью
+     браузера: одновременно звучит не больше одного ролика. Запуск — play()
+     синхронно в обработчике нажатия на плитку (жест пользователя: без него
+     iOS и встроенные браузеры не дают звука). К ролику, до которого
+     долистали, файл не запрашивается и сам он не стартует; при уходе с него
+     и при закрытии окна — пауза и обрыв загрузки.
      ========================================================================== */
 
   var SVG_NS = 'http://www.w3.org/2000/svg';
@@ -508,19 +520,29 @@
     next: 'M9 5 16 12 9 19'
   };
   var LIGHTBOX_TEXT = {
-    gallery: 'Просмотр фотографий',
-    single: 'Просмотр изображения',
+    photos: 'Просмотр фотографий',
+    mixed: 'Просмотр фото и видео',
+    image: 'Просмотр изображения',
+    video: 'Просмотр видео',
     close: 'Закрыть',
     prev: 'Предыдущая фотография',
     next: 'Следующая фотография',
+    prevItem: 'Назад',
+    nextItem: 'Вперёд',
+    itemImage: 'Фотография',
+    itemVideo: 'Видео',
     loading: 'Загрузка…',
-    error: 'Не удалось загрузить изображение.'
+    error: 'Не удалось загрузить изображение.',
+    videoError: 'Не удалось загрузить видео.'
   };
   var SWIPE_MIN = 48;         /* px по горизонтали, чтобы жест стал листанием */
   var SWIPE_RATIO = 1.5;      /* горизонталь должна преобладать над вертикалью */
   var SWIPE_CLICK_MS = 400;   /* клик сразу после жеста окно не закрывает */
   var LOADING_NOTE_MS = 300;  /* «Загрузка…» — только если файл не из кэша */
   var ZOOMED_SCALE = 1.01;    /* страница увеличена щипком */
+  var HAVE_NOTHING = 0;       /* readyState ролика, о котором ещё ничего не загружено */
+  /* Пропорция кадра из разметки: «w / h», целые больше нуля. */
+  var RATIO_RE = /^\s*[1-9]\d*\s*\/\s*[1-9]\d*\s*$/;
 
   function createElement(tag, className) {
     var node = document.createElement(tag);
@@ -564,8 +586,27 @@
     }
   }
 
+  /* Элемент ленты по ссылке-плитке. label — подпись элемента в окне: alt
+     картинки плитки, у ролика — доступное имя самой плитки. */
+  function readItem(link) {
+    var thumb = link.getElementsByTagName('img')[0];
+    var alt = thumb ? thumb.alt : '';
+    if (link.getAttribute('data-media') !== 'video') {
+      return { href: link.getAttribute('href'), video: false, label: alt };
+    }
+    var ratio = link.getAttribute('data-media-ratio') || '';
+    return {
+      href: link.getAttribute('href'),
+      video: true,
+      poster: link.getAttribute('data-media-poster') || '',
+      ratio: RATIO_RE.test(ratio) ? ratio.trim() : '',
+      label: link.getAttribute('aria-label') || alt || LIGHTBOX_TEXT.itemVideo
+    };
+  }
+
   register('gallery', function (doc) {
-    if (!doc.querySelector('a[data-lightbox]')) {
+    var links = doc.querySelectorAll('a[data-lightbox]');
+    if (!links.length) {
       return;
     }
     doc.addEventListener('focusin', revealInRibbon);
@@ -574,9 +615,14 @@
     if (typeof Dialog !== 'function' || typeof Dialog.prototype.showModal !== 'function') {
       return; /* ссылки остаются обычными ссылками на файлы */
     }
+    /* Отсюда ссылка открывает окно — это объявляется экранному диктору. Без
+       скрипта окна нет, нет и атрибута. */
+    Array.prototype.forEach.call(links, function (link) {
+      link.setAttribute('aria-haspopup', 'dialog');
+    });
 
     var ui = null;      /* элементы окна; создаются при первом открытии */
-    var items = [];     /* [{ href, alt }] открытой группы */
+    var items = [];     /* readItem() каждой ссылки открытой группы */
     var index = 0;
     var opener = null;  /* ссылка, которой вернётся фокус */
     var loadingTimer = 0;
@@ -603,9 +649,30 @@
       }
     }
 
+    /* Ролик в окне больше не нужен: остановить и оборвать загрузку. Без
+       источника load() сбрасывает элемент, и браузер закрывает соединение. */
+    function releaseVideo() {
+      var video = ui && ui.video;
+      if (!video || !video.getAttribute('src')) {
+        return;
+      }
+      try {
+        video.pause();
+      } catch (ignored) { /* уже остановлен */ }
+      video.removeAttribute('src');
+      video.removeAttribute('poster');
+      try {
+        video.load();
+      } catch (ignored) { /* источника нет — сбрасывать нечего */ }
+    }
+
     function fail(error) {
       doc.removeEventListener('click', onLinkClick);
+      if (ui) {
+        doc.removeEventListener('keydown', ui.onKey);
+      }
       try {
+        releaseVideo();
         if (ui && ui.dialog.open) {
           ui.dialog.close();
         }
@@ -632,29 +699,54 @@
       }
     }
 
+    /* Соседа подгружает картинка: фото целиком, у ролика — только постер.
+       Файл ролика заранее не запрашивается никогда. */
     function preload(at) {
-      if (at < 0 || at >= items.length || preloaded.indexOf(items[at].href) !== -1) {
+      var item = items[at];
+      var src = item && (item.video ? item.poster : item.href);
+      if (!src || preloaded.indexOf(src) !== -1) {
         return;
       }
-      preloaded.push(items[at].href);
+      preloaded.push(src);
       var image = new window.Image();
       image.decoding = 'async';
-      image.src = items[at].href;
+      image.src = src;
     }
 
-    function show(at) {
-      index = Math.max(0, Math.min(at, items.length - 1));
-      var item = items[index];
-      clearTimeout(loadingTimer);
-      ui.dialog.classList.remove('is-error');
+    /* Отказ браузера (нет жеста, политика встроенного браузера) — не ошибка:
+       ролик остаётся на постере, запустить его можно с панели. */
+    function startVideo() {
+      var promise = ui.video.play();
+      if (promise && typeof promise.then === 'function') {
+        promise.then(null, function () { /* не запустился — ждёт нажатия */ });
+      }
+    }
+
+    function showVideo(item, autoplay) {
+      var video = ui.video;
+      ui.image.removeAttribute('src');
+      ui.image.alt = '';
+      if (item.ratio) {
+        video.style.setProperty('--lightbox-ratio', item.ratio);
+      } else {
+        video.style.removeProperty('--lightbox-ratio');
+      }
+      video.setAttribute('aria-label', item.label);
+      if (item.poster) {
+        video.setAttribute('poster', item.poster);
+      }
+      video.setAttribute('src', item.href);
+      if (autoplay) {
+        startVideo();
+      }
+      preload(index + 1);
+      preload(index - 1);
+    }
+
+    function showImage(item) {
       ui.dialog.classList.add('is-loading');
-      setText(ui.status, '');
-      ui.image.alt = item.alt;
+      ui.image.alt = item.label;
       ui.image.setAttribute('src', item.href);
-      setText(ui.count, (index + 1) + ' / ' + items.length);
-      setText(ui.live, 'Фотография ' + (index + 1) + ' из ' + items.length);
-      setDisabled(ui.prev, index === 0);
-      setDisabled(ui.next, index === items.length - 1);
       if (ui.image.complete && ui.image.naturalWidth > 0) {
         onImageLoad();
       } else {
@@ -666,14 +758,38 @@
       }
     }
 
+    /* autoplay — только когда show() вызван из обработчика нажатия на плитку. */
+    function show(at, autoplay) {
+      index = Math.max(0, Math.min(at, items.length - 1));
+      var item = items[index];
+      clearTimeout(loadingTimer);
+      releaseVideo();
+      ui.dialog.classList.remove('is-error', 'is-loading');
+      ui.dialog.classList.toggle('is-video', item.video);
+      setText(ui.status, '');
+      setText(ui.count, (index + 1) + ' / ' + items.length);
+      setText(ui.live, (item.video ? LIGHTBOX_TEXT.itemVideo : LIGHTBOX_TEXT.itemImage) +
+        ' ' + (index + 1) + ' из ' + items.length);
+      setDisabled(ui.prev, index === 0);
+      setDisabled(ui.next, index === items.length - 1);
+      if (item.video) {
+        showVideo(item, autoplay);
+      } else {
+        showImage(item);
+      }
+    }
+
     function step(delta) {
       var at = index + delta;
       if (items.length > 1 && at >= 0 && at < items.length) {
-        show(at);
+        show(at, false);
       }
     }
 
     function onImageLoad() {
+      if (!ui.image.getAttribute('src')) {
+        return; /* показан ролик */
+      }
       clearTimeout(loadingTimer);
       ui.dialog.classList.remove('is-loading');
       setText(ui.status, '');
@@ -682,10 +798,34 @@
     }
 
     function onImageError() {
+      if (!ui.image.getAttribute('src')) {
+        return;
+      }
       clearTimeout(loadingTimer);
       ui.dialog.classList.remove('is-loading');
       ui.dialog.classList.add('is-error');
       setText(ui.status, LIGHTBOX_TEXT.error);
+    }
+
+    function onVideoError() {
+      if (!ui.video.getAttribute('src')) {
+        return; /* источник сняли сами (releaseVideo) */
+      }
+      ui.dialog.classList.add('is-error');
+      setText(ui.status, LIGHTBOX_TEXT.videoError);
+    }
+
+    /* Большая кнопка ▶ по центру кадра и щелчок по кадру в Chrome ничего не
+       делают, пока о ролике ничего не загружено (preload="none"); кнопка ▶
+       панели и пробел работают. Запуск по нажатию на кадр — только в этом
+       состоянии: дальше щелчок по кадру обрабатывает сам браузер (пауза и
+       продолжение), и двойного переключения не бывает. Это тоже жест
+       пользователя, звук разрешён. */
+    function onVideoClick() {
+      var video = ui.video;
+      if (video.paused && video.readyState === HAVE_NOTHING && video.getAttribute('src')) {
+        startVideo();
+      }
     }
 
     function isZoomed() {
@@ -698,16 +838,23 @@
       ui.dialog.classList.toggle('is-zoomed', isZoomed());
     });
 
+    /* Клавиши слушает документ, пока окно открыто, а не само окно: выйдя из
+       полноэкранного режима, Chrome через секунду-другую переводит фокус на
+       <body>, и окно перестало бы получать клавиши. Нажатия на самом ролике
+       (фокус на нём или в его панели) принадлежат плееру: пробел — пауза,
+       стрелки и Home/End — перемотка, Tab — ход по кнопкам панели. */
     function onKeyDown(event) {
-      if (event.altKey || event.ctrlKey || event.metaKey) {
+      if (!ui.dialog.open || event.target === ui.video ||
+          event.altKey || event.ctrlKey || event.metaKey) {
         return;
       }
       var key = event.key;
       if (key === 'Tab') {
-        /* Круг по кнопкам окна — и там, где браузер выпускает фокус в свою
-           панель. */
-        var stops = [ui.close, ui.prev, ui.next].filter(function (button) {
-          return !button.hidden;
+        /* Круг по элементам окна — и там, где браузер выпускает фокус в свою
+           панель. Ролик — одна остановка: дальше Tab ведёт браузер. */
+        var stops = [ui.close, ui.video, ui.prev, ui.next].filter(function (node) {
+          return node === ui.video ? ui.dialog.classList.contains('is-video') &&
+            !ui.dialog.classList.contains('is-error') : !node.hidden;
         });
         var at = stops.indexOf(doc.activeElement);
         var last = stops.length - 1;
@@ -723,7 +870,7 @@
       if (key === 'ArrowLeft' || key === 'ArrowRight') {
         step(key === 'ArrowLeft' ? -1 : 1);
       } else if (key === 'Home' || key === 'End') {
-        show(key === 'Home' ? 0 : items.length - 1);
+        show(key === 'Home' ? 0 : items.length - 1, false);
       } else {
         return;
       }
@@ -735,7 +882,9 @@
         return;
       }
       touches += 1;
-      swipe = touches === 1 ?
+      /* Жест на кадре ролика — это перемотка по дорожке нативной панели
+         (события из неё приходят от самого <video>), а не листание. */
+      swipe = touches === 1 && event.target !== ui.video ?
         { id: event.pointerId, x: event.clientX, y: event.clientY } : null;
     }
 
@@ -775,7 +924,9 @@
     }
 
     function onClose() {
+      doc.removeEventListener('keydown', ui.onKey);
       clearTimeout(loadingTimer);
+      releaseVideo();
       lockScroll(false);
       if (window.visualViewport) {
         window.visualViewport.removeEventListener('resize', onZoom);
@@ -783,8 +934,13 @@
       ui.dialog.classList.remove('is-zoomed');
       var link = opener;
       opener = null;
-      if (link && typeof link.focus === 'function') {
+      /* Плитку могли скрыть, пока окно было открыто (например, другой модуль
+         переключил её панель). Тогда фокус не возвращается в скрытый элемент,
+         но и в закрытом окне не остаётся. */
+      if (link && typeof link.focus === 'function' && link.getClientRects().length) {
         link.focus({ preventScroll: true });
+      } else if (ui.dialog.contains(doc.activeElement)) {
+        doc.activeElement.blur();
       }
     }
 
@@ -797,6 +953,7 @@
       var close = createIconButton('close');
       var stage = createElement('div', 'lightbox__stage');
       var image = createElement('img', 'lightbox__image');
+      var video = createElement('video', 'lightbox__video');
       var status = createElement('p', 'lightbox__status');
       var prev = createIconButton('prev');
       var next = createIconButton('next');
@@ -807,12 +964,20 @@
       image.alt = '';
       image.decoding = 'async';
       image.draggable = false;
+      /* Нативная панель; на iPhone без playsinline ролик сразу ушёл бы в
+         системный полноэкранный плеер. preload="none": к ролику, до которого
+         долистали, до нажатия не уходит ни байта. */
+      video.setAttribute('controls', '');
+      video.setAttribute('playsinline', '');
+      video.setAttribute('preload', 'none');
+      video.setAttribute('disablepictureinpicture', '');
 
       counter.appendChild(count);
       counter.appendChild(live);
       bar.appendChild(counter);
       bar.appendChild(close);
       stage.appendChild(image);
+      stage.appendChild(video);
       stage.appendChild(status);
       stage.appendChild(prev);
       stage.appendChild(next);
@@ -821,6 +986,8 @@
 
       image.addEventListener('load', guarded(onImageLoad));
       image.addEventListener('error', guarded(onImageError));
+      video.addEventListener('error', guarded(onVideoError));
+      video.addEventListener('click', guarded(onVideoClick));
       close.addEventListener('click', guarded(function () {
         dialog.close();
       }));
@@ -831,7 +998,6 @@
         step(1);
       }));
       dialog.addEventListener('click', guarded(onDialogClick));
-      dialog.addEventListener('keydown', guarded(onKeyDown));
       dialog.addEventListener('pointerdown', guarded(onPointerDown));
       dialog.addEventListener('pointerup', guarded(onPointerEnd));
       dialog.addEventListener('pointercancel', guarded(onPointerEnd));
@@ -840,37 +1006,59 @@
       doc.body.appendChild(dialog);
       return {
         dialog: dialog, bar: bar, counter: counter, count: count, live: live,
-        close: close, stage: stage, image: image, status: status, prev: prev, next: next
+        close: close, stage: stage, image: image, video: video, status: status,
+        prev: prev, next: next, onKey: guarded(onKeyDown)
       };
+    }
+
+    /* Подпись окна по составу группы. */
+    function dialogLabel() {
+      var videos = items.filter(function (item) {
+        return item.video;
+      }).length;
+      if (videos === items.length) {
+        return LIGHTBOX_TEXT.video;
+      }
+      if (items.length < 2) {
+        return LIGHTBOX_TEXT.image;
+      }
+      return LIGHTBOX_TEXT[videos ? 'mixed' : 'photos'];
     }
 
     function open(link) {
       var scope = link.closest('[data-gallery]');
-      var links = scope ?
+      var group = scope ?
         Array.prototype.slice.call(scope.querySelectorAll('a[data-lightbox]')) : [link];
       if (!ui) {
         ui = build();
       }
-      items = links.map(function (node) {
-        var thumb = node.getElementsByTagName('img')[0];
-        return { href: node.getAttribute('href'), alt: thumb ? thumb.alt : '' };
-      });
+      items = group.map(readItem);
       preloaded = [];
       touches = 0;
       swipe = null;
       opener = link;
 
       var single = items.length < 2;
+      var photos = !items.some(function (item) {
+        return item.video;
+      });
       ui.counter.hidden = single;
       ui.prev.hidden = single;
       ui.next.hidden = single;
-      ui.dialog.setAttribute('aria-label', LIGHTBOX_TEXT[single ? 'single' : 'gallery']);
+      ui.prev.setAttribute('aria-label', LIGHTBOX_TEXT[photos ? 'prev' : 'prevItem']);
+      ui.next.setAttribute('aria-label', LIGHTBOX_TEXT[photos ? 'next' : 'nextItem']);
+      ui.dialog.setAttribute('aria-label', dialogLabel());
 
       lockScroll(true);
       ui.dialog.showModal();
-      /* Счётчик меняется уже в открытом окне — экранный диктор его объявит. */
-      show(links.indexOf(link));
-      ui.close.focus();
+      doc.addEventListener('keydown', ui.onKey);
+      /* Всё ещё внутри обработчика нажатия на плитку: play() в show() получает
+         жест пользователя. Счётчик меняется уже в открытом окне — экранный
+         диктор его объявит. */
+      show(group.indexOf(link), true);
+      /* У ролика фокус — на нём самом: пробел ставит его на паузу, а не
+         нажимает «Закрыть». */
+      (items[index].video ? ui.video : ui.close).focus();
       if (window.visualViewport) {
         window.visualViewport.addEventListener('resize', onZoom);
       }

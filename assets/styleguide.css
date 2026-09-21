@@ -153,6 +153,14 @@ html[data-sg-font-scale="330"] { font-size: var(--sg-font-scale-330); }
   );
 }
 
+/* Плашка во всю рамку плитки, пропорцию которой задаёт её элемент
+   (.gallery--single). */
+.sg-plate--fill {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+}
+
 .sg-plate--cover {
   display: flex;
   flex-direction: column;

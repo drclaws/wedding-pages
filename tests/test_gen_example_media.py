@@ -243,6 +243,19 @@ class GenerateTest(unittest.TestCase):
             with self.subTest(video=video), self.assertRaises(gen.GenerationError):
                 self.generate({"video": {"poster": "poster.png", **video}})
 
+    def test_the_poster_has_no_play_mark(self):
+        """The page draws the play badge over the poster; a second one would show."""
+        site = {"video": {"poster": "poster.png", "width": 360, "height": 640}}
+        created, _ = self.generate(site)
+        width, height, _type, rows = read_png(created[0][0].read_bytes())
+        palette = gen.load_tokens(gen.DEFAULT_CSS)
+        light = bytes(palette.bg)
+        # the centre third of the frame holds only the dark gradient and grid
+        for y in range(height // 3, height * 2 // 3):
+            row = rows[y]
+            for x in range(width // 3, width * 2 // 3):
+                self.assertNotEqual(bytes(row[x * 3 : x * 3 + 3]), light, (x, y))
+
     def test_missing_token_is_an_error(self):
         css = Path(self.tmp.name) / "app.css"
         css.write_text(":root { --color-bg: #fff; }", encoding="utf-8")

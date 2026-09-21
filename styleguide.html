@@ -174,9 +174,9 @@
         Высота обложки задаётся токеном <code>--cover-min-height</code> — доля
         <code>--cover-height-ratio</code> (отдельно для мобильного и десктопа)
         от <code>--viewport-height</code> (<code>100svh</code> с фолбэком на
-        <code>100vh</code>). Медиа и кадр плеера не выше
+        <code>100vh</code>). Медиа и плитка видео не выше
         <code>--media-max-height</code>, поэтому в ландшафтной ориентации
-        телефона плеер вместе с панелью помещается в экран.
+        телефона кадр помещается в экран.
       </p>
 
       <div class="sg-demo">
@@ -355,24 +355,109 @@
         </ul>
       </div>
 
+      <!-- sg:media-tile -->
       <div class="sg-demo">
-        <p class="sg-demo__label">Плеер: .player / .player__media</p>
+        <p class="sg-demo__label">Плитка медиа: .media-tile, .media-tile--video (плашки вместо постеров)</p>
         <p class="sg-note">
-          Панель управления — нативная панель браузера у
-          <code>&lt;video controls&gt;</code>: скрипт её не заменяет, со
-          скриптом и без него она одна и та же. Вид, состав кнопок, подписи и
-          полноэкранный режим задаёт браузер, своих стилей и токенов у панели
-          нет. Витрине показывать нечего — в репозитории нет медиафайлов, а
-          без ролика плеер не собирается.
+          Фото и видео на странице — одинаковые плитки: ссылка на файл
+          (<code>.gallery__link.media-tile</code>), картинка во всю рамку,
+          кольцо фокуса внутри рамки. У видео поверх постера — круглый значок
+          ▶ (<code>.media-tile__badge</code>, внутри inline-SVG
+          <code>.media-tile__icon</code> цвета <code>currentColor</code>):
+          диаметр <code>--media-play-size</code>, треугольник
+          <code>--media-play-icon-size</code>, цвета — роли оверлея
+          (<code>--color-overlay-control</code>, под курсором
+          <code>--color-overlay-control-hover</code>,
+          <code>--color-on-overlay</code>). Нажимается вся плитка, значок
+          только показывает, что это ролик. <code>.media-tile__duration</code>
+          — длительность в углу; разметка сайта её пока не выводит. По
+          порядку: фото, видео, видео под курсором, видео в фокусе, видео с
+          длительностью.
         </p>
+        <ul class="gallery">
+          <li>
+            <button type="button" class="gallery__link media-tile">
+              <span class="visually-hidden">Открыть фотографию</span>
+              <span class="gallery__item sg-plate"></span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="gallery__link media-tile media-tile--video">
+              <span class="visually-hidden">Видео</span>
+              <span class="gallery__item sg-plate"></span>
+              <span class="media-tile__badge" aria-hidden="true"><svg class="media-tile__icon" viewBox="0 0 24 24" focusable="false"><path d="M8 5v14l11-7z"/></svg></span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="gallery__link media-tile media-tile--video is-hover">
+              <span class="visually-hidden">Видео</span>
+              <span class="gallery__item sg-plate"></span>
+              <span class="media-tile__badge" aria-hidden="true"><svg class="media-tile__icon" viewBox="0 0 24 24" focusable="false"><path d="M8 5v14l11-7z"/></svg></span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="gallery__link media-tile media-tile--video is-focus">
+              <span class="visually-hidden">Видео</span>
+              <span class="gallery__item sg-plate"></span>
+              <span class="media-tile__badge" aria-hidden="true"><svg class="media-tile__icon" viewBox="0 0 24 24" focusable="false"><path d="M8 5v14l11-7z"/></svg></span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="gallery__link media-tile media-tile--video">
+              <span class="visually-hidden">Видео, 0:20</span>
+              <span class="gallery__item sg-plate"></span>
+              <span class="media-tile__badge" aria-hidden="true"><svg class="media-tile__icon" viewBox="0 0 24 24" focusable="false"><path d="M8 5v14l11-7z"/></svg></span>
+              <span class="media-tile__duration" aria-hidden="true">0:20</span>
+            </button>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Одиночная плитка: .gallery--single (вертикальный кадр 9 / 16)</p>
         <p class="sg-note">
-          Ширина блока равна ширине кадра: пропорция берётся из атрибутов
-          <code>width</code>/<code>height</code> у <code>&lt;video&gt;</code>
-          (размеры ролика из данных), высота кадра ограничена
-          <code>--media-max-height</code>. Вертикальный ролик поэтому не
-          растягивается на всю колонку на десктопе, а блок остаётся по центру.
+          Одна плитка по центру колонки в пропорции своего кадра. Размер задаёт
+          невидимый размерник перед плиткой: <code>&lt;svg
+          class="gallery__sizer"&gt;</code> с размерами ролика из данных в
+          <code>width</code>/<code>height</code>/<code>viewBox</code>, а без
+          них — <code>.gallery__sizer--default</code> с пропорцией
+          <code>--ratio-video</code>. Атрибута <code>style</code> в разметке
+          нет. Плитка не выше <code>--media-max-height</code> и не шире
+          колонки, поэтому вертикальный ролик на десктопе остаётся узкой
+          плиткой по центру.
+        </p>
+        <ul class="gallery gallery--single">
+          <li class="gallery__item">
+            <svg class="gallery__sizer" width="720" height="1280" viewBox="0 0 720 1280" aria-hidden="true" focusable="false"></svg>
+            <button type="button" class="gallery__link media-tile media-tile--video">
+              <span class="visually-hidden">Видео</span>
+              <span class="sg-plate sg-plate--fill"></span>
+              <span class="media-tile__badge" aria-hidden="true"><svg class="media-tile__icon" viewBox="0 0 24 24" focusable="false"><path d="M8 5v14l11-7z"/></svg></span>
+            </button>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Ролик в окне просмотра: .lightbox.is-video, .lightbox__video</p>
+        <p class="sg-note">
+          Нажатие на плитку видео открывает то же окно просмотра, что и у фото,
+          и сразу запускает ролик со звуком. В окне один
+          <code>&lt;video controls&gt;</code> с нативной панелью браузера: вид,
+          кнопки, перемотку и полноэкранный режим (на iPhone — системным
+          плеером) задаёт браузер, своих стилей и токенов у панели нет. Кадр
+          вписан в окно целиком в пропорции ролика. Ролик, до которого
+          долистали, сам не стартует и до нажатия не загружается; при уходе с
+          него и при закрытии окна он останавливается. Esc в полноэкранном
+          режиме сначала выходит из него, второй Esc закрывает окно. Если файл
+          не загрузился, вместо кадра — сообщение
+          (<code>.lightbox.is-error</code>). Окно создаёт скрипт, а медиафайлов
+          в репозитории нет, поэтому здесь только описание; проверяют его на
+          собранной странице с видео. Без скрипта плитка — обычная ссылка:
+          браузер открывает ролик своим плеером.
         </p>
       </div>
+      <!-- /sg:media-tile -->
     </div>
   </section>
 
