@@ -108,7 +108,10 @@
      действуют и не мешают собственным переходам элемента.
      ========================================================================== */
 
-  var REVEAL_INSET = 0.08;      /* блок должен войти в экран на эту долю высоты */
+  /* Доля высоты экрана, на которую блок должен войти, прежде чем появиться.
+     0 — появление начинается с первого показанного пикселя: иначе у нижнего
+     края экрана остаётся полоса, где блок уже на экране, но пуст. */
+  var REVEAL_INSET = 0;
   var REVEAL_MARGIN = '0px 0px -' + (REVEAL_INSET * 100) + '% 0px';
   var REVEAL_STAGGER_MAX = 4;   /* предел каскада задержек в одной группе */
   var REVEAL_SETTLE_MS = 2000;  /* страховка, если transitionend не пришёл */
@@ -139,11 +142,26 @@
       }
     }
 
+    /* Конец появления — только настоящий конец перехода opacity самого блока.
+       Chromium во время прокрутки присылает лишний transitionend с
+       elapsedTime 0 в первом кадре перехода (перенос времени его старта);
+       если принять его, is-settled снимет переход посреди появления, а там,
+       где такое снятие обрывает переход, блок «выскочит» скачком. */
+    function isRevealEnd(event, element) {
+      if (event.target !== element) {
+        return false; /* переход вложенного элемента */
+      }
+      if (event.type === 'transitioncancel') {
+        return true;
+      }
+      return event.propertyName === 'opacity' && event.elapsedTime > 0;
+    }
+
     function settleLater(element) {
       var timer = 0;
       function done(event) {
-        if (event && event.target !== element) {
-          return; /* переход вложенного элемента */
+        if (event && !isRevealEnd(event, element)) {
+          return;
         }
         clearTimeout(timer);
         element.removeEventListener('transitionend', done);
