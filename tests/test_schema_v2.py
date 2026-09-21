@@ -1,0 +1,1076 @@
+"""Tests for the checks of the data format 2 (`tools/_schema.py`).
+
+Every scenario changes the fictional fixture data (`tests/fixtures_v2.py`)
+in one place and looks at the messages: the path to the field, ids only by
+the id rule, no data values, and in the invitations no key that is not a
+field name or an id declared in `site.json`.
+"""
+
+from __future__ import annotations
+
+import unittest
+
+from tests import fixtures_v2 as F
+from tests import support
+from tools import _data, _media, _page, _schema
+from tools._media import MediaInfo
+
+#: Personal values of the fixture: none of them may reach a message.
+PRIVATE = tuple(
+    [invitation["greeting"] for invitation in F.INVITATIONS]
+    + [invitation["token"] for invitation in F.INVITATIONS]
+    + [
+        override["note"]
+        for invitation in F.INVITATIONS
+        for part in ("events", "sections")
+        for override in invitation.get(part, {}).values()
+        if "note" in override
+    ]
+)
+#: Keys an invitation might hold that are somebody's name.
+NAME_KEYS = ("IvanPetrov", "ivan-petrov", "ivan")
+#: A value that stands for personal data inside the data.
+SECRET = "Секрет-Метка"
+
+GUEST_1 = "invitation #1 (0R-p…)"
+GUEST_2 = "invitation #2 (oWaE…)"
+
+
+def run(mutate=None, site=None, invitations=None) -> F.Collector:
+    site = F.site() if site is None else site
+    invitations = F.invitations() if invitations is None else invitations
+    if mutate is not None:
+        mutate(site, invitations)
+    report = F.Collector()
+    report.index = _schema.check_data(site, invitations, report)
+    return report
+
+
+class SchemaTestCase(unittest.TestCase):
+    def assertMessages(self, report, errors=(), warnings=()):
+        self.assertEqual(report.errors, list(errors))
+        self.assertEqual(report.warnings, list(warnings))
+
+    def assertNoPrivateData(self, report, *extra):
+        for message in report.messages:
+            for value in (*PRIVATE, *extra):
+                self.assertNotIn(value, message)
+
+    def assertOneError(self, report, expected):
+        self.assertEqual(report.errors, [expected])
+        self.assertNoPrivateData(report)
+
+
+# --------------------------------------------------------------------------
+
+
+class FixtureTests(SchemaTestCase):
+    def test_the_main_set_is_valid(self):
+        report = run()
+        self.assertMessages(report)
+        self.assertTrue(report.index.ok)
+
+    def test_the_set_without_places_is_valid(self):
+        report = run(site=F.pending_site(), invitations=F.pending_invitations())
+        self.assertMessages(report)
+
+    def test_the_report_of_the_build_is_accepted(self):
+        report = support.build.Report()
+        site = F.site()
+        site["media"]["story-1"].pop("alt")
+        _schema.check_data(site, F.invitations(), report)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(len(report.warnings), 1)
+
+    def test_type_lists_are_the_contract(self):
+        self.assertEqual(_schema.SECTION_TYPES, ("cover", "custom"))
+        self.assertEqual(
+            _schema.WIDGET_TYPES, ("text", "date", "events", "location", "schedule", "media")
+        )
+        self.assertEqual(_schema.MEDIA_TYPES, ("image", "video"))
+        self.assertEqual(_schema.VIDEO_EXTENSIONS, frozenset({".mp4"}))
+
+
+class VersionTests(SchemaTestCase):
+    def test_old_data_gives_one_message_per_file(self):
+        report = run(site=support.site_data(), invitations=support.invitations_data())
+        self.assertEqual(len(report.errors), 2)
+        self.assertTrue(report.errors[0].startswith("site.json: is in the old data format (it has "))
+        self.assertIn("'dateISO'", report.errors[0])
+        self.assertIn("'venue'", report.errors[0])
+        self.assertIn('add "schemaVersion": 2', report.errors[0])
+        self.assertTrue(
+            report.errors[1].startswith("invitations.json: all 3 invitations are in the old data format")
+        )
+        self.assertIn("'plusOne'", report.errors[1])
+        for value in support.PRIVATE_STRINGS:
+            for message in report.messages:
+                self.assertNotIn(value, message)
+
+    def test_another_version(self):
+        report = run(lambda s, i: s.update(schemaVersion=3))
+        self.assertOneError(
+            report,
+            "site.json: field 'schemaVersion' is 3 - not supported: this version of the "
+            "site reads version 2 only",
+        )
+
+    def test_a_version_that_is_not_a_number_is_not_quoted(self):
+        report = run(lambda s, i: s.update(schemaVersion=SECRET))
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("is a string - not supported", report.errors[0])
+        self.assertNoPrivateData(report, SECRET)
+
+    def test_missing_version(self):
+        report = run(lambda s, i: s.pop("schemaVersion"))
+        self.assertOneError(report, "site.json: field 'schemaVersion' is required (use 2)")
+
+    def test_without_the_version_references_of_invitations_are_not_checked(self):
+        def change(site, invitations):
+            site["schemaVersion"] = 1
+            invitations[0]["sections"]["travle"] = {"visible": True}
+            invitations[1]["form"] = "tu"
+
+        report = run(change)
+        self.assertEqual(len(report.errors), 2)
+        self.assertIn("schemaVersion", report.errors[0])
+        self.assertEqual(report.errors[1], f"{GUEST_2}: field 'form' must be one of: ty, vy")
+
+    def test_top_level_types(self):
+        report = run(site=[], invitations={})
+        self.assertEqual(
+            report.errors,
+            [
+                "site.json: the top-level value must be an object, got an array",
+                "invitations.json: the top-level value must be an array of invitations, "
+                "got an object",
+            ],
+        )
+
+    def test_no_invitations_is_a_warning(self):
+        report = run(invitations=[])
+        self.assertMessages(report, warnings=["invitations.json: contains no invitations"])
+
+
+class FieldTests(SchemaTestCase):
+    def test_unknown_field_with_a_hint(self):
+        report = run(lambda s, i: s["sections"][6].update(visibel=False))
+        self.assertOneError(report, "site.json: unknown field 'sections[6].visibel' (did you mean 'visible'?)")
+
+    def test_unknown_top_level_field(self):
+        report = run(lambda s, i: s.update(coupleName="x"))
+        self.assertOneError(report, "site.json: unknown field 'coupleName' (did you mean 'coupleNames'?)")
+
+    def test_field_of_the_old_format_says_where_it_went(self):
+        report = run(lambda s, i: s.update(venue={}))
+        self.assertEqual(len(report.errors), 1)
+        self.assertTrue(report.errors[0].startswith("site.json: field 'venue' is no longer supported: "))
+
+    def test_comment_keys_are_unknown_fields(self):
+        report = run(lambda s, i: s.update(_comment=SECRET))
+        self.assertOneError(report, "site.json: unknown field '_comment'")
+
+    def test_null_is_never_accepted(self):
+        cases = {
+            "coupleNames": lambda s: s.update(coupleNames=None),
+            "rsvpDeadline": lambda s: s.update(rsvpDeadline=None),
+            "locations.hotel.address": lambda s: s["locations"]["hotel"].update(address=None),
+            "events.dinner.end": lambda s: s["events"]["dinner"].update(end=None),
+            "sections[5].widgets[0].events": lambda s: s["sections"][5]["widgets"][0].update(events=None),
+        }
+        for path, change in cases.items():
+            with self.subTest(path):
+                report = run(lambda s, i: change(s))
+                self.assertEqual(len(report.errors), 1)
+                self.assertIn(f"field '{path}' must be", report.errors[0])
+                self.assertTrue(report.errors[0].endswith("got null"))
+
+    def test_type_errors_name_the_type_only(self):
+        report = run(lambda s, i: s["sections"][4].update(titleHidden=SECRET))
+        self.assertOneError(
+            report,
+            "site.json: field 'sections[4].titleHidden' must be a boolean (true or false), "
+            "got a string",
+        )
+        self.assertNoPrivateData(report, SECRET)
+
+    def test_single_line(self):
+        report = run(lambda s, i: s.update(coupleNames="Алиса\nБоб"))
+        self.assertOneError(report, "site.json: field 'coupleNames' must be a single line (no line breaks)")
+
+    def test_required_and_empty(self):
+        report = run(lambda s, i: s.pop("coupleNames"))
+        self.assertOneError(report, "site.json: field 'coupleNames' is required")
+        report = run(lambda s, i: s.update(coupleNames="  "))
+        self.assertOneError(report, "site.json: field 'coupleNames' must not be empty")
+
+    def test_media_dir(self):
+        report = run(lambda s, i: s.update(mediaDir="short"))
+        self.assertOneError(
+            report,
+            "site.json: field 'mediaDir' must be 16 to 200 characters long and may only "
+            "contain A-Z, a-z, 0-9, '_' and '-'",
+        )
+
+    def test_enumerations_do_not_quote_the_value(self):
+        report = run(lambda s, i: s["sections"][5].update(width=SECRET))
+        self.assertOneError(report, "site.json: field 'sections[5].width' must be one of: narrow, wide")
+        report = run(lambda s, i: s["sections"][1]["widgets"][0].update(variant="big"))
+        self.assertOneError(
+            report, "site.json: field 'sections[1].widgets[0].variant' must be one of: body, lead, signature"
+        )
+
+
+class IdentifierTests(SchemaTestCase):
+    def test_section_id_rule(self):
+        report = run(lambda s, i: s["sections"][2].update(id="Personal Note"))
+        self.assertOneError(
+            report,
+            "site.json: field 'sections[2].id' must be an identifier: 1-32 characters, "
+            "lowercase a-z, 0-9 and single hyphens, starting with a letter",
+        )
+
+    def test_repeated_section_id(self):
+        report = run(lambda s, i: s["sections"][3].update(id="invite"))
+        self.assertOneError(
+            report, "site.json: field 'sections[3].id' repeats 'invite' (already used by sections[1])"
+        )
+
+    def test_repeated_widget_id_within_a_section(self):
+        def change(site, invitations):
+            site["sections"][6]["widgets"][0]["id"] = "hotel-booked"
+
+        report = run(change)
+        self.assertOneError(
+            report, "site.json: field 'sections[6].widgets[2].id' repeats 'hotel-booked' within the section"
+        )
+
+    def test_same_widget_id_in_two_sections_is_fine(self):
+        report = run(lambda s, i: s["sections"][1]["widgets"][0].update(id="hotel-booked"))
+        self.assertMessages(report)
+
+    def test_widget_id_rule(self):
+        report = run(lambda s, i: s["sections"][1]["widgets"][0].update(id="Lead_Text"))
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("field 'sections[1].widgets[0].id' must be an identifier", report.errors[0])
+
+    def test_registry_key_that_is_not_an_id(self):
+        def change(site, invitations):
+            site["locations"][SECRET] = site["locations"].pop("hotel")
+
+        report = run(change)
+        self.assertIn(
+            "site.json: field 'locations.<non-identifier key>' is not an identifier: an id has "
+            "1-32 characters, lowercase a-z, 0-9 and single hyphens, starting with a letter",
+            report.errors,
+        )
+        self.assertNoPrivateData(report, SECRET)
+
+    def test_long_id(self):
+        report = run(lambda s, i: s["sections"][2].update(id="a" * 33))
+        self.assertIn("must be an identifier", report.errors[0])
+
+
+class SectionTests(SchemaTestCase):
+    def test_unknown_widget_type(self):
+        report = run(lambda s, i: s["sections"][5]["widgets"][0].update(type="evnts"))
+        self.assertOneError(
+            report,
+            "site.json: field 'sections[5].widgets[0].type' names an unknown widget type "
+            "'evnts' (did you mean 'events'?); known: text, date, events, location, schedule, media",
+        )
+
+    def test_unknown_widget_type_that_is_not_an_id_is_not_quoted(self):
+        report = run(lambda s, i: s["sections"][5]["widgets"][0].update(type=SECRET))
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("names an unknown widget type; known:", report.errors[0])
+        self.assertNoPrivateData(report, SECRET)
+
+    def test_widget_without_type(self):
+        report = run(lambda s, i: s["sections"][5]["widgets"][0].pop("type"))
+        self.assertOneError(
+            report,
+            "site.json: field 'sections[5].widgets[0].type' is required "
+            "(text, date, events, location, schedule, media)",
+        )
+
+    def test_unknown_section_type(self):
+        report = run(lambda s, i: s["sections"][2].update(type="gallery"))
+        self.assertOneError(report, "site.json: field 'sections[2].type' must be one of: cover, custom")
+
+    def test_cover_must_be_first(self):
+        report = run(lambda s, i: s["sections"].insert(0, s["sections"].pop(1)))
+        self.assertOneError(
+            report, "site.json: field 'sections[1].type' is 'cover': the cover must be the first section"
+        )
+
+    def test_one_cover_only(self):
+        report = run(lambda s, i: s["sections"].append({"id": "cover-2", "type": "cover"}))
+        self.assertOneError(
+            report, "site.json: field 'sections[9].type' is 'cover': there may be only one cover"
+        )
+
+    def test_no_cover_is_a_warning(self):
+        report = run(lambda s, i: s["sections"].pop(0))
+        self.assertMessages(
+            report,
+            warnings=["site.json: field 'sections' has no 'cover' section: the page will have no main heading"],
+        )
+
+    def test_cover_fields(self):
+        report = run(lambda s, i: s["sections"][0].update(title="Обложка"))
+        self.assertOneError(report, "site.json: unknown field 'sections[0].title'")
+
+    def test_title_is_required(self):
+        report = run(lambda s, i: s["sections"][4].pop("title"))
+        self.assertOneError(report, "site.json: field 'sections[4].title' is required")
+
+    def test_widgets_are_required_but_may_be_empty(self):
+        report = run(lambda s, i: s["sections"][4].pop("widgets"))
+        self.assertOneError(report, "site.json: field 'sections[4].widgets' is required")
+        report = run(lambda s, i: s["sections"][4].update(widgets=[]))
+        self.assertEqual(report.errors, [])
+
+    def test_sections_must_not_be_empty(self):
+        report = run(lambda s, i: s.update(sections=[]))
+        self.assertEqual(report.errors[0], "site.json: field 'sections' must list at least one section")
+
+    def test_widget_fields_by_type(self):
+        report = run(lambda s, i: s["sections"][4]["widgets"][0].update(items=["story-1"]))
+        self.assertOneError(report, "site.json: unknown field 'sections[4].widgets[0].items'")
+
+
+class ReferenceTests(SchemaTestCase):
+    def test_unknown_location(self):
+        report = run(lambda s, i: s["sections"][6]["widgets"][1].update(location="hotle"))
+        self.assertOneError(
+            report,
+            "site.json: field 'sections[6].widgets[1].location' refers to an unknown location "
+            "'hotle' (did you mean 'hotel'?); known: registry, manor, terrace, hotel",
+        )
+
+    def test_the_list_of_known_ids_is_short(self):
+        def change(site, invitations):
+            site["sections"][7]["widgets"][0]["items"] = ["story-9"]
+
+        report = run(change)
+        self.assertEqual(len(report.errors), 1)
+        self.assertTrue(report.errors[0].endswith(", …"))
+        self.assertEqual(report.errors[0].count(","), _schema.MAX_LISTED)
+
+    def test_a_reference_that_is_not_an_id_is_not_quoted(self):
+        report = run(lambda s, i: s["sections"][6]["widgets"][1].update(location=SECRET))
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("must be the id of a location: 1-32 characters", report.errors[0])
+        self.assertNoPrivateData(report, SECRET)
+
+    def test_a_reference_must_be_a_string(self):
+        report = run(lambda s, i: s["sections"][6]["widgets"][1].update(location=3))
+        self.assertOneError(
+            report, "site.json: field 'sections[6].widgets[1].location' must be the id of a location, got a number"
+        )
+
+    def test_directions_must_be_an_image(self):
+        report = run(lambda s, i: s["locations"]["manor"].update(directions="proposal"))
+        self.assertIn(
+            "site.json: field 'locations.manor.directions' must be an image, but 'proposal' is a video",
+            report.errors,
+        )
+
+    def test_repeat_in_a_list(self):
+        report = run(lambda s, i: s["sections"][5]["widgets"][0].update(events=["dinner", "ceremony", "dinner"]))
+        self.assertOneError(report, "site.json: field 'sections[5].widgets[0].events[2]' repeats 'dinner'")
+
+    def test_empty_lists(self):
+        report = run(lambda s, i: s["sections"][5]["widgets"][0].update(events=[]))
+        self.assertOneError(report, "site.json: field 'sections[5].widgets[0].events' must list at least one event")
+        report = run(lambda s, i: s["sections"][7]["widgets"][0].update(items=[]))
+        self.assertOneError(report, "site.json: field 'sections[7].widgets[0].items' must list at least one media item")
+
+    def test_single_layout_takes_one_item(self):
+        report = run(lambda s, i: s["sections"][7]["widgets"][0].update(layout="single"))
+        self.assertOneError(
+            report,
+            "site.json: field 'sections[7].widgets[0].items' must list exactly one media item "
+            "for the 'single' layout",
+        )
+
+    def test_date_schedule_and_photo_references(self):
+        cases = {
+            "sections[4].widgets[0].event": lambda s: s["sections"][4]["widgets"][0].update(event="party"),
+            "events.dinner.schedule": lambda s: s["events"]["dinner"].update(schedule="evening"),
+            "locations.manor.photos[1]": lambda s: s["locations"]["manor"]["photos"].__setitem__(1, "venue-9"),
+        }
+        for path, change in cases.items():
+            with self.subTest(path):
+                report = run(lambda s, i: change(s))
+                self.assertEqual(len(report.errors), 1)
+                self.assertTrue(report.errors[0].startswith(f"site.json: field '{path}' refers to an unknown"))
+
+    def test_schedule_widget_needs_a_schedule(self):
+        def change(site, invitations):
+            site["sections"][5]["widgets"].append({"type": "schedule"})
+
+        report = run(change)
+        self.assertOneError(report, "site.json: field 'sections[5].widgets[1].schedule' is required")
+
+    def test_empty_registry_list(self):
+        def change(site, invitations):
+            site["schedules"] = {}
+
+        report = run(change)
+        self.assertOneError(
+            report,
+            "site.json: field 'events.dinner.schedule' refers to an unknown schedule 'dinner'; "
+            "there are no schedules",
+        )
+
+
+class EventTests(SchemaTestCase):
+    def test_end_before_start(self):
+        report = run(lambda s, i: s["events"]["ceremony"].update(end="2030-06-15T10:00:00+03:00"))
+        self.assertOneError(report, "site.json: field 'events.ceremony.end' must be later than 'start'")
+
+    def test_offset_is_required(self):
+        report = run(lambda s, i: s["events"]["brunch"].update(start="2030-06-16T12:00:00"))
+        self.assertOneError(
+            report,
+            "site.json: field 'events.brunch.start' has no UTC offset; append the offset, "
+            "e.g. +03:00 (or Z for UTC)",
+        )
+
+    def test_not_a_date(self):
+        report = run(lambda s, i: s["events"]["brunch"].update(start=SECRET))
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("must be an ISO 8601 date and time", report.errors[0])
+        self.assertNoPrivateData(report, SECRET)
+
+    def test_main_event_hidden_by_default(self):
+        report = run(lambda s, i: s["events"]["dinner"].update(visible=False))
+        self.assertEqual(
+            report.errors[0],
+            "site.json: field 'mainEvent' refers to 'dinner', which is hidden by default "
+            "('visible': false); the main event must be visible to everybody who has no "
+            "'primaryEvent'",
+        )
+        self.assertEqual(
+            report.errors[1:],
+            ["invitation #7 (hoC8…): field 'events' hides every event; at least one must stay visible"],
+        )
+
+    def test_unknown_main_event(self):
+        report = run(lambda s, i: s.update(mainEvent="diner"))
+        self.assertEqual(
+            report.errors[0],
+            "site.json: field 'mainEvent' refers to an unknown event 'diner' (did you mean "
+            "'dinner'?); known: ceremony, dinner, brunch",
+        )
+
+    def test_different_offsets_are_a_warning(self):
+        report = run(lambda s, i: s["events"]["brunch"].update(start="2030-06-16T12:00:00+04:00"))
+        self.assertMessages(
+            report,
+            warnings=[
+                "site.json: field 'events' has events with different UTC offsets (ceremony, "
+                "dinner, brunch); check the offsets, especially around a change to or from "
+                "summer time"
+            ],
+        )
+
+    def test_location_is_required(self):
+        report = run(lambda s, i: s["events"]["dinner"].pop("location"))
+        self.assertEqual(len(report.errors), 1)
+        self.assertTrue(report.errors[0].startswith("site.json: field 'events.dinner.location' is required"))
+
+    def test_events_must_not_be_empty(self):
+        report = run(lambda s, i: s.update(events={}))
+        self.assertEqual(report.errors[0], "site.json: field 'events' must describe at least one event")
+
+    def test_title_has_no_forms(self):
+        report = run(lambda s, i: s["events"]["dinner"].update(title={"ty": "a", "vy": "b"}))
+        self.assertOneError(report, "site.json: field 'events.dinner.title' must be a string, got an object")
+
+
+class LocationTests(SchemaTestCase):
+    def test_name_is_required_when_ready(self):
+        report = run(lambda s, i: s["locations"]["hotel"].pop("name"))
+        self.assertOneError(
+            report,
+            "site.json: field 'locations.hotel.name' is required unless the place is not "
+            "announced yet ('ready': false)",
+        )
+
+    def test_name_is_not_needed_when_not_ready(self):
+        report = run(lambda s, i: s["locations"]["hotel"].update(ready=False, name=""))
+        self.assertEqual(report.errors, [])
+
+    def test_coordinates(self):
+        report = run(lambda s, i: s["locations"]["hotel"]["geo"].update(lat=91))
+        self.assertOneError(report, "site.json: field 'locations.hotel.geo.lat' is outside [-90, 90]")
+
+    def test_map_ids_are_not_links(self):
+        report = run(lambda s, i: s["locations"]["hotel"].update(maps={"yandexOrgId": "https://x"}))
+        self.assertOneError(
+            report,
+            "site.json: field 'locations.hotel.maps.yandexOrgId' may only contain digits "
+            "(use the identifier, not a link)",
+        )
+
+    def test_old_directions_field(self):
+        report = run(lambda s, i: s["locations"]["hotel"].update(directionsImage="x.png"))
+        self.assertOneError(
+            report,
+            "site.json: field 'locations.hotel.directionsImage' is no longer supported: use "
+            "'directions' with the id of a media item",
+        )
+
+
+class ScheduleTests(SchemaTestCase):
+    def test_empty_programme_is_a_warning(self):
+        report = run(lambda s, i: s["schedules"]["dinner"].clear())
+        self.assertIn(
+            "site.json: field 'schedules.dinner' is empty (the programme will not be shown)",
+            report.warnings,
+        )
+        self.assertEqual(report.errors, [])
+
+    def test_item_title_is_required(self):
+        report = run(lambda s, i: s["schedules"]["dinner"][2].pop("title"))
+        self.assertOneError(report, "site.json: field 'schedules.dinner[2].title' is required")
+
+
+class MediaDataTests(SchemaTestCase):
+    def test_video_must_be_mp4(self):
+        report = run(lambda s, i: s["media"]["proposal"].update(file="proposal.webm"))
+        self.assertOneError(
+            report,
+            "site.json: field 'media.proposal.file' must be an .mp4 file (H.264 video and AAC "
+            "sound): other video formats do not play in every browser",
+        )
+
+    def test_image_must_be_an_image(self):
+        report = run(lambda s, i: s["media"]["story-1"].update(file="story.mp4"))
+        self.assertEqual(len(report.errors), 1)
+        self.assertTrue(report.errors[0].startswith("site.json: field 'media.story-1.file' must be an image (allowed: .avif"))
+
+    def test_video_needs_a_poster(self):
+        report = run(lambda s, i: s["media"]["proposal"].pop("poster"))
+        self.assertOneError(report, "site.json: field 'media.proposal.poster' is required")
+
+    def test_image_has_no_poster(self):
+        report = run(lambda s, i: s["media"]["story-1"].update(poster="p.png"))
+        self.assertOneError(
+            report, "site.json: field 'media.story-1.poster' is not allowed: only a video has a poster"
+        )
+
+    def test_size_is_a_pair_of_positive_numbers(self):
+        report = run(lambda s, i: s["media"]["proposal"].pop("height"))
+        self.assertOneError(
+            report, "site.json: field 'media.proposal.width' is set without 'height'; set both or neither"
+        )
+        report = run(lambda s, i: s["media"]["proposal"].update(width=0))
+        self.assertOneError(
+            report, "site.json: field 'media.proposal.width' must be a positive whole number, got a number"
+        )
+
+    def test_missing_alt_is_a_warning(self):
+        report = run(lambda s, i: s["media"]["story-1"].pop("alt"))
+        self.assertMessages(
+            report,
+            warnings=[
+                "site.json: field 'media.story-1.alt' is not set: the tile gets a neutral "
+                "label instead of a description"
+            ],
+        )
+
+    def test_alt_is_one_line(self):
+        report = run(lambda s, i: s["media"]["story-1"].update(alt="a\nb"))
+        self.assertOneError(report, "site.json: field 'media.story-1.alt' must be a single line (no line breaks)")
+
+    def test_thumb_must_be_an_image(self):
+        report = run(lambda s, i: s["media"]["proposal"].update(thumb="t.mp4"))
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("field 'media.proposal.thumb' must be an image", report.errors[0])
+
+    def test_unsafe_file_names(self):
+        for name in ("../x.png", "event.ics", ".x.png"):
+            with self.subTest(name):
+                report = run(lambda s, i: s["media"]["story-1"].update(file=name))
+                self.assertEqual(len(report.errors), 1)
+                self.assertTrue(report.errors[0].startswith("site.json: field 'media.story-1.file' must "))
+                if name != "event.ics":  # the reserved name itself is no data
+                    self.assertNotIn(name, report.errors[0])
+
+    def test_type_is_required(self):
+        report = run(lambda s, i: s["media"]["story-1"].pop("type"))
+        self.assertOneError(report, "site.json: field 'media.story-1.type' is required (image or video)")
+
+
+class TextTests(SchemaTestCase):
+    def test_both_forms(self):
+        report = run(lambda s, i: s["sections"][1]["widgets"][0].update(text={"ty": "Привет"}))
+        self.assertOneError(
+            report, "site.json: field 'sections[1].widgets[0].text' must have both 'ty' and 'vy' (missing 'vy')"
+        )
+
+    def test_unknown_placeholder_is_not_quoted(self):
+        report = run(lambda s, i: s["sections"][1]["widgets"][0].update(text="Привет, {coupleName}!"))
+        self.assertEqual(len(report.errors), 1)
+        self.assertTrue(
+            report.errors[0].startswith(
+                "site.json: field 'sections[1].widgets[0].text' has an unknown placeholder at "
+                "character 9 (did you mean {coupleNames}?); available: {coupleNames}"
+            )
+        )
+        self.assertNotIn("coupleName}!", report.errors[0])
+        report = run(lambda s, i: s["sections"][1]["widgets"][0].update(text="{Masha}"))
+        self.assertNotIn("Masha", report.errors[0])
+
+    def test_unclosed_brace(self):
+        report = run(lambda s, i: s["sections"][3]["widgets"][0]["text"].update(vy="Вы можете {со"))
+        self.assertOneError(
+            report,
+            "site.json: field 'sections[3].widgets[0].text.vy' has an unclosed '{' at character "
+            "11 (write '{{' for a literal brace)",
+        )
+
+    def test_placeholder_without_value(self):
+        report = run(lambda s, i: s.pop("rsvpDeadline"))
+        self.assertEqual(
+            report.errors,
+            [
+                "site.json: field 'sections[8].widgets[0].text.ty' uses {rsvpDeadline}, but "
+                "'rsvpDeadline' is not set",
+                "site.json: field 'sections[8].widgets[0].text.vy' uses {rsvpDeadline}, but "
+                "'rsvpDeadline' is not set",
+            ],
+        )
+
+    def test_title_is_one_line(self):
+        report = run(lambda s, i: s["sections"][4].update(title={"ty": "Дата\nи время", "vy": "Дата"}))
+        self.assertOneError(report, "site.json: field 'sections[4].title.ty' must be a single line (no line breaks)")
+
+    def test_literal_braces(self):
+        report = run(lambda s, i: s["sections"][1]["widgets"][0].update(text="{{скобки}} {greeting}"))
+        self.assertMessages(report)
+
+    def test_text_is_required(self):
+        report = run(lambda s, i: s["sections"][1]["widgets"][0].pop("text"))
+        self.assertOneError(report, "site.json: field 'sections[1].widgets[0].text' is required")
+
+
+class InvitationTests(SchemaTestCase):
+    def test_token_rules(self):
+        report = run(lambda s, i: i[1].update(token="short"))
+        self.assertOneError(
+            report,
+            "invitation #2 (shor…): 'token' is too short: at least 20 characters required, got 5",
+        )
+
+    def test_duplicate_token(self):
+        report = run(lambda s, i: i[1].update(token=i[0]["token"].upper()))
+        self.assertOneError(
+            report,
+            "invitation #2 (0R-P…): duplicate token (same as invitation #1; tokens are compared "
+            "case-insensitively because they become directory names)",
+        )
+
+    def test_label_holds_four_characters_of_the_token(self):
+        report = run(lambda s, i: i[0].update(greeting=""))
+        self.assertOneError(report, f"{GUEST_1}: field 'greeting' must not be empty")
+
+    def test_form(self):
+        report = run(lambda s, i: i[5].update(form="tu"))
+        self.assertOneError(report, "invitation #6 (IBAh…): field 'form' must be one of: ty, vy")
+        report = run(lambda s, i: i[5].pop("form"))
+        self.assertOneError(report, "invitation #6 (IBAh…): field 'form' is required ('ty' or 'vy')")
+
+    def test_greeting_is_one_line(self):
+        report = run(lambda s, i: i[0].update(greeting="Дорогая\nКэрол"))
+        self.assertOneError(report, f"{GUEST_1}: field 'greeting' must be a single line (no line breaks)")
+
+    def test_old_fields_of_one_invitation(self):
+        def change(site, invitations):
+            invitations[0].pop("form")
+            invitations[0].update(ty=True, plusOne=True, note=SECRET)
+
+        report = run(change)
+        self.assertEqual(
+            [message.split(":")[1] for message in report.errors],
+            [" field 'ty' is no longer supported", " field 'plusOne' is no longer supported",
+             " field 'note' is no longer supported"],
+        )
+        self.assertNoPrivateData(report, SECRET)
+
+    def test_unknown_section(self):
+        report = run(lambda s, i: i[0]["sections"].update(travle={"visible": True}))
+        self.assertOneError(
+            report,
+            f"{GUEST_1}: field 'sections.<unknown key>' refers to an unknown section (did you "
+            "mean 'travel'?); known: cover, invite, personal, plus-one, when, where, travel, story, …",
+        )
+
+    def test_unknown_event(self):
+        report = run(lambda s, i: i[1]["events"].update(brunhc={"visible": True}))
+        self.assertOneError(
+            report,
+            f"{GUEST_2}: field 'events.<unknown key>' refers to an unknown event (did you mean "
+            "'brunch'?); known: ceremony, dinner, brunch",
+        )
+
+    def test_widget_without_an_id(self):
+        report = run(lambda s, i: i[1].update(sections={"where": {"widgets": {"events": {"visible": False}}}}))
+        self.assertOneError(
+            report,
+            f"{GUEST_2}: field 'sections.where.widgets.events' refers to no widget of section "
+            "'where'; give the widget an \"id\" in site.json to address it",
+        )
+
+    def test_unknown_widget_lists_the_ids(self):
+        report = run(lambda s, i: i[5]["sections"]["travel"]["widgets"].update(hotel={"visible": True}))
+        self.assertOneError(
+            report,
+            "invitation #6 (IBAh…): field 'sections.travel.widgets.<unknown key>' refers to no "
+            "widget of section 'travel'; widgets with an id: hotel-booked",
+        )
+
+    def test_unknown_field_in_an_override(self):
+        report = run(lambda s, i: i[1].update(sections={"where": {"visibel": False}}))
+        self.assertOneError(report, f"{GUEST_2}: unknown field 'sections.where.<unknown key>' (did you mean 'visible'?)")
+
+    def test_primary_event(self):
+        report = run(lambda s, i: i[2].update(primaryEvent="brunhc"))
+        self.assertOneError(
+            report,
+            "invitation #3 (48lh…): field 'primaryEvent' refers to an unknown event (did you "
+            "mean 'brunch'?); known: ceremony, dinner, brunch",
+        )
+        report = run(lambda s, i: i[4].update(events={"ceremony": {"visible": False}}))
+        self.assertOneError(
+            report, "invitation #5 (uGeJ…): field 'primaryEvent' refers to 'ceremony', which is hidden for this invitation"
+        )
+        report = run(lambda s, i: i[3].update(events={"dinner": {"visible": False}}))
+        self.assertOneError(
+            report, "invitation #4 (lXG6…): field 'primaryEvent' is required: the main event 'dinner' is hidden for this invitation"
+        )
+        report = run(lambda s, i: i[3].update(primaryEvent="brunch"))
+        self.assertOneError(
+            report, "invitation #4 (lXG6…): field 'primaryEvent' refers to 'brunch', which is hidden for this invitation"
+        )
+
+    def test_every_event_hidden(self):
+        report = run(lambda s, i: i[6].update(events={e: {"visible": False} for e in ("ceremony", "dinner")}))
+        self.assertIn("invitation #7 (hoC8…): field 'events' hides every event; at least one must stay visible", report.errors)
+
+    def test_cover_cannot_be_set(self):
+        report = run(lambda s, i: i[0]["sections"].update(cover={"visible": False}))
+        self.assertOneError(report, f"{GUEST_1}: field 'sections.cover' cannot be set: the cover is the same for everybody")
+
+    def test_note_is_a_string(self):
+        report = run(lambda s, i: i[0]["sections"]["personal"].update(note={"ty": "a", "vy": "b"}))
+        self.assertOneError(report, f"{GUEST_1}: field 'sections.personal.note' must be a string, got an object")
+
+    def test_note_placeholders(self):
+        report = run(lambda s, i: i[2]["sections"]["personal"].update(note="Ждём тебя к {eventTme}, {Masha}!"))
+        self.assertEqual(len(report.errors), 2)
+        self.assertIn("field 'sections.personal.note' has an unknown placeholder at character 13 (did you mean {eventTime}?)", report.errors[0])
+        self.assertIn("at character 25; available:", report.errors[1])
+        self.assertNoPrivateData(report, "Masha", "eventTme")
+
+    def test_note_on_hidden_section_or_event(self):
+        def change(site, invitations):
+            invitations[2]["sections"]["plus-one"] = {"note": "Приходи с Мартином"}
+            invitations[1]["events"]["brunch"] = {"note": "Второй день"}
+
+        report = run(change)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(
+            report.warnings,
+            [
+                f"{GUEST_2}: field 'events.brunch.note' is set, but the event is hidden for this invitation",
+                "invitation #3 (48lh…): field 'sections.plus-one.note' is set, but the section is hidden for this invitation",
+            ],
+        )
+
+    def test_override_types(self):
+        report = run(lambda s, i: i[0]["sections"]["plus-one"].update(visible="yes"))
+        self.assertOneError(report, f"{GUEST_1}: field 'sections.plus-one.visible' must be a boolean (true or false), got a string")
+        report = run(lambda s, i: i[0].update(events=[]))
+        self.assertOneError(report, f"{GUEST_1}: field 'events' must be an object, got an array")
+        report = run(lambda s, i: i[0]["sections"].update(travel=True))
+        self.assertOneError(report, f"{GUEST_1}: field 'sections.travel' must be an object, got a boolean")
+
+    def test_invitation_must_be_an_object(self):
+        report = run(lambda s, i: i.append("x"))
+        self.assertOneError(report, "invitation #9 (no token): must be an object, got a string")
+
+    def test_broken_sections_are_not_reported_again_for_the_invitations(self):
+        def change(site, invitations):
+            site["sections"][6]["id"] = "Travel"
+
+        report = run(change)
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("sections[6].id", report.errors[0])
+
+    def test_broken_events_registry_is_not_reported_again(self):
+        report = run(lambda s, i: s.update(events=[]))
+        self.assertTrue(all(message.startswith("site.json") for message in report.errors))
+
+
+class GuestKeyPrivacyTests(SchemaTestCase):
+    """A key of an invitation is shown only when site.json declares it."""
+
+    def scenarios(self, key):
+        return {
+            "section": lambda s, i: i[0]["sections"].update({key: {"visible": True}}),
+            "event": lambda s, i: i[0]["events"].update({key: {"visible": True}}),
+            "widget": lambda s, i: i[5]["sections"]["travel"]["widgets"].update({key: {"visible": True}}),
+            "field": lambda s, i: i[0].update({key: True}),
+            "section field": lambda s, i: i[0]["sections"]["personal"].update({key: True}),
+            "event field": lambda s, i: i[1]["events"]["dinner"].update({key: True}),
+            "widget field": lambda s, i: i[5]["sections"]["travel"]["widgets"]["hotel-booked"].update({key: True}),
+            "primary event": lambda s, i: i[0].update(primaryEvent=key),
+        }
+
+    def test_name_like_keys_never_reach_a_message(self):
+        for key in NAME_KEYS:
+            for name, change in self.scenarios(key).items():
+                with self.subTest(key=key, place=name):
+                    report = run(change)
+                    self.assertEqual(len(report.errors), 1, report.errors)
+                    self.assertNotIn(key, report.errors[0])
+                    self.assertNoPrivateData(report)
+
+    def test_hints_come_from_site_json(self):
+        report = run(lambda s, i: i[0]["sections"].update({"ivan": {"visible": True}}))
+        self.assertIn("; known: cover, invite", report.errors[0])
+        self.assertIn("<unknown key>", report.errors[0])
+
+    def test_declared_ids_are_shown(self):
+        report = run(lambda s, i: i[0]["sections"]["personal"].update(visible="x"))
+        self.assertIn("'sections.personal.visible'", report.errors[0])
+
+    def test_rules_for_site_json_are_unchanged(self):
+        report = run(lambda s, i: s.update(IvanPetrov=True))
+        self.assertOneError(report, "site.json: unknown field 'IvanPetrov'")
+
+
+class StrictKeyTests(unittest.TestCase):
+    """The strict mode of the key helpers of `tools/_data.py`."""
+
+    def test_show_key(self):
+        known = {"travel", "visible"}
+        self.assertEqual(_data.show_key("travel", known), "'travel'")
+        for key in (*NAME_KEYS, SECRET, 3, None):
+            with self.subTest(key=key):
+                self.assertEqual(_data.show_key(key, known), "<unknown key>")
+        self.assertEqual(_data.show_key("ivan"), "'ivan'")  # the rule without names
+
+    def test_format_path(self):
+        known = {"sections", "travel"}
+        self.assertEqual(_data.format_path(("sections", "ivan", "note"), known), "sections.<unknown key>.<unknown key>")
+        self.assertEqual(_data.format_path(("sections", "travel", 2), known), "sections.travel[2]")
+        self.assertEqual(_data.format_path(("sections", "ivan")), "sections.ivan")
+
+
+class PageWarningTests(SchemaTestCase):
+    """Warnings that need the page trees (`tools._page.build_pages`)."""
+
+    def warnings(self, mutate=None, info=F.MEDIA_INFO):
+        site, invitations = F.site(), F.invitations()
+        if mutate is not None:
+            mutate(site, invitations)
+        report = F.Collector()
+        index = _schema.check_data(site, invitations, report)
+        self.assertEqual(report.errors, [])
+        self.assertTrue(index.ok)
+        _page.build_pages(site, invitations, F.settings(media_info=info), report)
+        self.assertNoPrivateData(report)
+        return report.warnings
+
+    def test_fixture_has_none(self):
+        self.assertEqual(self.warnings(), [])
+
+    def test_section_switched_on_but_empty(self):
+        warnings = self.warnings(lambda s, i: i[1].update(sections={"personal": {"visible": True}}))
+        self.assertEqual(
+            warnings,
+            [f"{GUEST_2}: section 'personal' is switched on, but has nothing to show for this invitation"],
+        )
+
+    def test_event_note_that_no_widget_shows(self):
+        def change(site, invitations):
+            site["sections"][5]["widgets"][0]["events"] = ["dinner", "brunch"]
+            invitations[1]["events"]["ceremony"] = {"note": "Приходи пораньше"}
+
+        warnings = self.warnings(change)
+        self.assertIn(
+            f"{GUEST_2}: field 'events.ceremony.note' is set, but no 'events' widget on this page shows the event",
+            warnings,
+        )
+        self.assertNotIn("Приходи пораньше", " ".join(warnings))
+
+    def test_unused_parts_of_site_json(self):
+        def change(site, invitations):
+            site["sections"].insert(8, {"id": "gifts", "title": "Подарки", "visible": False, "widgets": [{"type": "text", "text": "x"}]})
+            site["locations"]["station"] = {"name": "Вокзал"}
+            site["schedules"]["spare"] = [{"title": "Сбор"}]
+            site["media"]["unused-1"] = {"type": "image", "file": "unused-1.webp", "alt": "x"}
+            site["events"]["rehearsal"] = {"title": "Репетиция", "location": "manor", "start": "2030-06-14T18:00:00+03:00", "visible": False}
+
+        self.assertEqual(
+            self.warnings(change),
+            [
+                "site.json: section 'gifts' is not shown on any page",
+                "site.json: event 'rehearsal' is not shown on any page",
+                "site.json: location 'station' is not shown on any page",
+                "site.json: schedule 'spare' is not shown on any page",
+                "site.json: media item 'unused-1' is not shown on any page and its files are not published",
+            ],
+        )
+
+    def test_place_not_announced(self):
+        def change(site, invitations):
+            site["sections"][1]["widgets"][0]["text"] = "Ждём вас в {eventPlace}."
+            invitations[0]["primaryEvent"] = "brunch"
+
+        warnings = self.warnings(change)
+        self.assertEqual(
+            warnings,
+            [
+                "site.json: field 'sections[1].widgets[0].text' uses {eventPlace}, but the place "
+                "of the event 'brunch' is not announced yet (the text gets an empty string)"
+            ],
+        )
+
+
+class MediaFileTests(SchemaTestCase):
+    def check(self, infos, change=None):
+        site = F.site()
+        if change is not None:
+            change(site)
+        report = F.Collector()
+        _schema.check_media_files(site, infos, report)
+        for message in report.messages:
+            self.assertNotIn(".png", message)
+            self.assertNotIn(".mp4", message)
+        return report
+
+    def with_video(self, **facts):
+        infos = dict(F.MEDIA_INFO)
+        infos["proposal.mp4"] = MediaInfo("proposal.mp4", **facts)
+        return infos
+
+    def test_good_files(self):
+        self.assertMessages(self.check(F.MEDIA_INFO))
+
+    def test_unknown_duration(self):
+        report = self.check(self.with_video(video_codec="avc1", problems=(_media.DURATION_UNKNOWN,)))
+        self.assertEqual(
+            report.warnings,
+            ["site.json: field 'media.proposal.file' has no readable duration; the tile will show none"],
+        )
+
+    def test_video_warnings(self):
+        codes = (_media.NOT_FASTSTART, _media.UNEXPECTED_CODEC, _media.HDR_VIDEO)
+        report = self.check(self.with_video(problems=codes))
+        self.assertEqual(len(report.warnings), 3)
+        self.assertIn("+faststart", report.warnings[0])
+        self.assertIn("not H.264", report.warnings[1])
+        self.assertIn("HDR", report.warnings[2])
+
+    def test_unknown_codec(self):
+        report = self.check(self.with_video(problems=(_media.CODEC_UNKNOWN,)))
+        self.assertIn("has a video codec that cannot be read", report.warnings[0])
+
+    def test_video_without_a_readable_poster_size_takes_the_video_size(self):
+        infos = dict(F.MEDIA_INFO)
+        infos["proposal-poster.png"] = MediaInfo("proposal-poster.png", problems=(_media.SIZE_UNKNOWN,))
+        def change(site):
+            for key in ("width", "height"):
+                site["media"]["proposal"].pop(key)
+
+        self.assertMessages(self.check(infos, change))
+        infos["proposal.mp4"] = MediaInfo("proposal.mp4", video_codec="avc1", duration_seconds=1.0)
+        report = self.check(infos, change)
+        self.assertEqual(len(report.warnings), 1)
+        self.assertIn("'media.proposal.poster' has no readable picture size", report.warnings[0])
+
+    def test_poster_of_another_proportion(self):
+        infos = dict(F.MEDIA_INFO)
+        infos["proposal-poster.png"] = MediaInfo("proposal-poster.png", width=720, height=1200)
+        report = self.check(infos)
+        self.assertEqual(
+            report.warnings,
+            [
+                "site.json: field 'media.proposal.poster' has another proportion than 'width' "
+                "and 'height'; make the poster the same proportion as the video"
+            ],
+        )
+
+    def test_one_percent_is_tolerated(self):
+        infos = dict(F.MEDIA_INFO)
+        infos["proposal-poster.png"] = MediaInfo("proposal-poster.png", width=721, height=1280)
+        self.assertMessages(self.check(infos))
+
+    def test_unknown_picture_size(self):
+        infos = dict(F.MEDIA_INFO)
+        infos["story-1.png"] = MediaInfo("story-1.png", problems=(_media.SIZE_UNKNOWN,))
+        report = self.check(infos)
+        self.assertEqual(len(report.warnings), 1)
+        self.assertTrue(report.warnings[0].startswith("site.json: field 'media.story-1.file' has no readable picture size"))
+        report = self.check(infos, lambda s: s["media"]["story-1"].update(width=10, height=10))
+        self.assertMessages(report)
+
+    def test_broken_files(self):
+        infos = dict(F.MEDIA_INFO)
+        infos["story-1.png"] = MediaInfo("story-1.png", problems=(_media.NOT_THIS_TYPE, _media.SIZE_UNKNOWN))
+        infos["proposal.mp4"] = MediaInfo("proposal.mp4", problems=(_media.UNREADABLE,))
+        report = self.check(infos)
+        self.assertEqual(
+            report.errors,
+            [
+                "site.json: field 'media.proposal.file' names a file that cannot be read",
+                "site.json: field 'media.story-1.file' names a file that is not a valid file "
+                "of the type its name gives",
+            ],
+        )
+        self.assertEqual(report.warnings, [])
+
+    def test_only_shown_items(self):
+        infos = dict(F.MEDIA_INFO)
+        infos["story-1.png"] = MediaInfo("story-1.png", problems=(_media.UNREADABLE,))
+        report = F.Collector()
+        _schema.check_media_files(F.site(), infos, report, {"proposal"})
+        self.assertMessages(report)
+        _schema.check_media_files(F.site(), infos, report, {"story-1"})
+        self.assertEqual(len(report.errors), 1)
+
+
+class NegativeScenarioPrivacyTests(SchemaTestCase):
+    """No scenario prints a value of the data (the fixture's personal values,
+    titles, addresses, texts)."""
+
+    def test_values_of_site_json_are_not_quoted(self):
+        values = (
+            F.SITE["coupleNames"],
+            F.SITE["events"]["dinner"]["title"],
+            F.SITE["locations"]["manor"]["name"],
+            F.SITE["locations"]["manor"]["address"],
+            F.SITE["events"]["dinner"]["start"],
+        )
+
+        def change(site, invitations):
+            site["coupleNames"] = [site["coupleNames"]]
+            site["events"]["dinner"]["title"] += "\n"
+            site["locations"]["manor"]["name"] = {"x": site["locations"]["manor"]["name"]}
+            site["locations"]["manor"]["address"] += "\n"
+            site["events"]["dinner"]["start"] = site["events"]["dinner"]["start"][:19] + "+3"
+
+        report = run(change)
+        self.assertEqual(len(report.errors), 5)
+        self.assertNoPrivateData(report, *values)
+
+
+if __name__ == "__main__":
+    unittest.main()
