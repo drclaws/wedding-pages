@@ -2,7 +2,11 @@
 
 Every fixture lives in a temporary directory, so the tests do not depend on
 `examples/`, on the real `assets/` or on `template.html`, and never create
-media files inside the working tree.  All data below is obviously fictional.
+media files inside the working tree.  The data is in the format 2 and
+obviously fictional; the media files are tiny pictures and an MP4 file
+assembled from boxes, made while the test runs.  The fixture template is a
+page frame like `template.html`: the sections come from the fragments of the
+repository.
 """
 
 from __future__ import annotations
@@ -31,28 +35,37 @@ import build  # noqa: E402  (imported after sys.path is prepared)
 if Path(build.__file__).resolve() != ROOT / "build.py":  # pragma: no cover
     raise RuntimeError(f"unexpected build module: {build.__file__}")
 
+from tests.test_mp4 import audio_trak, sample_file, video_trak  # noqa: E402
+from tools._png import encode_png  # noqa: E402
+
 # --- fictional fixture data ------------------------------------------------
 
 COUPLE_NAMES = "Алиса и Боб"
-DATE_TEXT = "1 июня 2030 года"
 RSVP_DEADLINE = "1 мая 2030 года"
 OUT_OF_TOWN_TEXT = "Из Энска ходит автобус.\n\nПодскажем, где остановиться."
 
-VENUE_NAME = "Усадьба в Энске"
-VENUE_ADDRESS = "Энск, Вымышленная улица, 1"
+PLACE_NAME = "Усадьба в Энске"
+PLACE_ADDRESS = "Энск, Вымышленная улица, 1"
 MEDIA_DIR = "m3d1a-f1xtur3-dir"
 
 GREETING_TY = "Дорогая Ева!"
 GREETING_VY = "Дорогие Карл и Клара!"
 GREETING_THIRD = "Дорогой Гоша!"
+#: A note to a section (Eve), to a section switched on for one guest (Gosha)
+#: and to an event (Karl and Klara).
 NOTE = "Личная приписка для Евы."
 TRAVEL_NOTE = "Встретим Гошу на вокзале Энска."
+EVENT_NOTE = "Про аллергию Клары помним."
+#: The event that only Eve sees.
+HIDDEN_EVENT_TITLE = "Второй день у пруда"
 
 TOKEN_A = "EveToken-0123456789abcdefg"
 TOKEN_B = "KarlKlaraToken-zyxwvutsrq98"
 TOKEN_C = "GoshaToken-qwertyuiop12345"
 
-MEDIA_FILES = ("clip.mp4", "poster.jpg", "venue-1.webp", "venue-2.webp", "route.png")
+MEDIA_FILES = ("clip.mp4", "poster.png", "venue-1.png", "venue-2.png", "route.png")
+#: The size of the fixture clip and its poster.
+VIDEO_SIZE = (640, 360)
 
 #: Strings that must never appear in the output of `build` / `validate`.
 PRIVATE_STRINGS = (
@@ -62,36 +75,98 @@ PRIVATE_STRINGS = (
     GREETING_THIRD,
     NOTE,
     TRAVEL_NOTE,
+    EVENT_NOTE,
+    HIDDEN_EVENT_TITLE,
     OUT_OF_TOWN_TEXT.splitlines()[0],
-    DATE_TEXT,
-    VENUE_NAME,
-    VENUE_ADDRESS,
+    PLACE_NAME,
+    PLACE_ADDRESS,
     TOKEN_A,
     TOKEN_B,
     TOKEN_C,
 )
 
 SITE: dict = {
+    "schemaVersion": 2,
     "coupleNames": COUPLE_NAMES,
-    "dateISO": "2030-06-01T16:00:00+03:00",
-    "dateText": DATE_TEXT,
     "rsvpDeadline": RSVP_DEADLINE,
     "mediaDir": MEDIA_DIR,
-    "outOfTownText": OUT_OF_TOWN_TEXT,
-    "video": {"file": "clip.mp4", "poster": "poster.jpg"},
-    "schedule": [
-        {"time": "16:00", "title": "Сбор гостей", "text": "У входа в парк"},
-        {"time": "17:00", "title": "Церемония"},
+    "mainEvent": "dinner",
+    "sections": [
+        {"id": "cover", "type": "cover", "eyebrow": "Приглашение"},
+        {
+            "id": "invite",
+            "title": "{greeting}",
+            "widgets": [
+                {
+                    "type": "text",
+                    "text": {"ty": "Приходи {eventDate}.", "vy": "Приходите {eventDate}."},
+                }
+            ],
+        },
+        {"id": "personal", "title": "Несколько слов лично", "widgets": []},
+        {"id": "when", "title": "Дата и время", "widgets": [{"type": "date"}]},
+        {"id": "where", "title": "Где и когда", "widgets": [{"type": "events"}]},
+        {
+            "id": "travel",
+            "title": "Гостям из других городов",
+            "visible": False,
+            "widgets": [{"type": "text", "text": OUT_OF_TOWN_TEXT}],
+        },
+        {
+            "id": "video",
+            "title": "Видео",
+            "widgets": [{"type": "media", "layout": "single", "items": ["clip"]}],
+        },
+        {
+            "id": "rsvp",
+            "title": "Подтверждение",
+            "widgets": [
+                {
+                    "type": "text",
+                    "text": {
+                        "ty": "Ответь нам до {rsvpDeadline}.",
+                        "vy": "Ответьте нам до {rsvpDeadline}.",
+                    },
+                }
+            ],
+        },
     ],
-    "venue": {
-        "ready": True,
-        "name": VENUE_NAME,
-        "description": "Описание площадки.",
-        "address": VENUE_ADDRESS,
-        "photos": ["venue-1.webp", "venue-2.webp"],
-        "directionsImage": "route.png",
-        "geo": {"lat": 10.5, "lng": 20.25},
-        "maps": {"googlePlaceId": "", "yandexOrgId": ""},
+    "events": {
+        "dinner": {
+            "title": "Праздничный ужин",
+            "location": "manor",
+            "start": "2030-06-01T16:00:00+03:00",
+            "schedule": "day",
+        },
+        "brunch": {
+            "title": HIDDEN_EVENT_TITLE,
+            "location": "manor",
+            "start": "2030-06-02T12:00:00+03:00",
+            "end": "2030-06-02T14:00:00+03:00",
+            "visible": False,
+        },
+    },
+    "locations": {
+        "manor": {
+            "name": PLACE_NAME,
+            "address": PLACE_ADDRESS,
+            "description": "Описание площадки.",
+            "geo": {"lat": 10.5, "lng": 20.25},
+            "photos": ["venue-1", "venue-2"],
+            "directions": "route",
+        }
+    },
+    "schedules": {
+        "day": [
+            {"time": "16:00", "title": "Сбор гостей", "text": "У входа в парк"},
+            {"time": "17:00", "title": "Церемония"},
+        ]
+    },
+    "media": {
+        "venue-1": {"type": "image", "file": "venue-1.png", "alt": "Усадьба"},
+        "venue-2": {"type": "image", "file": "venue-2.png", "alt": "Сад"},
+        "route": {"type": "image", "file": "route.png", "alt": "Схема проезда"},
+        "clip": {"type": "video", "file": "clip.mp4", "poster": "poster.png", "alt": "Ролик"},
     },
 }
 
@@ -99,35 +174,29 @@ INVITATIONS: list = [
     {
         "token": TOKEN_A,
         "greeting": GREETING_TY,
-        "ty": True,
-        "vy": False,
-        "plusOne": False,
-        "outOfTown": False,
-        "note": NOTE,
+        "form": "ty",
+        "events": {"brunch": {"visible": True}},
+        "sections": {"personal": {"note": NOTE}},
     },
     {
         "token": TOKEN_B,
         "greeting": GREETING_VY,
-        "ty": False,
-        "vy": True,
-        "plusOne": True,
-        "outOfTown": False,
-        "note": None,
-        "travelNote": None,
+        "form": "vy",
+        "events": {"dinner": {"note": EVENT_NOTE}},
     },
     {
         "token": TOKEN_C,
         "greeting": GREETING_THIRD,
-        "ty": True,
-        "vy": False,
-        "plusOne": False,
-        "outOfTown": True,
-        "travelNote": TRAVEL_NOTE,
+        "form": "ty",
+        "sections": {"travel": {"visible": True, "note": TRAVEL_NOTE}},
     },
 ]
 
-#: Fixture template: uses every field of the template contract (values,
-#: conditions, loops and all the computed fields) and passes the output checks.
+#: The events each fixture invitation sees (its calendar files).
+VISIBLE_EVENTS = {TOKEN_A: ("brunch", "dinner"), TOKEN_B: ("dinner",), TOKEN_C: ("dinner",)}
+
+#: Fixture template: the page frame of `template.html` (the sections come
+#: from the fragments of the repository).
 TEMPLATE = """<!doctype html>
 <html lang="ru">
 <head>
@@ -141,43 +210,11 @@ TEMPLATE = """<!doctype html>
 <link rel="icon" href="{{faviconPath}}" type="{{faviconType}}">
 <!-- a note for whoever edits the template: never published -->
 <link rel="stylesheet" href="/assets/app.css">
-<script src="/assets/vendor/lib.js" defer></script>
 </head>
 <body>
-<h1>{{coupleNames}}</h1>
-<p class="greeting">{{greeting}}</p>
-<!-- if:ty --><p>Приходи</p><!-- endif -->
-<!-- if:vy --><p>Приходите</p><!-- endif -->
-<!-- if:note --><p class="note">{{note}}</p><!-- endif -->
-<!-- if:plusOne --><p>Можно со спутником</p><!-- endif -->
-<!-- if:outOfTown -->
-<p>{{outOfTownText}}</p>
-<!-- if:travelNote --><p>{{travelNote}}</p><!-- endif -->
-<!-- endif -->
-<p data-countdown="{{dateISO}}">{{dateText}} / {{rsvpDeadline}}</p>
-<p><a href="{{icsPath}}" download>Добавить в календарь</a></p>
-<ul>
-<!-- each:schedule -->
-<li>{{.time}} {{.title}}<!-- if:.text --> - {{.text}}<!-- endif --></li>
-<!-- endeach -->
-</ul>
-<!-- if:venue.ready -->
-<h2>{{venue.name}}</h2>
-<p>{{venue.description}}</p>
-<p>{{venue.address}}</p>
-<div data-media="{{mediaPath}}">
-<!-- each:venue.photos --><img src="{{.src}}" alt="" loading="lazy"><!-- endeach -->
-</div>
-<!-- if:venue.directionsSrc --><img src="{{venue.directionsSrc}}" alt="Схема проезда"><!-- endif -->
-<!-- if:venue.hasMapLinks --><p>На карте:</p><!-- endif -->
-<!-- if:venue.mapLinks.google --><a href="{{venue.mapLinks.google}}" target="_blank" rel="noopener noreferrer">Google</a><!-- endif -->
-<!-- if:venue.mapLinks.yandex --><a href="{{venue.mapLinks.yandex}}" target="_blank" rel="noopener noreferrer">Яндекс</a><!-- endif -->
-<!-- if:venue.mapLinks.apple --><a href="{{venue.mapLinks.apple}}" target="_blank" rel="noopener noreferrer">Apple</a><!-- endif -->
-<!-- endif -->
-<!-- if:!venue.ready --><p>Подробности сообщим позже</p><!-- endif -->
-<!-- if:video.file -->
-<video src="{{video.src}}" poster="{{video.posterSrc}}" controls playsinline preload="none"></video>
-<!-- endif -->
+<main class="page">
+<!-- include:partials/sections -->
+</main>
 </body>
 </html>
 """
@@ -261,23 +298,56 @@ def write_data(directory: Path, site=None, invitations=None) -> Path:
     return directory
 
 
+def png_bytes(width: int = 4, height: int = 3) -> bytes:
+    """A tiny grey PNG picture."""
+    return encode_png(width, height, [bytes([128, 128, 128]) * width] * height)
+
+
+def mp4_bytes(width: int = VIDEO_SIZE[0], height: int = VIDEO_SIZE[1]) -> bytes:
+    """An MP4 file made of boxes only: H.264 video, sound, 2 s, `+faststart`."""
+    return sample_file(video_trak(width=width, height=height), audio_trak())
+
+
+#: Pictures of their own size, so that every fixture file has its own contents.
+PICTURE_SIZES = {
+    "poster.png": VIDEO_SIZE,
+    "venue-1.png": (4, 3),
+    "venue-2.png": (3, 4),
+    "route.png": (5, 4),
+}
+
+
+def media_bytes(name: str) -> bytes:
+    """Placeholder contents by the extension: a picture, a clip or nothing."""
+    extension = os.path.splitext(name)[1].lower()
+    if extension == ".png":
+        return png_bytes(*PICTURE_SIZES.get(name, (2, 2)))
+    if extension == ".mp4":
+        return mp4_bytes()
+    return b""
+
+
 def write_media(directory: Path, names=MEDIA_FILES) -> Path:
-    """Create empty placeholder media files (never real media)."""
+    """Create placeholder media files (never real media)."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     for name in names:
-        (directory / name).write_bytes(b"")
+        (directory / name).write_bytes(media_bytes(name))
     return directory
+
+
+def published_name(name: str) -> str:
+    """The name the build publishes a fixture media file under."""
+    return build.media_tools.hashed_name(media_bytes(name), name)
 
 
 def write_assets(directory: Path) -> Path:
     """Assets fixture: regular files, dot-files and a dot-directory."""
     directory = Path(directory)
     (directory / "fonts").mkdir(parents=True, exist_ok=True)
-    (directory / "vendor").mkdir(parents=True, exist_ok=True)
     (directory / ".hidden").mkdir(parents=True, exist_ok=True)
     (directory / "app.css").write_text(tokens_css(), encoding="utf-8")
-    (directory / "vendor" / "lib.js").write_text("// lib\n", encoding="utf-8")
+    (directory / "fonts" / "sans.woff2").write_bytes(b"wOF2 fixture")
     (directory / "fonts" / ".gitkeep").write_text("", encoding="utf-8")
     (directory / ".gitkeep").write_text("", encoding="utf-8")
     (directory / ".DS_Store").write_bytes(b"\x00")

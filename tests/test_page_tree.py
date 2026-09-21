@@ -43,7 +43,7 @@ LOCATION_FIELDS = {
 }  # fmt: skip
 MEDIA_FIELDS = {
     "id", "type", "isVideo", "src", "posterSrc", "thumbSrc", "width", "height",
-    "ratio", "durationText", "label", "alt", "caption",
+    "ratio", "durationText", "label", "alt",
 }  # fmt: skip
 ITEM_FIELDS = {"time", "title", "text"}
 
@@ -447,6 +447,30 @@ class DomIdCollisionTests(unittest.TestCase):
             report.errors[0],
             "invitation #1 (0R-p…): ids of the markup repeat on the page ('s-invite-w1'); "
             "rename one of the ids in site.json",
+        )
+
+    def test_safeguard_shows_only_ids_that_look_like_ids(self):
+        site, invitations = F.site(), F.invitations()[:1]
+        report = F.Collector()
+        repeated = ["s-where--w1", "s-Ива н", "s-" + "a" * 400]
+        with mock.patch.object(_page, "repeated_ids", return_value=repeated):
+            _page.build_pages(site, invitations, F.settings(), report)
+        self.assertEqual(
+            report.errors,
+            [
+                "invitation #1 (0R-p…): ids of the markup repeat on the page ('s-where--w1'); "
+                "rename one of the ids in site.json"
+            ],
+        )
+        report = F.Collector()
+        with mock.patch.object(_page, "repeated_ids", return_value=repeated[1:]):
+            _page.build_pages(site, invitations, F.settings(), report)
+        self.assertEqual(
+            report.errors,
+            [
+                "invitation #1 (0R-p…): ids of the markup repeat on the page (not shown); "
+                "rename one of the ids in site.json"
+            ],
         )
 
 

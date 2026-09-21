@@ -373,7 +373,6 @@ class _Page:
             "durationText": duration,
             "label": label,
             "alt": alt,
-            "caption": _text(item.get("caption")),
         }
 
     # -- sections and widgets ------------------------------------------------------
@@ -556,6 +555,17 @@ def build_page(
     """The tree of one invitation (no warnings); the data must be valid."""
     page = _Page(site, invitation, settings, usage or Usage(), None, "", set())
     return page.tree()
+
+
+def visible_events(site: dict, invitation: dict, settings: PageSettings) -> list[dict]:
+    """The events an invitation sees, by start, as its tree shows them.
+
+    Each is the event of the tree without DOM ids (as `primaryEvent`): the
+    effective end, the place and the programme are the same as on the page.
+    The calendar files of the invitation are made from these.
+    """
+    page = _Page(site, invitation, settings, Usage(), None, "", set())
+    return [page.event(event_id, "") for event_id in page.visible]
 
 
 def build_pages(

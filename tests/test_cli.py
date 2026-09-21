@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests import support
+from tools import _data as data_tools
 from tests.support import (
     CliTestCase,
     build,
@@ -25,15 +27,19 @@ class TokenCommandTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         token = result.stdout.strip()
         self.assertEqual(len(result.stdout.splitlines()), 1)
-        self.assertIsNone(build.check_token(token))
+        self.assertIsNone(data_tools.check_token(token))
 
 
 class ValidateCommandTests(CliTestCase):
     def test_valid_data(self):
         result = self.run_validate()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("3 invitation(s)", result.stdout)
-        self.assertIn(f"{len(support.MEDIA_FILES)} media file(s)", result.stdout)
+        self.assertIn(
+            f"validate: OK - 3 invitation(s), 2 event(s), 8 section(s), "
+            f"{len(support.MEDIA_FILES)} media file(s)",
+            result.stdout,
+        )
+        self.assertEqual(result.stderr, "")
         self.assertNoPrivateData(result.stdout, result.stderr)
 
     def test_writes_nothing(self):
@@ -44,26 +50,53 @@ class ValidateCommandTests(CliTestCase):
     def test_invalid_data_reports_every_error(self):
         invitations = invitations_data()
         invitations[1]["token"] = invitations[0]["token"]
-        invitations[2]["ty"] = False
-        invitations[2]["vy"] = False
+        invitations[2]["form"] = "tu"
         write_data(self.data, invitations=invitations)
         result = self.run_validate()
         self.assertEqual(result.returncode, 1)
         self.assertIn("duplicate token", result.stderr)
-        self.assertIn("exactly one of 'ty' and 'vy'", result.stderr)
+        self.assertIn("invitation #3 (Gosh…): field 'form' must be one of: ty, vy", result.stderr)
         self.assertIn("failed with 2 error(s)", result.stderr)
+        self.assertNotIn("'tu'", result.stderr)
         self.assertNoPrivateData(result.stdout, result.stderr)
 
     def test_missing_media_file(self):
-        os.remove(self.media / "venue-1.webp")
+        os.remove(self.media / "venue-1.png")
+        route = (self.media / "route.png").read_bytes()
+        os.remove(self.media / "route.png")
+        (self.media / "Route.png").write_bytes(route)
         result = self.run_validate()
         self.assertEqual(result.returncode, 1)
-        self.assertIn("venue-1.webp", result.stderr)
+        self.assertIn(
+            "error: site.json: field 'media.venue-1.file': the file is missing from ", result.stderr
+        )
+        self.assertRegex(
+            result.stderr,
+            r"field 'media\.route\.file': the file is missing from \S*media \(a file with a "
+            r"different letter case exists; names are case-sensitive\)",
+        )
+        # file names are data: the field tells which one it is
+        self.assertNotIn("venue-1.png", result.stderr)
+        self.assertNotIn("oute.png", result.stderr)
         self.assertNoPrivateData(result.stdout, result.stderr)
 
+    def test_media_that_no_page_shows_is_not_looked_at(self):
+        site = site_data()
+        site["media"]["spare"] = {"type": "image", "file": "spare.png", "alt": "Запасное"}
+        write_data(self.data, site=site)
+        result = self.run_validate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "warning: site.json: media item 'spare' is not shown on any page and its files "
+            "are not published",
+            result.stderr,
+        )
+
     def test_missing_media_directory_without_references(self):
-        site = site_data(video=None)
-        site["venue"] = {"ready": False, "photos": [], "directionsImage": ""}
+        site = site_data()
+        site["locations"]["manor"] = {"ready": False}
+        del site["media"]
+        site["sections"] = [section for section in site["sections"] if section["id"] != "video"]
         write_data(self.data, site=site)
         result = run_cli(
             self.code,
@@ -93,23 +126,68 @@ class ValidateCommandTests(CliTestCase):
         self.assertIn("invitation #1 (ZZZZ…): 'token' is too long", result.stderr)
         self.assertNotIn("Z" * 10, result.stderr)
 
-    def test_empty_out_of_town_section_is_a_warning(self):
-        invitations = invitations_data()
-        invitations[2]["travelNote"] = None
-        write_data(self.data, site=site_data(outOfTownText=""), invitations=invitations)
-        result = self.run_validate()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("warning: invitation #3 (Gosh…): 'outOfTown' is true", result.stderr)
+    def test_repeated_ids_of_the_markup_stop_the_build(self):
+        # a safeguard: the ids are unique by construction, unless joined ambiguously
+        site = site_data()
+        site["sections"].append(
+            {"id": "invite-w1", "title": "Ещё", "widgets": [{"type": "text", "text": "x"}]}
+        )
+        write_data(self.data, site=site)
+        with mock.patch.object(build.page_tools, "DOM_SEPARATOR", "-"):
+            result = self.build_in_process()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "error: invitation #1 (EveT…): ids of the markup repeat on the page ('s-invite-w1')",
+            result.stderr,
+        )
+        self.assertFalse(self.out.exists())
         self.assertNoPrivateData(result.stdout, result.stderr)
 
-    def test_unknown_field_warning_goes_to_stderr(self):
+    def test_warnings_go_to_stderr(self):
         invitations = invitations_data()
-        invitations[0]["surpriseField"] = "VALUE-MUST-NOT-LEAK"
+        invitations[1]["events"]["brunch"] = {"note": support.EVENT_NOTE + " (2)"}
         write_data(self.data, invitations=invitations)
         result = self.run_validate()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("surpriseField", result.stderr)
+        self.assertIn(
+            "warning: invitation #2 (Karl…): field 'events.brunch.note' is set, but the event "
+            "is hidden for this invitation",
+            result.stderr,
+        )
+        self.assertNoPrivateData(result.stdout, result.stderr)
+
+    def test_unknown_field_is_an_error_without_its_value(self):
+        site = site_data()
+        site["coupleName"] = site.pop("coupleNames")
+        invitations = invitations_data()
+        invitations[0]["surpriseField"] = "VALUE-MUST-NOT-LEAK"
+        write_data(self.data, site=site, invitations=invitations)
+        result = self.run_validate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "site.json: unknown field 'coupleName' (did you mean 'coupleNames'?)", result.stderr
+        )
+        # a key of an invitation may be somebody's name: it is not shown
+        self.assertIn("invitation #1 (EveT…): unknown field '<unknown key>'", result.stderr)
+        self.assertNotIn("surpriseField", result.stderr)
         self.assertNotIn("VALUE-MUST-NOT-LEAK", result.stderr)
+
+    def test_old_data_is_one_message_that_points_to_the_readme(self):
+        write_json(
+            self.data / "site.json",
+            {"coupleNames": "x", "dateISO": "2030-06-01T16:00:00+03:00", "venue": {}},
+        )
+        write_json(
+            self.data / "invitations.json",
+            [{"token": support.TOKEN_A, "greeting": "x", "ty": True, "vy": False}],
+        )
+        result = self.run_validate()
+        self.assertEqual(result.returncode, 1)
+        errors = [line for line in result.stderr.splitlines() if line.startswith("error:")]
+        self.assertEqual(len(errors), 2, result.stderr)
+        self.assertIn("site.json: is in the old data format", errors[0])
+        self.assertIn("README", errors[0])
+        self.assertIn("invitations.json: all 1 invitations are in the old data format", errors[1])
 
 
 class BuildCommandTests(CliTestCase):
@@ -128,7 +206,7 @@ class BuildCommandTests(CliTestCase):
         self.assertNotIn("{{", page)
 
         self.assertTrue((self.out / "assets" / "app.css").is_file())
-        self.assertTrue((self.out / "assets" / "vendor" / "lib.js").is_file())
+        self.assertTrue((self.out / "assets" / "fonts" / "sans.woff2").is_file())
         copied = [
             name
             for root, dirs, files in os.walk(self.out / "assets")
@@ -207,10 +285,10 @@ class BuildCommandTests(CliTestCase):
         self.assertNoPrivateData(result.stdout, result.stderr)
 
     def test_template_error_for_a_single_invitation(self):
-        # Only the second fixture invitation has plusOne, so only its page
-        # reaches the failing placeholder (an array inside {{…}}).
+        # Only the second fixture invitation is addressed formally, so only its
+        # page reaches the failing placeholder (an array inside {{…}}).
         (self.code / "template.html").write_text(
-            "<!-- if:plusOne -->{{schedule}}<!-- endif -->\n", encoding="utf-8"
+            "<!-- if:vy -->{{sections}}<!-- endif -->\n", encoding="utf-8"
         )
         result = self.run_build()
         self.assertEqual(result.returncode, 1)
@@ -427,7 +505,9 @@ class NoPersonalDataInLogsTests(CliTestCase):
         cases.append(self.run_build())
         cases.append(self.run_validate())
 
-        write_data(self.data, site=site_data(dateISO="2030-06-01T16:00:00"))
+        site = site_data()
+        site["events"]["dinner"]["start"] = "2030-06-01T16:00:00"
+        write_data(self.data, site=site, invitations=invitations_data())
         cases.append(self.run_validate())
 
         write_json(self.data / "invitations.json", "not a list")
@@ -441,22 +521,30 @@ class NoPersonalDataInLogsTests(CliTestCase):
             self.assertNoPrivateData(result.stdout, result.stderr)
 
     def test_successful_runs_stay_clean(self):
+        site = site_data()
+        del site["media"]["venue-1"]["alt"]  # a warning, not an error
         invitations = invitations_data()
-        invitations[0]["unknownField"] = support.NOTE  # a warning, not an error
-        write_data(self.data, invitations=invitations)
+        invitations[1]["events"]["brunch"] = {"note": support.NOTE}
+        write_data(self.data, site=site, invitations=invitations)
         for result in (self.run_build(), self.run_validate()):
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("unknownField", result.stderr)
+            self.assertIn("field 'media.venue-1.alt' is not set", result.stderr)
+            self.assertIn("field 'events.brunch.note' is set", result.stderr)
             self.assertNoPrivateData(result.stdout, result.stderr)
 
     def test_failed_output_checks_stay_clean(self):
-        # the broken links carry the venue name and guest data in their URLs
+        # the broken links carry the name of the place and guest data in their URLs
+        links = self.code / "fragments" / "partials" / "map-links.html"
+        links.write_text(
+            links.read_text(encoding="utf-8").replace(' rel="noopener noreferrer"', ""),
+            encoding="utf-8",
+        )
         (self.code / "template.html").write_text(
-            support.TEMPLATE.replace(' rel="noopener noreferrer"', "").replace(
+            support.TEMPLATE.replace(
                 "</body>",
                 '<img src="https://cdn.example.invalid/{{greeting}}.png" alt="">\n'
                 '<img src="{{greeting}}.png" alt="">\n'
-                '<img src="/assets/{{note}}" alt="">\n'
+                '<img src="/assets/{{greeting}}" alt="">\n'
                 '<img src="//{{greeting}}/x.png" alt="">\n'
                 '<a href="mailto:{{coupleNames}}@example.invalid">x</a>\n</body>',
             ),

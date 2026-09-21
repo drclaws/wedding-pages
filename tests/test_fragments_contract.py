@@ -6,9 +6,12 @@ object).  Here the trees are written by hand.  Every node of the tree is a
 `Strict` dict: a fragment that asks for a field outside the contract, even in
 an `if:`, fails the test instead of quietly rendering nothing.
 
-The full pages are rendered from eight fictional guests that cover every
-combination of the form of address, out-of-town guests and "+1", with the
-page head of `template.html` and `<main>` made of `partials/sections`.
+The full pages are rendered with `template.html` twice: from hand-written
+trees of eight fictional guests that cover every combination of the form of
+address, out-of-town guests and "+1", and from the trees that the data layer
+(`tools._page.build_pages`) builds from the fixture data of the format 2.
+Both are wrapped in `Strict` nodes, so a fragment and the data layer cannot
+drift apart unnoticed.
 """
 
 from __future__ import annotations
@@ -20,14 +23,17 @@ import unittest
 from html.parser import HTMLParser
 from typing import Callable
 
+from tests import fixtures_v2 as F
 from tests.support import ROOT, build
+from tools import _maps, _page, _schema
 
 FRAGMENTS_DIR = ROOT / build.FRAGMENTS_DIRNAME
 
-#: The registered types: the file names in fragments/sections, widgets, media.
-SECTION_TYPES = ("cover", "custom")
-WIDGET_TYPES = ("text", "date", "events", "location", "schedule", "media")
-MEDIA_TYPES = ("image", "video")
+#: The registered types: the file names in fragments/sections, widgets, media
+#: are the types the checks of the data accept.
+SECTION_TYPES = _schema.SECTION_TYPES
+WIDGET_TYPES = _schema.WIDGET_TYPES
+MEDIA_TYPES = _schema.MEDIA_TYPES
 
 # --- the contract: the fields of every node of the page tree ----------------
 
@@ -55,8 +61,9 @@ EVENT_FIELDS = (
     "startISO", "endISO", "dateText", "timeText", "whenText", "tabText", "icsPath",
     "location", "program",
 )
-#: `primaryEvent` in the root has no DOM id (its place and program: "").
-PRIMARY_EVENT_FIELDS = tuple(field for field in EVENT_FIELDS if field != "domId")
+#: `primaryEvent` in the root has the fields of every event; its DOM id is ""
+#: (and so are those of its place and its program): it is not on the page.
+PRIMARY_EVENT_FIELDS = EVENT_FIELDS
 LOCATION_FIELDS = (
     "id", "domId", "ready", "name", "address", "description", "mapLinks", "hasMapLinks",
     "photos", "directions", "compact", "nested",
@@ -64,7 +71,7 @@ LOCATION_FIELDS = (
 MAP_LINK_FIELDS = ("google", "yandex", "apple")
 MEDIA_FIELDS = (
     "id", "type", "isVideo", "src", "posterSrc", "thumbSrc", "width", "height", "ratio",
-    "durationText", "label", "alt", "caption",
+    "durationText", "label", "alt",
 )
 SCHEDULE_ITEM_FIELDS = ("time", "title", "text")
 #: The program of an event (`null` when it has none).
@@ -133,7 +140,7 @@ MEDIA = {
     "directions": {"type": "image", "file": "directions.png", "size": (1600, 900),
                    "alt": "Схема проезда от станции"},
     "story-1": {"type": "image", "file": "story-1.png", "size": (1200, 900),
-                "alt": "Первая встреча", "caption": "Энск, 2024"},
+                "alt": "Первая встреча"},
     "proposal": {"type": "video", "file": "proposal.mp4", "poster": "proposal-poster.png",
                  "size": (720, 1280), "duration": "0:20", "alt": "предложение"},
     # the size of this one is unknown: the tile goes without width and height
@@ -282,7 +289,7 @@ def media_node(media_id: str, url: Callable[[str], str] = hashed_url) -> Strict:
         posterSrc=poster, thumbSrc=poster or src, width=width, height=height,
         ratio=f"{width} / {height}" if width else "", durationText=duration,
         label=f"Видео: {item['alt']}" + (f", {duration}" if duration else "") if video else "",
-        alt=item["alt"], caption=item.get("caption", ""),
+        alt=item["alt"],
     )
 
 
@@ -291,7 +298,7 @@ def location_node(location_id: str, dom_id: str, compact: bool, nested: bool,
     item = LOCATIONS[location_id]
     ready = item.get("ready", True)
     name, address = item.get("name", ""), item.get("address", "")
-    links = build.map_links(name, address, item.get("geo"), item.get("maps")) if ready else {
+    links = _maps.map_links(name, address, item.get("geo"), item.get("maps")) if ready else {
         "google": "", "yandex": "", "apple": ""}
     directions = item.get("directions")
     return node(
@@ -362,8 +369,7 @@ class PageTree:
                          items=schedule_items(item["schedule"]), nested=True)
             if item.get("schedule") else None,
         )
-        if dom_id is not None:
-            values["domId"] = dom_id
+        values["domId"] = dom_id or ""
         return node(fields, **values)
 
     def widget(self, config: dict, dom_id: str, labelled_by: str) -> Strict:
@@ -440,12 +446,10 @@ def page_tree(guest: dict, url: Callable[[str], str] = hashed_url) -> Strict:
 # --- rendering --------------------------------------------------------------------
 
 def page_frame() -> str:
-    """`template.html` with its `<head>` as it is and `<main>` made of the sections."""
+    """`template.html`: the page head and `<main>` made of the sections."""
     source = (ROOT / build.TEMPLATE_FILE).read_text(encoding="utf-8")
-    head = source[: source.index("<main")]
-    # the stylesheet and script of the video player are chosen by a field of v1 data
-    head = re.sub(r"\n\s*<!-- if:video\.file -->.*?<!-- endif -->", "", head, flags=re.S)
-    return head + '<main class="page">\n<!-- include:partials/sections -->\n</main>\n\n</body>\n</html>\n'
+    assert '<main class="page">\n<!-- include:partials/sections -->\n</main>' in source
+    return source
 
 
 def load_fragments() -> build.Fragments:
@@ -540,7 +544,7 @@ def bare_media(kind: str = "image", sized: bool = True, duration: str = "0:20") 
         thumbSrc="/assets/m/p.png" if video else "/assets/m/a.png",
         width=640 if sized else "", height=480 if sized else "",
         ratio="640 / 480" if sized else "", durationText=duration if video else "",
-        label="Видео: кадр, 0:20" if video else "", alt="Кадр", caption="",
+        label="Видео: кадр, 0:20" if video else "", alt="Кадр",
     )
 
 
@@ -571,10 +575,8 @@ def bare_event(event_id: str, full: bool, primary: bool = False, with_dom_id: bo
             node(SCHEDULE_ITEM_FIELDS, time="16:00", title="Пункт", text="Текст"),
             node(SCHEDULE_ITEM_FIELDS, time="", title="Пункт", text="")]) if full else None,
     )
-    if with_dom_id:
-        values["domId"] = f"w--e-{event_id}"
-        return node(EVENT_FIELDS, **values)
-    return node(PRIMARY_EVENT_FIELDS, **values)
+    values["domId"] = f"w--e-{event_id}" if with_dom_id else ""
+    return node(EVENT_FIELDS if with_dom_id else PRIMARY_EVENT_FIELDS, **values)
 
 
 def bare_widget(kind: str, **values) -> Strict:
@@ -979,6 +981,173 @@ class FullPageTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt; &amp; &#123;x&#125;", page)
         build.check_rendered(page)
         self.assertEqual(html_problems(page), [])
+
+
+# --- the trees of the data layer --------------------------------------------------
+
+def strict(value):
+    """A tree of the data layer with every node a `Strict` dict."""
+    if isinstance(value, dict):
+        return Strict({key: strict(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return [strict(item) for item in value]
+    return value
+
+
+def without_sizes(site: dict) -> dict:
+    """The media without `width` / `height`: the tiles take the size of no file."""
+    for item in site.get("media", {}).values():
+        item.pop("width", None)
+        item.pop("height", None)
+    return site
+
+
+#: The fields of every node, by the place in the tree where the node is found.
+NODE_FIELDS = {
+    "root": set(ROOT_FIELDS),
+    "section": set(SECTION_FIELDS["cover"]) | set(SECTION_FIELDS["custom"]),
+    "event": set(EVENT_FIELDS),
+    "location": set(LOCATION_FIELDS),
+    "mapLinks": set(MAP_LINK_FIELDS),
+    "media": set(MEDIA_FIELDS),
+    "program": set(PROGRAM_FIELDS),
+    "item": set(SCHEDULE_ITEM_FIELDS),
+}
+
+
+def nodes_of(tree: dict):
+    """(kind, node) of every node of a real tree, by where it is found."""
+
+    def event(value):
+        yield "event", value
+        yield from place(value["location"])
+        if value["program"] is not None:
+            yield "program", value["program"]
+            for item in value["program"]["items"]:
+                yield "item", item
+
+    def place(value):
+        yield "location", value
+        yield "mapLinks", value["mapLinks"]
+        for item in value["photos"] + ([value["directions"]] if value["directions"] else []):
+            yield "media", item
+
+    yield "root", tree
+    yield from event(tree["primaryEvent"])
+    for section in tree["sections"]:
+        yield "section", section
+        if section["event"] is not None:
+            yield from event(section["event"])
+        for widget in section["widgets"]:
+            yield f"widget:{widget['type']}", widget
+            if widget["type"] == "date":
+                yield from event(widget["event"])
+            elif widget["type"] == "events":
+                for item in widget["items"]:
+                    yield from event(item)
+            elif widget["type"] == "location":
+                yield from place(widget["location"])
+            elif widget["type"] == "schedule":
+                for item in widget["items"]:
+                    yield "item", item
+            elif widget["type"] == "media":
+                for item in widget["items"]:
+                    yield "media", item
+
+
+class DataLayerPageTests(unittest.TestCase):
+    """The pages rendered from the trees of `tools._page.build_pages`.
+
+    Every node is `Strict`: a field that a fragment reads and the data layer
+    does not build fails the rendering, even inside an `if:`.
+    """
+
+    pages: list[tuple[str, dict, str]]
+
+    @classmethod
+    def setUpClass(cls):
+        fragments = load_fragments()
+        sets = {
+            "main": (F.site(), F.invitations(), F.settings()),
+            "pending": (F.pending_site(), F.pending_invitations(), F.settings()),
+            "no sizes": (without_sizes(F.site()), F.invitations(), F.settings(media_info={})),
+        }
+        cls.pages = []
+        for name, (site, invitations, settings) in sets.items():
+            report = F.Collector()
+            assert _schema.check_data(site, invitations, report).ok, report.errors
+            trees, _usage = _page.build_pages(site, invitations, settings, report)
+            assert not report.errors, report.errors
+            for invitation, tree in zip(invitations, trees):
+                page = render_page(strict(tree), fragments)
+                cls.pages.append((f"{name}: {invitation['token'][:4]}", tree, page))
+
+    def test_every_page_renders_and_passes_the_checks_of_the_build(self):
+        self.assertEqual(len(self.pages), 8 + 3 + 8)
+        for label, tree, page in self.pages:
+            with self.subTest(page=label):
+                build.check_rendered(page)
+                self.assertEqual(html_problems(page, published_files(tree)), [])
+
+    def test_the_nodes_have_exactly_the_fields_of_the_contract(self):
+        widget_fields = {
+            f"widget:{kind}": set(WIDGET_COMMON_FIELDS) | set(fields)
+            for kind, fields in WIDGET_FIELDS.items()
+        }
+        seen = set()
+        for label, tree, _page_text in self.pages:
+            for kind, value in nodes_of(tree):
+                seen.add(kind)
+                with self.subTest(page=label, node=kind):
+                    self.assertEqual(set(value), {**NODE_FIELDS, **widget_fields}[kind])
+        # the fixture has no schedule widget of its own: the programme is in the card
+        self.assertEqual(seen, set(NODE_FIELDS) | set(widget_fields) - {"widget:schedule"})
+
+    def test_a_field_outside_the_tree_fails_the_rendering(self):
+        tree = strict(_page.build_pages(F.site(), F.invitations(), F.settings())[0][0])
+        del tree["sections"][1]["widgets"][0]["variant"]
+        with self.assertRaises(AssertionError):
+            render_page(tree)
+
+    def test_ids_are_unique_and_every_reference_resolves(self):
+        for label, _tree, page in self.pages:
+            outline = Outline(page)
+            with self.subTest(page=label):
+                repeated = [name for name, count in collections.Counter(outline.ids).items()
+                            if count > 1]
+                self.assertEqual(repeated, [])
+                self.assertTrue(all(outline.ids))
+                dangling = [(attribute, target) for attribute, target in outline.references
+                            if target not in outline.ids]
+                self.assertEqual(dangling, [])
+
+    def test_the_heading_outline_has_no_gaps(self):
+        for label, _tree, page in self.pages:
+            levels = Outline(page).headings
+            with self.subTest(page=label, levels=levels):
+                self.assertEqual(levels.count(1), 1)
+                self.assertEqual(levels[0], 1)
+                for previous, level in zip(levels, levels[1:]):
+                    self.assertLessEqual(level, previous + 1)
+
+    def test_one_reveal_mark_per_section(self):
+        for label, tree, page in self.pages:
+            outline = Outline(page)
+            with self.subTest(page=label):
+                custom = [section for section in tree["sections"] if section["type"] == "custom"]
+                self.assertEqual(len(outline.reveals), len(custom))
+                self.assertEqual(outline.nested_reveals, 0)
+                for tag, attributes in outline.reveals:
+                    self.assertEqual(tag, "div")
+                    for hook in NO_REVEAL_HOOKS:
+                        self.assertNotIn(hook, attributes)
+
+    def test_the_tiles_without_a_size(self):
+        pages = [page for label, _tree, page in self.pages if label.startswith("no sizes")]
+        unsized = [page for page in pages if "gallery__sizer--default" in page]
+        self.assertTrue(unsized)
+        for page in unsized:
+            self.assertNotIn("data-media-ratio", page)
 
 
 if __name__ == "__main__":  # pragma: no cover

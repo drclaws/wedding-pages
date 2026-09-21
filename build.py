@@ -8,23 +8,30 @@
 
 Only the Python 3 standard library is used (Python >= 3.10).
 
-`build` writes the pages (`i/<token>/index.html`), the stub (`index.html` and
-`404.html`), `assets/` (including `assets/<mediaDir>/` with the referenced media
-and `event.ics`, and the icon and the link preview image, which are generated
-from the design tokens of `assets/app.css` unless the media directory provides
-them), `_headers` and `robots.txt`, and then checks the finished
-output: nothing but the expected files, no external resources, no inline
-scripts, every local link resolves, no file above the hosting size limit.
+The data is in the format 2 (`site.json` with `"schemaVersion": 2` and
+`invitations.json`); it is checked by `tools/_schema.py`, and the page of every
+invitation is rendered from its page tree (`tools/_page.py`) with the page
+template and its fragments.
+
+`build` writes the pages (`i/<token>/index.html`) with one calendar file per
+event the invitation sees (`i/<token>/<eventId>.ics`), the stub (`index.html`
+and `404.html`), `assets/` (including `assets/<mediaDir>/` with the media files
+that at least one page shows, published under the hash of their contents, and
+the icon and the link preview image, which are generated from the design
+tokens of `assets/app.css` unless the media directory provides them),
+`_headers` and `robots.txt`, and then checks the finished output: nothing but
+the expected files, no external resources, no inline scripts, every local link
+resolves, no file above the hosting size limit.
 
 Importing this module has no side effects: everything happens inside `main()`,
 so other tools (tests, preview scripts) can reuse the public helpers:
 
-    load_data(data_dir)                -> (site, invitations)
-    build_context(site, invitation)    -> dict
+    load_data(data_dir)                -> Data (site, invitations, usage, media)
+    page_trees(data, images)           -> list of page trees
     render(template_source, context)   -> str
     parse_template(source).render(ctx) -> str
-    build_ics(site)                    -> bytes
-    check_output(out_dir, tokens)      -> OutputStats
+    event_calendar(media_dir, event)   -> bytes
+    check_output(out_dir, pages)       -> OutputStats
 
 Exit codes: 0 - success, 1 - data/build error, 2 - bad command line.
 """
@@ -47,7 +54,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable, Iterable, NamedTuple, Sequence
+from typing import Any, Callable, Collection, Iterable, Mapping, NamedTuple, Sequence
 from urllib.parse import unquote, urlsplit
 
 # `tools/` lives next to this file; the directory of the script is on the path
@@ -56,39 +63,22 @@ if str(Path(__file__).resolve().parent) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from tools import _data as data_tools  # noqa: E402
+from tools import _media as media_tools  # noqa: E402
+from tools import _page as page_tools  # noqa: E402
 from tools import _png as png_tools  # noqa: E402
+from tools import _schema as schema  # noqa: E402
 from tools import gen_assets  # noqa: E402
-from tools._data import (  # noqa: E402,F401
+from tools._data import (  # noqa: E402
     IMAGE_EXTENSIONS,
-    MAX_NAME_LENGTH,
     MIN_MEDIA_DIR_LENGTH,
-    MIN_TOKEN_LENGTH,
-    MIN_UUID_HEX_DIGITS,
-    VIDEO_EXTENSIONS,
-    _HEX_DASH_RE,
-    _MEDIA_DIR_RE,
-    _TOKEN_ALPHABET,
-    _TOKEN_CHARS_RE,
     _extension_list,
-    _is_finite,
-    check_media_name,
-    check_token,
     format_size,
     generate_token,
     invitation_label,
     json_type,
 )
-from tools._dates import _DATE_ISO_RE, parse_date_iso  # noqa: E402,F401
-from tools._maps import (  # noqa: E402,F401
-    YANDEX_MAPS_ZOOM,
-    _optional_text,
-    _url_component,
-    format_coordinate,
-    has_map_links,
-    map_links,
-    media_url,
-    venue_coordinates,
-)
+from tools._dates import parse_date_iso  # noqa: E402
+from tools._maps import _url_component, media_url  # noqa: E402
 
 # --------------------------------------------------------------------------
 # Layout constants
@@ -107,12 +97,12 @@ INVITATIONS_FILE = "invitations.json"
 #: Output layout.
 PAGES_DIRNAME = "i"
 PAGE_FILE = "index.html"
+#: The calendar file of an event, next to the page: `i/<token>/<eventId>.ics`.
+CALENDAR_SUFFIX = ".ics"
 #: The stub is published under both names, byte for byte the same.
 STUB_OUTPUTS = ("index.html", "404.html")
 HEADERS_FILE = "_headers"
 ROBOTS_FILE = "robots.txt"
-#: Calendar file inside `assets/<mediaDir>/`: one for everybody, neutral name.
-ICS_FILE = "event.ics"
 
 #: Style sheet inside `assets/` whose `:root` tokens colour the generated images.
 TOKENS_FILE = "app.css"
@@ -152,9 +142,9 @@ OS_JUNK_FILES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 #: Hosting limit for a single file.
 MAX_FILE_BYTES = 25 * 1024 * 1024
 #: Everything that may live below `assets/` in the output (`.txt` is meant for
-#: the licences of vendored libraries).
+#: the licences of fonts and the like).
 ASSET_EXTENSIONS = frozenset(
-    {".css", ".js", ".woff2", ".ico", ".ics", ".txt"} | IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+    {".css", ".js", ".woff2", ".ico", ".txt"} | IMAGE_EXTENSIONS | schema.VIDEO_EXTENSIONS
 )
 #: Never published, wherever they turn up in the output.
 FORBIDDEN_OUTPUT_EXTENSIONS = frozenset({".json", ".map", ".py", ".md"})
@@ -168,14 +158,14 @@ HEADERS_TEXT = """\
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
-  Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+  Content-Security-Policy: default-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
 /i/*
   Cache-Control: private, no-cache
 """
 ROBOTS_TEXT = "User-agent: *\nDisallow: /\n"
 
-#: Calendar entry: neutral on purpose (no names, nothing about the occasion).
-ICS_SUMMARY = "Приглашение"
+#: How long an event without an end lasts (it ends earlier when the next event
+#: of the invitation starts).
 ICS_DEFAULT_DURATION = timedelta(hours=6)
 ICS_PRODID = "-//invitation//static site build//RU"
 ICS_UID_DOMAIN = "invitation"
@@ -255,7 +245,7 @@ class Report:
     def __init__(self, on_warn: Callable[[str], None] | None = None) -> None:
         self.errors: list[str] = []
         self.warnings: list[str] = []
-        #: Number of distinct media files referenced by the data.
+        #: Number of distinct media files of the items that the pages show.
         self.media_files = 0
         #: Icon and link preview image, see `find_site_images`.
         self.site_images: SiteImages = DEFAULT_SITE_IMAGES
@@ -297,7 +287,7 @@ MISSING = _MissingType()
 # --------------------------------------------------------------------------
 
 _NAME = r"[A-Za-z_][A-Za-z0-9_]*"
-#: `field`, `venue.name`, `.field` (field of the current item), `.` (the item)
+#: `field`, `event.title`, `.field` (field of the current item), `.` (the item)
 _PATH_RE = re.compile(rf"(?:\.|\.?{_NAME}(?:\.{_NAME})*)\Z")
 _PLACEHOLDER_RE = re.compile(r"\{\{(.*?)\}\}")
 _BRACES_RE = re.compile(r"\{\{|\}\}")
@@ -943,446 +933,113 @@ class _Renderer:
 # Data loading and validation
 # --------------------------------------------------------------------------
 
-INVITATION_FIELDS = (
-    "token",
-    "greeting",
-    "ty",
-    "vy",
-    "plusOne",
-    "outOfTown",
-    "note",
-    "travelNote",
-)
-SITE_FIELDS = (
-    "coupleNames",
-    "dateISO",
-    "dateText",
-    "rsvpDeadline",
-    "outOfTownText",
-    "mediaDir",
-    "video",
-    "schedule",
-    "venue",
-)
-#: `video`: the media files, and the optional size of the video in pixels.
-VIDEO_MEDIA_FIELDS = ("file", "poster")
-VIDEO_SIZE_FIELDS = ("width", "height")
-VIDEO_FIELDS = VIDEO_MEDIA_FIELDS + VIDEO_SIZE_FIELDS
-SCHEDULE_FIELDS = ("time", "title", "text")
-VENUE_FIELDS = (
-    "ready",
-    "name",
-    "description",
-    "address",
-    "photos",
-    "directionsImage",
-    "geo",
-    "maps",
-)
-GEO_FIELDS = ("lat", "lng")
-MAPS_FIELDS = ("googlePlaceId", "yandexOrgId")
+class MediaFile(NamedTuple):
+    """A media file that at least one page shows."""
 
-_KINDS: dict[str, tuple[str, Callable[[Any], bool]]] = {
-    "string": ("a string", lambda v: isinstance(v, str)),
-    "boolean": ("a boolean (true/false)", lambda v: isinstance(v, bool)),
-    "number": (
-        "a number",
-        lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
-    ),
-    "array": ("an array", lambda v: isinstance(v, list)),
-    "object": ("an object", lambda v: isinstance(v, dict)),
-}
+    #: The name of the file in the data (and in the media directory).
+    name: str
+    #: The name it is published under: `<sha256[:16]>.<ext>` of its contents.
+    published: str
+    #: What `tools._media.inspect` found out about it.
+    info: media_tools.MediaInfo
 
 
-def _media_extensions(field: str) -> frozenset[str]:
-    """File types accepted for a media field (`video.file` is the only video)."""
-    return VIDEO_EXTENSIONS if field == "video.file" else IMAGE_EXTENSIONS
+class Data(NamedTuple):
+    """Data that passed every check, and what the pages show of it."""
 
-
-def _quote_key(key: Any) -> str:
-    text = key if isinstance(key, str) else str(key)
-    text = "".join(ch if ch.isprintable() else "?" for ch in text)
-    return f"'{_shorten(text, 40)}'"
-
-
-def _warn_unknown(obj: dict, known: Iterable[str], where: str, report: Report) -> None:
-    for key in sorted(set(obj) - set(known), key=str):
-        report.warn(f"{where}: unknown field {_quote_key(key)} is ignored")
-
-
-def _field(
-    obj: dict,
-    key: str,
-    kind: str,
-    where: str,
-    report: Report,
-    *,
-    prefix: str = "",
-    required: bool = True,
-    nullable: bool = False,
-    nonempty: bool = False,
-    single_line: bool = False,
-) -> Any:
-    """Type-checked field access; reports problems and returns MISSING on error."""
-    description, matches = _KINDS[kind]
-    name = f"{prefix}{key}"
-    if key not in obj:
-        if required:
-            report.error(f"{where}: missing required field '{name}'")
-        return MISSING
-    value = obj[key]
-    if value is None and nullable:
-        return None
-    if not matches(value):
-        suffix = " or null" if nullable else ""
-        report.error(
-            f"{where}: field '{name}' must be {description}{suffix}, got {json_type(value)}"
-        )
-        return MISSING
-    if single_line and kind == "string" and ("\n" in value or "\r" in value):
-        # the template puts these fields into headings and similar elements,
-        # where the paragraphs made from line breaks would be invalid markup
-        report.error(f"{where}: field '{name}' must be a single line (no line breaks)")
-        return MISSING
-    if nonempty and kind == "string" and not value.strip():
-        report.error(f"{where}: field '{name}' must not be empty")
-        return MISSING
-    if kind == "number" and not _is_finite(value):
-        report.error(
-            f"{where}: field '{name}' must be a finite number "
-            "(the value is infinite or too large)"
-        )
-        return MISSING
-    return value
-
-
-def check_invitations(
-    invitations: Any, report: Report, where: str = INVITATIONS_FILE
-) -> None:
-    """Validate the whole `invitations.json` document."""
-    if not isinstance(invitations, list):
-        report.error(
-            f"{where}: the top-level value must be an array of invitations, "
-            f"got {json_type(invitations)}"
-        )
-        return
-    if not invitations:
-        report.warn(f"{where}: contains no invitations")
-
-    seen: dict[str, int] = {}
-    for index, invitation in enumerate(invitations, start=1):
-        if not isinstance(invitation, dict):
-            report.error(
-                f"{invitation_label(index)}: must be an object, "
-                f"got {json_type(invitation)}"
-            )
-            continue
-        token = invitation.get("token")
-        label = invitation_label(index, token)
-
-        if "token" not in invitation:
-            report.error(f"{label}: missing required field 'token'")
-        else:
-            problem = check_token(token)
-            if problem:
-                report.error(f"{label}: {problem}")
-            else:
-                key = token.lower()
-                if key in seen:
-                    report.error(
-                        f"{label}: duplicate token (same as invitation #{seen[key]}; "
-                        "tokens are compared case-insensitively because they become "
-                        "directory names)"
-                    )
-                else:
-                    seen[key] = index
-
-        _field(
-            invitation, "greeting", "string", label, report, nonempty=True, single_line=True
-        )
-        flags = {
-            key: _field(invitation, key, "boolean", label, report)
-            for key in ("ty", "vy", "plusOne", "outOfTown")
-        }
-        ty, vy = flags["ty"], flags["vy"]
-        if isinstance(ty, bool) and isinstance(vy, bool) and ty is vy:
-            state = "true" if ty else "false"
-            report.error(
-                f"{label}: exactly one of 'ty' and 'vy' must be true (both are {state})"
-            )
-        for key in ("note", "travelNote"):
-            _field(
-                invitation, key, "string", label, report, required=False, nullable=True
-            )
-        _warn_unknown(invitation, INVITATION_FIELDS, label, report)
-
-
-def check_site(site: Any, report: Report, where: str = SITE_FILE) -> None:
-    """Validate the whole `site.json` document (media existence is separate)."""
-    if not isinstance(site, dict):
-        report.error(
-            f"{where}: the top-level value must be an object, got {json_type(site)}"
-        )
-        return
-
-    for key in ("coupleNames", "dateText", "rsvpDeadline"):
-        _field(site, key, "string", where, report, nonempty=True, single_line=True)
-    _field(site, "outOfTownText", "string", where, report)
-
-    date_iso = _field(site, "dateISO", "string", where, report, nonempty=True)
-    if isinstance(date_iso, str):
-        try:
-            parse_date_iso(date_iso)
-        except ValueError as exc:
-            report.error(f"{where}: field 'dateISO' {exc}")
-
-    media_dir = _field(site, "mediaDir", "string", where, report, nonempty=True)
-    if isinstance(media_dir, str) and not _MEDIA_DIR_RE.match(media_dir):
-        report.error(
-            f"{where}: field 'mediaDir' must be {MIN_MEDIA_DIR_LENGTH} to "
-            f"{MAX_NAME_LENGTH} characters long and may only contain A-Z, a-z, 0-9, "
-            f"'_' and '-' (got {len(media_dir)} characters)"
-        )
-
-    _check_video(site, report, where)
-    _check_schedule(site, report, where)
-    _check_venue(site, report, where)
-    _warn_unknown(site, SITE_FIELDS, where, report)
-
-
-def video_dimension(value: Any) -> int | None:
-    """`video.width` / `video.height`: a positive integer, else None."""
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        return None
-    return value
-
-
-def _check_video(site: dict, report: Report, where: str) -> None:
-    video = _field(site, "video", "object", where, report, required=False, nullable=True)
-    if not isinstance(video, dict):
-        return  # absent or null: the video block is optional
-    for key in VIDEO_MEDIA_FIELDS:
-        name = _field(
-            video, key, "string", where, report, prefix="video.", nonempty=True
-        )
-        if isinstance(name, str):
-            problem = check_media_name(name, _media_extensions(f"video.{key}"))
-            if problem:
-                report.error(f"{where}: field 'video.{key}' {problem}")
-    # the size is optional, but half of it is of no use to the page
-    given = [key for key in VIDEO_SIZE_FIELDS if video.get(key) is not None]
-    for key in given:
-        if video_dimension(video[key]) is None:
-            report.error(
-                f"{where}: field 'video.{key}' must be a positive whole number of "
-                f"pixels, got {json_type(video[key])}"
-            )
-    if len(given) == 1:
-        missing = next(key for key in VIDEO_SIZE_FIELDS if key not in given)
-        report.error(
-            f"{where}: field 'video.{given[0]}' is set but 'video.{missing}' is not; "
-            "set both or neither"
-        )
-    _warn_unknown(video, VIDEO_FIELDS, f"{where}: video", report)
-
-
-def _check_schedule(site: dict, report: Report, where: str) -> None:
-    schedule = _field(site, "schedule", "array", where, report)
-    if not isinstance(schedule, list):
-        return
-    for index, entry in enumerate(schedule):
-        prefix = f"schedule[{index}]."
-        if not isinstance(entry, dict):
-            report.error(
-                f"{where}: schedule[{index}] must be an object, got {json_type(entry)}"
-            )
-            continue
-        _field(entry, "time", "string", where, report, prefix=prefix, single_line=True)
-        _field(
-            entry, "title", "string", where, report, prefix=prefix, nonempty=True,
-            single_line=True,
-        )
-        _field(
-            entry, "text", "string", where, report, prefix=prefix, required=False,
-            nullable=True,
-        )
-        _warn_unknown(entry, SCHEDULE_FIELDS, f"{where}: schedule[{index}]", report)
-
-
-_MAP_ID_RULES = {
-    "googlePlaceId": (
-        re.compile(r"[A-Za-z0-9_-]+\Z"),
-        "may only contain A-Z, a-z, 0-9, '_' and '-'",
-    ),
-    "yandexOrgId": (re.compile(r"[0-9]+\Z"), "may only contain digits"),
-}
-
-
-def _check_venue(site: dict, report: Report, where: str) -> None:
-    venue = _field(site, "venue", "object", where, report)
-    if not isinstance(venue, dict):
-        return
-    ready = _field(venue, "ready", "boolean", where, report, prefix="venue.")
-    name = _field(
-        venue, "name", "string", where, report, prefix="venue.", required=False,
-        nullable=True, single_line=True,
-    )
-    if ready is True and not (isinstance(name, str) and name.strip()):
-        if "name" not in venue or name is None or isinstance(name, str):
-            report.error(
-                f"{where}: field 'venue.name' must not be empty when 'venue.ready' is true"
-            )
-    for key in ("description", "address"):
-        _field(
-            venue, key, "string", where, report, prefix="venue.", required=False,
-            nullable=True, single_line=key == "address",
-        )
-
-    photos = _field(
-        venue, "photos", "array", where, report, prefix="venue.", required=False,
-        nullable=True,
-    )
-    if isinstance(photos, list):
-        for index, photo in enumerate(photos):
-            if isinstance(photo, str) and not photo.strip():
-                continue  # empty entry means "not set"
-            problem = check_media_name(photo, IMAGE_EXTENSIONS)
-            if problem:
-                report.error(f"{where}: field 'venue.photos[{index}]' {problem}")
-
-    directions = _field(
-        venue, "directionsImage", "string", where, report, prefix="venue.",
-        required=False, nullable=True,
-    )
-    if isinstance(directions, str) and directions.strip():
-        problem = check_media_name(directions, IMAGE_EXTENSIONS)
-        if problem:
-            report.error(f"{where}: field 'venue.directionsImage' {problem}")
-
-    geo = _field(
-        venue, "geo", "object", where, report, prefix="venue.", required=False,
-        nullable=True,
-    )
-    if isinstance(geo, dict):
-        limits = {"lat": 90.0, "lng": 180.0}
-        for key in GEO_FIELDS:
-            value = _field(geo, key, "number", where, report, prefix="venue.geo.")
-            if isinstance(value, (int, float)) and abs(value) > limits[key]:
-                report.error(
-                    f"{where}: field 'venue.geo.{key}' is outside "
-                    f"[-{limits[key]:g}, {limits[key]:g}]"
-                )
-        _warn_unknown(geo, GEO_FIELDS, f"{where}: venue.geo", report)
-
-    maps = _field(
-        venue, "maps", "object", where, report, prefix="venue.", required=False,
-        nullable=True,
-    )
-    if isinstance(maps, dict):
-        for key in MAPS_FIELDS:
-            value = _field(
-                maps, key, "string", where, report, prefix="venue.maps.",
-                required=False, nullable=True,
-            )
-            if isinstance(value, str) and value.strip():
-                pattern, expected = _MAP_ID_RULES[key]
-                if not pattern.match(value.strip()):
-                    report.error(
-                        f"{where}: field 'venue.maps.{key}' {expected} "
-                        "(use the identifier, not a link)"
-                    )
-        _warn_unknown(maps, MAPS_FIELDS, f"{where}: venue.maps", report)
-
-    _warn_unknown(venue, VENUE_FIELDS, f"{where}: venue", report)
-
-
-def media_references(site: Any) -> list[tuple[str, str]]:
-    """(field path, file name) for every media file referenced by `site.json`.
-
-    Entries with the wrong type are skipped: they are reported by `check_site`.
-    """
-    references: list[tuple[str, str]] = []
-    if not isinstance(site, dict):
-        return references
-    video = site.get("video")
-    if isinstance(video, dict):
-        for key in VIDEO_MEDIA_FIELDS:
-            value = video.get(key)
-            if isinstance(value, str) and value.strip():
-                references.append((f"video.{key}", value))
-    venue = site.get("venue")
-    if isinstance(venue, dict):
-        photos = venue.get("photos")
-        if isinstance(photos, list):
-            for index, photo in enumerate(photos):
-                if isinstance(photo, str) and photo.strip():
-                    references.append((f"venue.photos[{index}]", photo))
-        directions = venue.get("directionsImage")
-        if isinstance(directions, str) and directions.strip():
-            references.append(("venue.directionsImage", directions))
-    return [
-        (path, name)
-        for path, name in references
-        if check_media_name(name, _media_extensions(path)) is None
-    ]
+    site: dict
+    invitations: list
+    #: Ids of the parts of `site.json` that at least one page shows
+    #: (`tools._page.Usage`).
+    usage: page_tools.Usage
+    #: Name in the data -> `MediaFile`, for every file of the media items that
+    #: the pages show; empty when the media directory was not looked at.
+    media: dict[str, MediaFile]
 
 
 def check_media(
-    site: Any, media_dir: Path | str, report: Report, where: str = SITE_FILE
-) -> int:
-    """Check that every referenced media file exists; returns their count."""
-    references = media_references(site)
-    if not references:
-        return 0
+    site: dict,
+    usage: page_tools.Usage,
+    media_dir: Path | str,
+    report: Report,
+    where: str = SITE_FILE,
+) -> dict[str, MediaFile]:
+    """Look at the files of the media items that the pages show.
+
+    A file must exist with exactly the name of the data, be a regular file
+    (not a symbolic link) and fit the size limit of the hosting; then its
+    facts are read (`tools._media.inspect`), checked
+    (`tools._schema.check_media_files`) and its published name is computed.
+    Messages name the field and the media directory, never the file name.
+    Items that no page shows are not looked at: they are not published.
+    """
+    files = page_tools.media_files(site, usage)
+    if not files:
+        return {}
     media_dir = Path(media_dir)
+    shown_dir = display_path(media_dir)
+    errors = len(report.errors)
     listing: dict[str, os.DirEntry] = {}
     try:
         with os.scandir(media_dir) as entries:
             listing = {entry.name: entry for entry in entries}
     except FileNotFoundError:
-        report.error(f"media directory not found: {display_path(media_dir)}")
+        report.error(f"media directory not found: {shown_dir}")
     except NotADirectoryError:
-        report.error(f"media path is not a directory: {display_path(media_dir)}")
+        report.error(f"media path is not a directory: {shown_dir}")
     except OSError as exc:
-        report.error(
-            f"cannot read the media directory {display_path(media_dir)}: {exc.strerror}"
-        )
+        report.error(f"cannot read the media directory {shown_dir}: {exc.strerror}")
+    if len(report.errors) > errors:
+        return {}
 
     lowercase = {name.lower() for name in listing}
-    for path, name in references:
+    found: dict[str, Path] = {}
+    for path, name in files:
         entry = listing.get(name)
+        problem = None
         if entry is None:
-            hint = (
-                " (a file with a different letter case exists; names are case-sensitive)"
-                if name.lower() in lowercase
-                else ""
-            )
-            report.error(
-                f"{where}: field '{path}': file '{name}' not found in "
-                f"{display_path(media_dir)}{hint}"
-            )
+            problem = f"is missing from {shown_dir}"
+            if name.lower() in lowercase:
+                problem += " (a file with a different letter case exists; names are case-sensitive)"
         elif entry.is_symlink():
-            report.error(
-                f"{where}: field '{path}': {display_path(media_dir / name)} is a "
-                "symbolic link; media must be regular files"
-            )
+            problem = f"is a symbolic link in {shown_dir}; media must be regular files"
         elif not entry.is_file():
-            report.error(
-                f"{where}: field '{path}': '{name}' in {display_path(media_dir)} "
-                "is not a regular file"
-            )
+            problem = f"is not a regular file in {shown_dir}"
         else:
             try:
                 size = entry.stat().st_size
-            except OSError:
-                continue  # reported when the file is copied
-            if size > MAX_FILE_BYTES:
-                report.error(
-                    f"{where}: field '{path}': {display_path(media_dir / name)} is "
-                    f"{format_size(size)}, the limit for a single file is "
-                    f"{format_size(MAX_FILE_BYTES)}"
-                )
-    return len({name for _, name in references})
+            except OSError as exc:
+                problem = f"cannot be read ({exc.strerror or type(exc).__name__})"
+            else:
+                if size > MAX_FILE_BYTES:
+                    problem = (
+                        f"is {format_size(size)}, the limit for a single file is "
+                        f"{format_size(MAX_FILE_BYTES)}"
+                    )
+        if problem is None:
+            found[name] = Path(entry.path)
+        else:
+            report.error(f"{where}: field '{path}': the file {problem}")
+    if len(report.errors) > errors:
+        return {}
+
+    infos = {name: media_tools.inspect(source, name) for name, source in found.items()}
+    schema.check_media_files(site, infos, report, shown=usage.media, where=where)
+    if len(report.errors) > errors:
+        return {}
+    media: dict[str, MediaFile] = {}
+    for name, source in sorted(found.items()):
+        try:
+            published = media_tools.hashed_name(source, name)
+        except OSError as exc:
+            path = next(path for path, file in files if file == name)
+            report.error(
+                f"{where}: field '{path}': the file cannot be read "
+                f"({exc.strerror or type(exc).__name__})"
+            )
+            continue
+        media[name] = MediaFile(name, published, infos[name])
+    return media
 
 
 def check_media_dir_collision(
@@ -1595,34 +1252,17 @@ def site_images_context(
     }
 
 
-def warn_empty_out_of_town(site: Any, invitations: Any, report: Report) -> None:
-    """Warn about `outOfTown` invitations whose section would have no text."""
-    if not isinstance(site, dict) or not isinstance(invitations, list):
-        return
-    if _optional_text(site.get("outOfTownText")):
-        return
-    for index, invitation in enumerate(invitations, start=1):
-        if (
-            isinstance(invitation, dict)
-            and invitation.get("outOfTown") is True
-            and not _optional_text(invitation.get("travelNote"))
-        ):
-            report.warn(
-                f"{invitation_label(index, invitation.get('token'))}: 'outOfTown' is true, "
-                "but 'outOfTownText' and 'travelNote' are both empty (the section "
-                "will have no text)"
-            )
-
-
 def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not allowed in JSON data")
 
 
-def read_json(path: Path, report: Report) -> Any:
+def read_json(path: Path, report: Report, known: Collection[str] | None = None) -> Any:
     """Read a JSON document, reporting I/O and syntax problems (never values).
 
     A key repeated within one object is an error as well: the standard parser
-    would silently keep the last value only.
+    would silently keep the last value only.  With `known` the message shows
+    a repeated key only when it is one of these names (the keys of the
+    invitations may be somebody's name).
     """
     shown = display_path(path)
     try:
@@ -1650,7 +1290,7 @@ def read_json(path: Path, report: Report) -> Any:
         report.error(f"{shown}: invalid JSON: {exc}")
         return MISSING
     for duplicate in duplicates:
-        report.error(f"{shown}: {duplicate.describe()}")
+        report.error(f"{shown}: {duplicate.describe(known)}")
     return MISSING if duplicates else value
 
 
@@ -1659,12 +1299,18 @@ def load_data(
     media_dir: Path | str | None = None,
     report: Report | None = None,
     assets_dir: Path | str | None = None,
-) -> tuple[dict, list]:
-    """Load and validate `site.json` and `invitations.json`.
+) -> Data:
+    """Load and check `site.json` and `invitations.json` (the format 2).
 
-    Media files are checked as well when `media_dir` is given, and `mediaDir`
-    is compared with the contents of `assets_dir` when that is given.  All
-    problems are collected and raised together as a `ValidationError`.
+    The order matters: `site.json` first, because the repeated keys of
+    `invitations.json` are named only when they are field names of the format
+    or ids declared in `site.json`; then the invitations; then the page trees
+    are built once, which reports what needs the finished trees (warnings
+    about parts no page shows, a repeated DOM id).  The media files of the
+    items that the pages show are looked at when `media_dir` is given, and
+    `mediaDir` is compared with the contents of `assets_dir` when that is
+    given.  All problems are collected and raised together as a
+    `ValidationError`.
     """
     report = report if report is not None else Report()
     data_path = Path(data_dir)
@@ -1673,149 +1319,58 @@ def load_data(
         report.raise_if_failed()
 
     site = read_json(data_path / SITE_FILE, report)
-    invitations = read_json(data_path / INVITATIONS_FILE, report)
-    if site is not MISSING:
-        check_site(site, report)
-        if media_dir is not None:
-            report.media_files = check_media(site, media_dir, report)
-            report.site_images = find_site_images(media_dir, report)
-        if assets_dir is not None:
-            check_media_dir_collision(site, assets_dir, report)
+    index = schema.check_site(site, report) if site is not MISSING else schema.SiteIndex()
+    known = schema.GUEST_FIELD_NAMES | index.declared_ids()
+    invitations = read_json(data_path / INVITATIONS_FILE, report, known)
     if invitations is not MISSING:
-        check_invitations(invitations, report)
-    if site is not MISSING and invitations is not MISSING:
-        warn_empty_out_of_town(site, invitations, report)
+        schema.check_invitations(invitations, index, report)
+    if media_dir is not None:
+        report.site_images = find_site_images(media_dir, report)
+    if site is not MISSING and assets_dir is not None:
+        check_media_dir_collision(site, assets_dir, report)
     report.raise_if_failed()
-    return site, invitations
+
+    # the trees tell what the pages show; their media addresses do not matter here
+    _trees, usage = page_tools.build_pages(site, invitations, page_settings(site), report)
+    report.raise_if_failed()
+    media = check_media(site, usage, media_dir, report) if media_dir is not None else {}
+    report.raise_if_failed()
+    report.media_files = len(media)
+    return Data(site, invitations, usage, media)
 
 
-# --------------------------------------------------------------------------
-# Template context
-# --------------------------------------------------------------------------
+def page_settings(
+    site: dict, images: dict | None = None, media: dict[str, MediaFile] | None = None
+) -> page_tools.PageSettings:
+    """What the page trees need from the build.
 
-
-def site_context(site: dict, images: dict | None = None) -> dict:
-    """Template-ready copy of `site.json` (the shared part of every page).
-
-    Every optional field is normalised so that `{{field}}` inside
-    `<!-- if:field -->` always resolves.  Expects data that passed validation.
-
-    Computed fields, available to the template like any other field:
-
-    * `mediaPath` - `/assets/<mediaDir>`; `icsPath` - the calendar file;
-    * `video.src`, `video.posterSrc` - URLs of the video and its poster; `video`
-      is always an object (all strings empty when the data has no video), so
-      `<!-- if:video.file -->` works either way; `video.width` / `video.height`
-      are the numbers from the data, or "" when the size is not given;
-    * `faviconPath`, `faviconType`, `ogImage`, `ogImageType`, `ogImageWidth`,
-      `ogImageHeight` - the icon and the link preview image, see
-      `site_images_context` (`images` is its result; the default describes the
-      generated images and a site whose address is not known);
-    * `venue.photos` - a list of `{src}` objects (`{{.src}}` inside `each`);
-    * `venue.directionsSrc` - URL of the directions image or "";
-    * `venue.mapLinks.google` / `.yandex` / `.apple` - see `map_links`;
-      `venue.hasMapLinks` - true when at least one of them is set.
-
-    File names are percent-encoded in the URLs.
+    `images` are the fields of the site images (`site_images_context`),
+    `media` the files that `check_media` found: a media file is addressed by
+    its published name.
     """
-    video = site.get("video")
-    video = video if isinstance(video, dict) else {}
-    schedule = site.get("schedule")
-    venue = site.get("venue")
-    venue = venue if isinstance(venue, dict) else {}
-    geo = venue.get("geo")
-    maps = venue.get("maps")
-    maps = maps if isinstance(maps, dict) else {}
-    photos = venue.get("photos")
+    media = media or {}
+    media_path = f"/{ASSETS_DIRNAME}/{site['mediaDir']}"
 
-    media_dir = _optional_text(site.get("mediaDir"))
-    media_path = f"/{ASSETS_DIRNAME}/{media_dir}"
-    video_file = _optional_text(video.get("file"))
-    video_poster = _optional_text(video.get("poster"))
-    venue_name = _optional_text(venue.get("name"))
-    venue_address = _optional_text(venue.get("address"))
-    directions = _optional_text(venue.get("directionsImage"))
-    links = map_links(venue_name, venue_address, geo, maps)
-    video_size = [video_dimension(video.get(key)) for key in VIDEO_SIZE_FIELDS]
-    video_width, video_height = video_size if all(video_size) else ("", "")
+    def media_src(name: str) -> str:
+        entry = media.get(name)
+        return media_url(media_path, entry.published if entry is not None else name)
 
-    return {
-        **(images if images is not None else site_images_context()),
-        "coupleNames": _optional_text(site.get("coupleNames")),
-        "dateISO": _optional_text(site.get("dateISO")),
-        "dateText": _optional_text(site.get("dateText")),
-        "rsvpDeadline": _optional_text(site.get("rsvpDeadline")),
-        "outOfTownText": _optional_text(site.get("outOfTownText")),
-        "mediaDir": media_dir,
-        "mediaPath": media_path,
-        "icsPath": f"{media_path}/{ICS_FILE}",
-        "video": {
-            "file": video_file,
-            "poster": video_poster,
-            "src": media_url(media_path, video_file),
-            "posterSrc": media_url(media_path, video_poster),
-            "width": video_width,
-            "height": video_height,
-        },
-        "schedule": [
-            {
-                "time": _optional_text(entry.get("time")),
-                "title": _optional_text(entry.get("title")),
-                "text": _optional_text(entry.get("text")),
-            }
-            for entry in (schedule if isinstance(schedule, list) else [])
-            if isinstance(entry, dict)
-        ],
-        "venue": {
-            "ready": venue.get("ready") is True,
-            "name": venue_name,
-            "description": _optional_text(venue.get("description")),
-            "address": venue_address,
-            "photos": [
-                {"src": media_url(media_path, photo)}
-                for photo in (photos if isinstance(photos, list) else [])
-                if isinstance(photo, str) and photo.strip()
-            ],
-            "directionsImage": directions,
-            "directionsSrc": media_url(media_path, directions),
-            "geo": (
-                {"lat": geo.get("lat"), "lng": geo.get("lng")}
-                if isinstance(geo, dict)
-                else None
-            ),
-            "maps": {
-                "googlePlaceId": _optional_text(maps.get("googlePlaceId")),
-                "yandexOrgId": _optional_text(maps.get("yandexOrgId")),
-            },
-            "mapLinks": links,
-            "hasMapLinks": has_map_links(links),
-        },
-    }
+    return page_tools.PageSettings(
+        default_duration=ICS_DEFAULT_DURATION,
+        site_images=images if images is not None else {},
+        media_src=media_src,
+        media_info={name: entry.info for name, entry in media.items()},
+        pages_path=f"/{PAGES_DIRNAME}",
+        assets_path=f"/{ASSETS_DIRNAME}",
+    )
 
 
-def invitation_context(invitation: dict) -> dict:
-    """Template-ready copy of one invitation (guest fields at the context root)."""
-    return {
-        "greeting": _optional_text(invitation.get("greeting")),
-        "ty": invitation.get("ty") is True,
-        "vy": invitation.get("vy") is True,
-        "plusOne": invitation.get("plusOne") is True,
-        "outOfTown": invitation.get("outOfTown") is True,
-        "note": _optional_text(invitation.get("note")),
-        "travelNote": _optional_text(invitation.get("travelNote")),
-    }
-
-
-def build_context(site: dict, invitation: dict, images: dict | None = None) -> dict:
-    """Full template context for one page: site fields + invitation fields.
-
-    A fresh context is built for every page, so per-page computed fields added
-    by later build steps cannot leak between invitations.  `images` is passed
-    on to `site_context`.
-    """
-    context = site_context(site, images)
-    context.update(invitation_context(invitation))
-    return context
+def page_trees(data: Data, images: dict | None = None) -> list[dict]:
+    """The page tree of every invitation, in the order of `invitations.json`."""
+    trees, _usage = page_tools.build_pages(
+        data.site, data.invitations, page_settings(data.site, images, data.media)
+    )
+    return trees
 
 
 # --------------------------------------------------------------------------
@@ -1901,35 +1456,42 @@ def build_event_ics(
     return "".join(ics_fold(line) + "\r\n" for line in lines).encode("utf-8")
 
 
-def build_ics(site: dict) -> bytes:
-    """The calendar file: one event in UTC, without names or guest data.
+def event_calendar(media_dir: str, event: dict) -> bytes:
+    """The calendar file of one event of an invitation (`i/<token>/<id>.ics`).
 
-    The result depends on the data only (no clock, no random values), so equal
-    inputs give identical bytes.  The location is included once the venue is
-    announced (`venue.ready`).
+    `event` is an event of the page tree.  Nothing of the invitation goes
+    into the file: the notes stay on the page.  The uid depends on the media
+    directory, the id and the start of the event, so the file of an event is
+    the same for everybody who sees it and a new time gives a new entry.  The
+    place is included once it is announced.
     """
-    date_iso = _optional_text(site.get("dateISO"))
-    try:
-        start = parse_date_iso(date_iso)
-    except ValueError as exc:  # pragma: no cover - the data is validated first
-        raise BuildError(f"{SITE_FILE}: field 'dateISO' {exc}") from None
-    media_dir = _optional_text(site.get("mediaDir"))
-    uid = hashlib.sha256(f"{media_dir}\n{date_iso}".encode("utf-8")).hexdigest()[:32]
-
-    venue = site.get("venue")
-    venue = venue if isinstance(venue, dict) else {}
+    uid = hashlib.sha256(
+        f"{media_dir}\n{event['id']}\n{event['startISO']}".encode("utf-8")
+    ).hexdigest()[:32]
+    place = event["location"]
     location = ""
-    if venue.get("ready") is True:
-        parts = (_optional_text(venue.get(key)).strip() for key in ("name", "address"))
-        location = ", ".join(part for part in parts if part)
-
+    if place["ready"]:
+        location = ", ".join(part for part in (place["name"], place["address"]) if part)
     return build_event_ics(
         uid=uid,
-        start=start,
-        end=start + ICS_DEFAULT_DURATION,
-        summary=ICS_SUMMARY,
+        start=parse_date_iso(event["startISO"]),
+        end=parse_date_iso(event["endISO"]),
+        # default: the title of the event is the title of the calendar entry
+        summary=event["title"],
         location=location,
     )
+
+
+def calendar_files(data: Data, images: dict | None = None) -> dict[str, dict[str, bytes]]:
+    """Token -> {event id -> calendar file} for every event each invitation sees."""
+    settings = page_settings(data.site, images, data.media)
+    return {
+        invitation["token"]: {
+            event["id"]: event_calendar(data.site["mediaDir"], event)
+            for event in page_tools.visible_events(data.site, invitation, settings)
+        }
+        for invitation in data.invitations
+    }
 
 
 # --------------------------------------------------------------------------
@@ -2786,16 +2348,45 @@ def _scan_output(root: Path) -> tuple[dict[str, int], list[str], list[str]]:
     return files, directories, problems
 
 
+#: Directories that `assets/` may hold besides the media directory.
+ASSET_DIRECTORIES = frozenset({"fonts"})
+#: The published name of a media file: `<sha256[:16]>.<ext>`.
+_PUBLISHED_MEDIA_RE = re.compile(r"[0-9a-f]{16}\.[a-z0-9]+\Z")
+
+
+def _media_path(name: str) -> str:
+    """A file of the media directory for a message: a published name as it
+    is, any other name (it may be a name from the data) cut to its type."""
+    shown = name if _PUBLISHED_MEDIA_RE.match(name) else "…" + os.path.splitext(name)[1].lower()
+    return f"{ASSETS_DIRNAME}/<mediaDir>/{shown}"
+
+
 def _check_output_tree(
     files: dict[str, int],
     directories: Sequence[str],
-    tokens: Sequence[str],
-    media_dir: str,
+    pages: Mapping[str, Iterable[str]],
+    media_dir: str = "",
+    media: Collection[str] = (),
 ) -> list[str]:
-    """Allow-list of the output: only what the site needs is published."""
+    """Allow-list of the output: only what the site needs is published.
+
+    `pages` maps the token of every invitation to the ids of the events it
+    sees: `i/<token>/` holds the page and exactly one calendar file for each
+    of these events.  `assets/<media_dir>/` holds exactly the published names
+    `media` (and does not exist without them); besides it `assets/` may only
+    hold the files of the code and the directories `ASSET_DIRECTORIES`.
+    """
     problems: list[str] = []
-    expected_pages = {f"{PAGES_DIRNAME}/{token}/{PAGE_FILE}" for token in tokens}
-    expected_dirs = {f"{PAGES_DIRNAME}/{token}" for token in tokens}
+    media_prefix = f"{ASSETS_DIRNAME}/{media_dir}/" if media_dir else None
+    expected_media = {f"{media_prefix}{name}" for name in media} if media_prefix else set()
+    allowed_asset_dirs = {f"{ASSETS_DIRNAME}/{name}" for name in ASSET_DIRECTORIES}
+    expected_pages = {f"{PAGES_DIRNAME}/{token}/{PAGE_FILE}" for token in pages}
+    expected_calendars = {
+        f"{PAGES_DIRNAME}/{token}/{event_id}{CALENDAR_SUFFIX}"
+        for token, event_ids in pages.items()
+        for event_id in event_ids
+    }
+    expected_dirs = {f"{PAGES_DIRNAME}/{token}" for token in pages}
 
     for relative in directories:
         parts = relative.split("/")
@@ -2811,6 +2402,22 @@ def _check_output_tree(
                 f"{relative}: unexpected directory (only one directory per invitation "
                 f"is allowed in {PAGES_DIRNAME}/)"
             )
+        elif parts[0] == ASSETS_DIRNAME:
+            media_path = media_prefix.rstrip("/") if media_prefix else None
+            if relative == media_path:
+                allowed = bool(expected_media)
+                shown = f"{ASSETS_DIRNAME}/<mediaDir>"
+            elif media_path and relative.startswith(media_prefix):
+                allowed, shown = False, f"{ASSETS_DIRNAME}/<mediaDir>/…"
+            else:
+                allowed = "/".join(parts[:2]) in allowed_asset_dirs
+                shown = relative
+            if not allowed:
+                problems.append(
+                    f"{shown}: unexpected directory (only "
+                    f"{', '.join(sorted(ASSET_DIRECTORIES))}/ and the media directory with "
+                    f"the media the pages show are allowed in {ASSETS_DIRNAME}/)"
+                )
 
     for relative, size in files.items():
         parts = relative.split("/")
@@ -2824,10 +2431,17 @@ def _check_output_tree(
             if relative not in OUTPUT_TOP_LEVEL or relative in OUTPUT_TOP_LEVEL_DIRS:
                 problems.append(f"{relative}: unexpected file at the top of the output")
         elif parts[0] == PAGES_DIRNAME:
-            if relative not in expected_pages:
+            if relative not in expected_pages and relative not in expected_calendars:
                 problems.append(
-                    f"{relative}: unexpected file (only <token>/{PAGE_FILE} is allowed "
-                    f"in {PAGES_DIRNAME}/)"
+                    f"{relative}: unexpected file (only <token>/{PAGE_FILE} and the "
+                    f"calendar files of the events of the invitation are allowed in "
+                    f"{PAGES_DIRNAME}/)"
+                )
+        elif media_prefix and relative.startswith(media_prefix):
+            if relative not in expected_media:
+                problems.append(
+                    f"{_media_path(relative[len(media_prefix):])}: unexpected file (only the "
+                    "media the pages show are published, under the hash of their contents)"
                 )
         elif parts[0] == ASSETS_DIRNAME:
             if extension not in ASSET_EXTENSIONS:
@@ -2843,25 +2457,33 @@ def _check_output_tree(
                 f"{format_size(MAX_FILE_BYTES)} for a single file"
             )
 
-    required = [*STUB_OUTPUTS, HEADERS_FILE, ROBOTS_FILE, *sorted(expected_pages)]
-    if media_dir:
-        required.append(f"{ASSETS_DIRNAME}/{media_dir}/{ICS_FILE}")
+    required = [
+        *STUB_OUTPUTS,
+        HEADERS_FILE,
+        ROBOTS_FILE,
+        *sorted(expected_pages | expected_calendars),
+    ]
     for relative in required:
         if relative not in files:
             problems.append(f"{relative}: missing from the output")
+    for relative in sorted(expected_media):
+        if relative not in files:
+            problems.append(f"{_media_path(relative[len(media_prefix):])}: missing from the output")
     return problems
 
 
 def check_output(
     out_dir: Path | str,
-    tokens: Sequence[str],
-    media_dir: str = "",
+    pages: Mapping[str, Iterable[str]],
     base_url: str = "",
+    media_dir: str = "",
+    media: Collection[str] = (),
 ) -> OutputStats:
     """Check a finished output directory; raises `OutputError` with every problem.
 
-    * only the expected files are present (see `_check_output_tree`), none of
-      them larger than `MAX_FILE_BYTES`;
+    * only the expected files are present (see `_check_output_tree`; `pages`
+      maps every token to the ids of the events of its calendar files), none
+      of them larger than `MAX_FILE_BYTES`;
     * HTML: no template syntax or comments left, no external resources, no
       inline scripts or event handlers, no embedded documents; external links
       only to the map services and with `target`/`rel`; every local URL
@@ -2882,7 +2504,7 @@ def check_output(
         raise BuildError(
             f"cannot read the output directory {display_path(root)}: {exc.strerror}"
         ) from None
-    problems += _check_output_tree(files, directories, tokens, media_dir)
+    problems += _check_output_tree(files, directories, pages, media_dir, media)
     problems = [_redact_paths(problem) for problem in problems]
 
     known_dirs = set(directories)
@@ -3277,10 +2899,16 @@ def copy_assets(
     return sum(len(files) for _root, _dirs, files in os.walk(destination))
 
 
-def copy_media(site: dict, media_dir: Path | str, destination: Path) -> int:
-    """Copy the media files the data refers to - and nothing else - into
-    `assets/<mediaDir>/`; returns the number of files."""
-    names = sorted({name for _field, name in media_references(site)})
+def copy_media(
+    media: Mapping[str, MediaFile], media_dir: Path | str, destination: Path
+) -> int:
+    """Copy the media files that the pages show - and nothing else - into
+    `assets/<mediaDir>/` under their published names; returns the number of
+    files written.  Files with equal contents and type share one name and are
+    written once; without files the directory is not created at all."""
+    names = {entry.published: entry.name for entry in media.values()}
+    if not names:
+        return 0
     try:
         destination.mkdir(parents=True)
     except FileExistsError:
@@ -3290,14 +2918,14 @@ def copy_media(site: dict, media_dir: Path | str, destination: Path) -> int:
         ) from None
     except OSError as exc:
         raise BuildError(f"cannot create the media directory: {exc.strerror}") from None
-    for name in names:
+    for published, name in sorted(names.items()):
         source = Path(media_dir) / name
         if source.is_symlink():
             raise BuildError(
                 f"symbolic links are not allowed in media: {display_path(source)}"
             )
         try:
-            shutil.copyfile(source, destination / name)
+            shutil.copyfile(source, destination / published)
         except OSError as exc:
             raise BuildError(
                 f"cannot copy the media file {display_path(source)}: "
@@ -3499,22 +3127,22 @@ def load_stub(path: Path, images: dict | None = None) -> str:
 
 def render_pages(
     template: Template,
-    site: dict,
     invitations: Sequence[dict],
-    images: dict | None = None,
+    trees: Sequence[dict],
 ) -> list[tuple[str, str]]:
-    """Render every invitation; returns (token, html) pairs.
+    """Render the page tree of every invitation; returns (token, html) pairs.
 
+    `trees` are the page trees in the order of `invitations` (`page_trees`).
     Rendering happens entirely in memory: a broken template must not leave a
     half-written output directory behind.  HTML comments are removed from the
     result, so that notes in the template are never published.
     """
     pages: list[tuple[str, str]] = []
     failures: dict[str, list[str]] = {}  # message -> labels, in order of appearance
-    for index, invitation in enumerate(invitations, start=1):
+    for index, (invitation, tree) in enumerate(zip(invitations, trees), start=1):
         label = invitation_label(index, invitation.get("token"))
         try:
-            page = template.render(build_context(site, invitation, images))
+            page = template.render(tree)
             pages.append((invitation["token"], strip_html_comments(page, template.name)))
         except TemplateError as exc:
             failures.setdefault(str(exc), []).append(label)
@@ -3541,6 +3169,16 @@ def write_pages(stage: Path, pages: Iterable[tuple[str, str]]) -> int:
         except OSError as exc:
             raise BuildError(f"cannot write a page: {exc.strerror}") from None
         count += 1
+    return count
+
+
+def write_calendars(stage: Path, calendars: Mapping[str, Mapping[str, bytes]]) -> int:
+    """Write `i/<token>/<eventId>.ics` for every event of every invitation."""
+    count = 0
+    for token, files in calendars.items():
+        for event_id, content in files.items():
+            _write_file(stage / PAGES_DIRNAME / token / f"{event_id}{CALENDAR_SUFFIX}", content)
+            count += 1
     return count
 
 
@@ -3578,10 +3216,10 @@ def build_site(
     assets_dir = code_dir / ASSETS_DIRNAME
     check_out_dir(out_dir, code_dir=code_dir, data_dir=data_dir, media_dir=media_dir)
 
-    site, invitations = load_data(data_dir, media_dir, report, assets_dir=assets_dir)
+    data = load_data(data_dir, media_dir, report, assets_dir=assets_dir)
     log(
-        f"build: {len(invitations)} invitation(s), {report.media_files} media file(s) "
-        f"validated (data: {display_path(data_dir)}, media: {display_path(media_dir)})"
+        f"build: {len(data.invitations)} invitation(s), {report.media_files} media "
+        f"file(s) validated (data: {display_path(data_dir)}, media: {display_path(media_dir)})"
     )
 
     images = report.site_images
@@ -3592,29 +3230,39 @@ def build_site(
 
     template = load_template(code_dir / TEMPLATE_FILE)
     stub = load_stub(code_dir / STUB_FILE, images_context).encode("utf-8")
-    pages = render_pages(template, site, invitations, images_context)
-    media_name = site["mediaDir"]
+    pages = render_pages(template, data.invitations, page_trees(data, images_context))
+    calendars = calendar_files(data, images_context)
+    media_name = data.site["mediaDir"]
 
     with _StagedOutput(out_dir, warn=report.warn) as stage:
         written = write_pages(stage, pages)
+        events = write_calendars(stage, calendars)
         for name in STUB_OUTPUTS:
             _write_file(stage / name, stub)
         assets = copy_assets(assets_dir, stage / ASSETS_DIRNAME, ignore=is_styleguide_asset)
         write_site_images(images, stage / ASSETS_DIRNAME, palette)
-        media = copy_media(site, media_dir, stage / ASSETS_DIRNAME / media_name)
-        _write_file(stage / ASSETS_DIRNAME / media_name / ICS_FILE, build_ics(site))
+        media = copy_media(data.media, media_dir, stage / ASSETS_DIRNAME / media_name)
         _write_file(stage / HEADERS_FILE, HEADERS_TEXT.encode("utf-8"))
         _write_file(stage / ROBOTS_FILE, ROBOTS_TEXT.encode("utf-8"))
         stats = check_output(
-            stage, [token for token, _page in pages], media_name, base_url=base_url
+            stage,
+            calendars,
+            base_url=base_url,
+            media_dir=media_name,
+            media={entry.published for entry in data.media.values()},
         )
 
     out_shown = display_path(out_dir)
-    log(f"build: wrote {written} page(s) to {out_shown}/{PAGES_DIRNAME}/")
+    log(
+        f"build: wrote {written} page(s) and {events} calendar file(s) to "
+        f"{out_shown}/{PAGES_DIRNAME}/"
+    )
     log(f"build: copied {assets} asset file(s) to {out_shown}/{ASSETS_DIRNAME}/")
     log(
-        f"build: copied {media} media file(s) and wrote {ICS_FILE} to "
+        f"build: copied {media} media file(s) under the hash of their contents to "
         f"{out_shown}/{ASSETS_DIRNAME}/<mediaDir>/"
+        if media
+        else "build: no media file is shown on the pages, nothing is published"
     )
     for image in images:
         origin = "generated from the design tokens" if image.source is None else (
@@ -3693,11 +3341,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
     data_dir = _data_dir(args, code_dir)
     media_dir = _media_dir(args, code_dir)
     report = _cli_report()
-    _site, invitations = load_data(
-        data_dir, media_dir, report, assets_dir=code_dir / ASSETS_DIRNAME
-    )
+    data = load_data(data_dir, media_dir, report, assets_dir=code_dir / ASSETS_DIRNAME)
     _stdout(
-        f"validate: OK - {len(invitations)} invitation(s), "
+        f"validate: OK - {len(data.invitations)} invitation(s), "
+        f"{len(data.site['events'])} event(s), {len(data.site['sections'])} section(s), "
         f"{report.media_files} media file(s) (data: {display_path(data_dir)}, "
         f"media: {display_path(media_dir)})"
     )
@@ -3775,9 +3422,9 @@ def cmd_links(args: argparse.Namespace) -> int:
             "this command prints personal data and is meant for local use only; "
             f"it does not run in CI ({' or '.join(CI_ENVIRONMENT_VARIABLES)} is set)"
         )
-    _site, invitations = load_data(_data_dir(args, CODE_DIR), report=_cli_report())
+    data = load_data(_data_dir(args, CODE_DIR), report=_cli_report())
     # Nothing is printed unless the whole data set is valid.
-    for line in invitation_links(args.base, invitations):
+    for line in invitation_links(args.base, data.invitations):
         _stdout(line)
     return EXIT_OK
 

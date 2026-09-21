@@ -16,7 +16,7 @@ from tests.support import (
     TempDirTestCase,
     build,
     make_code_dir,
-    site_data,
+    published_name,
     write_assets,
     write_media,
 )
@@ -220,28 +220,28 @@ class CopyAssetsTests(TempDirTestCase):
     def test_ignore_applies_to_directories(self):
         source = write_assets(self.tmp / "assets")
         copied = build.copy_assets(
-            source, self.tmp / "out" / "assets", ignore=lambda name: name == "vendor"
+            source, self.tmp / "out" / "assets", ignore=lambda name: name == "fonts"
         )
         self.assertEqual(copied, 1)
-        self.assertFalse((self.tmp / "out" / "assets" / "vendor").exists())
+        self.assertFalse((self.tmp / "out" / "assets" / "fonts").exists())
 
     def test_ignore_receives_the_relative_path(self):
         source = write_assets(self.tmp / "assets")
-        (source / "vendor" / "deep").mkdir()
-        (source / "vendor" / "deep" / "lib.js").write_text("// deep\n", encoding="utf-8")
+        (source / "fonts" / "deep").mkdir()
+        (source / "fonts" / "deep" / "lib.js").write_text("// deep\n", encoding="utf-8")
         seen: list[str] = []
 
         def ignore(relative: str) -> bool:
             seen.append(relative)
-            return relative == "vendor/lib.js"
+            return relative == "fonts/sans.woff2"
 
         copied = build.copy_assets(source, self.tmp / "out" / "assets", ignore=ignore)
         self.assertEqual(copied, 2)
         self.assertEqual(
-            sorted(seen), ["app.css", "fonts", "vendor", "vendor/deep", "vendor/deep/lib.js", "vendor/lib.js"]
+            sorted(seen), ["app.css", "fonts", "fonts/deep", "fonts/deep/lib.js", "fonts/sans.woff2"]
         )
-        self.assertFalse((self.tmp / "out" / "assets" / "vendor" / "lib.js").exists())
-        self.assertTrue((self.tmp / "out" / "assets" / "vendor" / "deep" / "lib.js").is_file())
+        self.assertFalse((self.tmp / "out" / "assets" / "fonts" / "sans.woff2").exists())
+        self.assertTrue((self.tmp / "out" / "assets" / "fonts" / "deep" / "lib.js").is_file())
 
     def test_styleguide_files_are_recognised_at_any_depth(self):
         for relative in ("styleguide.css", "styleguide.js", "vendor/Styleguide.min.js"):
@@ -256,7 +256,7 @@ class CopyAssetsTests(TempDirTestCase):
         build.copy_assets(source, destination)
         self.assertEqual(
             sorted(p.relative_to(destination).as_posix() for p in destination.rglob("*")),
-            ["app.css", "vendor", "vendor/lib.js"],
+            ["app.css", "fonts", "fonts/sans.woff2"],
         )
 
     def test_empty_assets_directory(self):
@@ -271,13 +271,13 @@ class CopyAssetsTests(TempDirTestCase):
         outside.mkdir()
         (outside / "secret.css").write_text("a{}", encoding="utf-8")
         try:
-            os.symlink(outside, source / "vendor" / "linked", target_is_directory=True)
+            os.symlink(outside, source / "fonts" / "linked", target_is_directory=True)
         except (OSError, NotImplementedError) as exc:
             self.skipTest(f"symbolic links are not available: {exc}")
         with self.assertRaises(build.BuildError) as caught:
             build.copy_assets(source, self.tmp / "out" / "assets")
         self.assertIn("symbolic links are not allowed in assets", str(caught.exception))
-        self.assertIn(os.path.join("vendor", "linked"), str(caught.exception))
+        self.assertIn(os.path.join("fonts", "linked"), str(caught.exception))
 
     def test_ignored_and_hidden_symlinks_are_skipped(self):
         source = write_assets(self.tmp / "assets")
@@ -315,70 +315,82 @@ class CopyAssetsTests(TempDirTestCase):
 
     def test_os_error_names_the_path(self):
         source = write_assets(self.tmp / "assets")
-        failure = PermissionError(13, "Permission denied", str(source / "vendor"))
+        failure = PermissionError(13, "Permission denied", str(source / "fonts"))
         with mock.patch.object(build.shutil, "copytree", side_effect=failure):
             with self.assertRaises(build.BuildError) as caught:
                 build.copy_assets(source, self.tmp / "out" / "assets")
         self.assertIn("Permission denied", str(caught.exception))
-        self.assertIn("vendor", str(caught.exception))
+        self.assertIn("fonts", str(caught.exception))
 
     def test_missing_source(self):
         with self.assertRaises(build.BuildError):
             build.copy_assets(self.tmp / "nope", self.tmp / "out")
 
 
+def media_entries(media: Path, names=MEDIA_FILES) -> dict:
+    """What `check_media` returns for the fixture files in `media`."""
+    return {
+        name: build.MediaFile(
+            name, build.media_tools.hashed_name(media / name), build.media_tools.inspect(media / name)
+        )
+        for name in names
+    }
+
+
 class CopyMediaTests(TempDirTestCase):
-    def test_only_referenced_files_are_copied(self):
+    def test_only_the_given_files_are_copied_under_their_published_names(self):
         media = write_media(self.tmp / "media", (*MEDIA_FILES, "unused.webp", "notes.txt"))
-        (media / "clip.mp4").write_bytes(b"video")
         destination = self.tmp / "out" / "assets" / "media-dir"
-        copied = build.copy_media(site_data(), media, destination)
+        copied = build.copy_media(media_entries(media), media, destination)
         self.assertEqual(copied, len(MEDIA_FILES))
-        self.assertEqual(sorted(p.name for p in destination.iterdir()), sorted(MEDIA_FILES))
-        self.assertEqual((destination / "clip.mp4").read_bytes(), b"video")
+        self.assertEqual(
+            sorted(p.name for p in destination.iterdir()),
+            sorted(published_name(name) for name in MEDIA_FILES),
+        )
+        self.assertEqual(
+            (destination / published_name("clip.mp4")).read_bytes(), (media / "clip.mp4").read_bytes()
+        )
 
-    def test_a_file_referenced_twice_is_copied_once(self):
-        site = site_data()
-        site["venue"]["photos"] = ["venue-1.webp", "venue-1.webp"]
-        site["venue"]["directionsImage"] = "venue-1.webp"
-        del site["video"]
-        media = write_media(self.tmp / "media")
-        copied = build.copy_media(site, media, self.tmp / "out" / "m")
-        self.assertEqual(copied, 1)
-
-    def test_no_references_gives_an_empty_directory(self):
-        site = site_data(video=None)
-        site["venue"] = {"ready": False}
+    def test_equal_contents_are_copied_once(self):
+        media = write_media(self.tmp / "media", ["venue-1.png"])
+        (media / "copy.png").write_bytes((media / "venue-1.png").read_bytes())
+        entries = media_entries(media, ["venue-1.png", "copy.png"])
+        self.assertEqual(entries["copy.png"].published, entries["venue-1.png"].published)
         destination = self.tmp / "out" / "m"
-        self.assertEqual(build.copy_media(site, self.tmp / "no-media", destination), 0)
-        self.assertEqual(list(destination.iterdir()), [])
+        self.assertEqual(build.copy_media(entries, media, destination), 1)
+
+    def test_no_files_gives_no_directory(self):
+        destination = self.tmp / "out" / "m"
+        self.assertEqual(build.copy_media({}, self.tmp / "no-media", destination), 0)
+        self.assertFalse(destination.exists())
 
     def test_existing_destination_is_a_collision(self):
+        media = write_media(self.tmp / "media")
         destination = self.tmp / "out" / "vendor"
         destination.mkdir(parents=True)
         with self.assertRaises(build.BuildError) as caught:
-            build.copy_media(site_data(), write_media(self.tmp / "media"), destination)
+            build.copy_media(media_entries(media), media, destination)
         self.assertIn("'mediaDir' collides", str(caught.exception))
 
     def test_symlink_is_refused(self):
         media = write_media(self.tmp / "media")
-        os.remove(media / "poster.jpg")
+        entries = media_entries(media)
+        os.remove(media / "poster.png")
         try:
-            os.symlink(media / "route.png", media / "poster.jpg")
+            os.symlink(media / "route.png", media / "poster.png")
         except (OSError, NotImplementedError) as exc:
             self.skipTest(f"symbolic links are not available: {exc}")
         with self.assertRaises(build.BuildError) as caught:
-            build.copy_media(site_data(), media, self.tmp / "out" / "m")
+            build.copy_media(entries, media, self.tmp / "out" / "m")
         self.assertIn("symbolic links are not allowed in media", str(caught.exception))
-        self.assertIn("poster.jpg", str(caught.exception))
 
     def test_unreadable_file(self):
         media = write_media(self.tmp / "media")
-        os.remove(media / "poster.jpg")
+        entries = media_entries(media)
+        os.remove(media / "poster.png")
         with self.assertRaises(build.BuildError) as caught:
-            build.copy_media(site_data(), media, self.tmp / "out" / "m")
+            build.copy_media(entries, media, self.tmp / "out" / "m")
         self.assertIn("cannot copy the media file", str(caught.exception))
-        self.assertIn("poster.jpg", str(caught.exception))
 
 
 class DebugSwitchTests(unittest.TestCase):

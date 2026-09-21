@@ -347,7 +347,7 @@ class BaseUrlTests(SiteImagesTestCase):
         self.assertIn("link preview image URL is absolute (https://…)", result.stdout)
         for name in tree_files(self.out):
             content = (self.out / name).read_bytes()
-            expected = 1 if name.startswith("i/") else 0
+            expected = 1 if name.startswith("i/") and name.endswith(".html") else 0
             self.assertEqual(content.count(b"invite.example"), expected, name)
         self.assertEqual(self.page().icons[0]["href"], "/assets/favicon.svg")
 
@@ -481,7 +481,8 @@ class BaseUrlTests(SiteImagesTestCase):
 
 class ContextFieldTests(support.TempDirTestCase):
     def test_defaults(self):
-        context = build.build_context(support.site_data(), support.invitations_data(1)[0])
+        data = build.load_data(support.write_data(self.tmp / "data"))
+        context = build.page_trees(data, build.site_images_context())[0]
         self.assertEqual(
             {key: context[key] for key in build.site_images_context()},
             {

@@ -2,7 +2,7 @@
 
 - `map_links` builds the links to Google, Yandex and Apple maps from the name,
   the address, the coordinates and the ids of a place;
-- `venue_coordinates` and `format_coordinate` write coordinates as text;
+- `place_coordinates` and `format_coordinate` write coordinates as text;
 - `media_url` is the URL of a file in the media directory.
 
 Pure functions, no input/output.
@@ -32,7 +32,7 @@ def format_coordinate(value: int | float) -> str:
     return "0" if text in ("-0", "") else text
 
 
-def venue_coordinates(geo: Any) -> tuple[str, str] | None:
+def place_coordinates(geo: Any) -> tuple[str, str] | None:
     """(`lat`, `lng`) as text, or None when the coordinates are not set.
 
     `lat = 0, lng = 0` is the placeholder of the data schema, not a location.
@@ -69,7 +69,7 @@ def map_links(name: str, address: str, geo: Any, maps: Any) -> dict[str, str]:
     name = name.strip()
     place_id = _optional_text(maps.get("googlePlaceId")).strip()
     org_id = _optional_text(maps.get("yandexOrgId")).strip()
-    coordinates = venue_coordinates(geo)
+    coordinates = place_coordinates(geo)
     lat, lng = coordinates if coordinates else ("", "")
 
     google = yandex = apple = ""

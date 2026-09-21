@@ -1,60 +1,275 @@
 {
+  "schemaVersion": 2,
   "coupleNames": "Алиса и Боб",
-  "dateISO": "2030-06-15T16:00:00+03:00",
-  "dateText": "15 июня 2030, 16:00",
   "rsvpDeadline": "1 мая 2030",
   "mediaDir": "kR1sKvBGXluXnZd73eOXRw",
-  "outOfTownText": "Для гостей из других городов в день праздника будет организован трансфер от вокзала Энска до усадьбы и обратно.\n\nОтправление от вокзала — в 14:45,\nобратно — в 23:15.\n\nС размещением поможем: подскажем гостиницы поблизости.",
-  "video": {
-    "file": "proposal.mp4",
-    "poster": "proposal-poster.png",
-    "width": 720,
-    "height": 1280
-  },
-  "schedule": [
+  "mainEvent": "dinner",
+  "sections": [
     {
-      "time": "15:30",
-      "title": "Сбор гостей",
-      "text": "Приветственные напитки и лёгкие закуски в саду."
+      "id": "cover",
+      "type": "cover"
     },
     {
-      "time": "16:00",
-      "title": "Церемония",
-      "text": "Выездная регистрация на берегу пруда."
+      "id": "invite",
+      "title": "{greeting}",
+      "align": "center",
+      "widgets": [
+        {
+          "type": "text",
+          "variant": "lead",
+          "text": {
+            "ty": "Мы, {coupleNames}, приглашаем тебя на наш праздник.\nНам очень хочется разделить этот день с тобой.\n\nЖдём тебя {eventDate} в {eventTime}.",
+            "vy": "Мы, {coupleNames}, приглашаем вас на наш праздник.\nНам очень хочется разделить этот день с вами.\n\nЖдём вас {eventDate} в {eventTime}."
+          }
+        }
+      ]
     },
     {
-      "time": "17:00",
-      "title": "Фотосессия"
+      "id": "personal",
+      "title": "Несколько слов лично",
+      "widgets": []
     },
     {
-      "time": "18:00",
-      "title": "Праздничный ужин",
-      "text": "Главный зал усадьбы.\nРассадка — по карточкам."
+      "id": "plus-one",
+      "title": "Плюс один",
+      "visible": false,
+      "widgets": [
+        {
+          "type": "text",
+          "text": {
+            "ty": "Ты можешь прийти со спутником или спутницей.\nПожалуйста, сообщи нам заранее имя своего гостя.",
+            "vy": "Вы можете прийти со спутником или спутницей.\nПожалуйста, сообщите нам заранее имя вашего гостя."
+          }
+        }
+      ]
     },
     {
-      "time": "23:00",
-      "title": "Завершение вечера"
+      "id": "when",
+      "title": "Дата и время",
+      "align": "center",
+      "widgets": [
+        {
+          "type": "date"
+        }
+      ]
+    },
+    {
+      "id": "where",
+      "title": "Где и когда",
+      "width": "wide",
+      "widgets": [
+        {
+          "type": "events"
+        }
+      ]
+    },
+    {
+      "id": "travel",
+      "title": "Гостям из других городов",
+      "visible": false,
+      "widgets": [
+        {
+          "type": "text",
+          "text": "В день праздника от вокзала Энска до усадьбы и обратно будет ходить трансфер.\n\nОтправление от вокзала — в 14:45,\nобратно — в 23:15."
+        },
+        {
+          "type": "location",
+          "location": "hotel",
+          "variant": "compact"
+        },
+        {
+          "id": "hotel-booked",
+          "type": "text",
+          "visible": false,
+          "text": {
+            "ty": "Для тебя забронирован номер в этой гостинице.",
+            "vy": "Для вас забронирован номер в этой гостинице."
+          }
+        }
+      ]
+    },
+    {
+      "id": "story",
+      "title": "Наша история",
+      "widgets": [
+        {
+          "type": "media",
+          "items": [
+            "story-1",
+            "proposal",
+            "story-2"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rsvp",
+      "title": "Подтверждение",
+      "align": "center",
+      "widgets": [
+        {
+          "type": "text",
+          "text": {
+            "ty": "Пожалуйста, ответь нам до {rsvpDeadline} — там же, где тебе пришла эта ссылка.\n\nБудем очень рады встрече!",
+            "vy": "Пожалуйста, ответьте нам до {rsvpDeadline} — там же, где вы получили эту ссылку.\n\nБудем очень рады встрече!"
+          }
+        },
+        {
+          "type": "text",
+          "variant": "signature",
+          "text": "{coupleNames}"
+        }
+      ]
     }
   ],
-  "venue": {
-    "ready": true,
-    "name": "Усадьба «Образец»",
-    "description": "Старинная усадьба на берегу пруда в пригороде Энска. Церемония пройдёт в саду, ужин — в главном зале.\n\nНа территории есть бесплатная парковка.",
-    "address": "г. Энск, ул. Примерная, д. 1",
-    "photos": [
-      "venue-1.png",
-      "venue-2.png",
-      "venue-3.png",
-      "venue-4.png"
-    ],
-    "directionsImage": "directions.png",
-    "geo": {
-      "lat": 12.345678,
-      "lng": 23.456789
+  "events": {
+    "ceremony": {
+      "title": "Регистрация",
+      "location": "registry",
+      "start": "2030-06-15T11:00:00+03:00",
+      "end": "2030-06-15T12:00:00+03:00"
     },
-    "maps": {
-      "googlePlaceId": "EXAMPLE-not-a-real-place-id",
-      "yandexOrgId": ""
+    "dinner": {
+      "title": "Праздничный ужин",
+      "location": "manor",
+      "start": "2030-06-15T16:00:00+03:00",
+      "end": "2030-06-15T23:30:00+03:00",
+      "schedule": "dinner"
+    },
+    "brunch": {
+      "title": "Второй день",
+      "location": "terrace",
+      "start": "2030-06-16T12:00:00+03:00",
+      "visible": false
+    }
+  },
+  "locations": {
+    "registry": {
+      "name": "Дворец бракосочетания Энска",
+      "address": "г. Энск, Центральная площадь, д. 2",
+      "geo": {
+        "lat": 12.340001,
+        "lng": 23.450002
+      },
+      "photos": [
+        "registry-1"
+      ]
+    },
+    "manor": {
+      "name": "Усадьба «Образец»",
+      "address": "г. Энск, ул. Примерная, д. 1",
+      "description": "Старинная усадьба на берегу пруда в пригороде Энска. Церемония пройдёт в саду, ужин — в главном зале.\n\nНа территории есть бесплатная парковка.",
+      "geo": {
+        "lat": 12.345678,
+        "lng": 23.456789
+      },
+      "maps": {
+        "googlePlaceId": "EXAMPLE-not-a-real-place-id"
+      },
+      "photos": [
+        "venue-1",
+        "venue-2",
+        "walk",
+        "venue-3",
+        "venue-4"
+      ],
+      "directions": "directions"
+    },
+    "terrace": {
+      "ready": false
+    },
+    "hotel": {
+      "name": "Гостиница «Пример»",
+      "address": "г. Энск, Вокзальная ул., д. 5",
+      "geo": {
+        "lat": 12.35,
+        "lng": 23.46
+      }
+    }
+  },
+  "schedules": {
+    "dinner": [
+      {
+        "time": "15:30",
+        "title": "Сбор гостей",
+        "text": "Приветственные напитки и лёгкие закуски в саду."
+      },
+      {
+        "time": "16:00",
+        "title": "Церемония",
+        "text": "Выездная регистрация на берегу пруда."
+      },
+      {
+        "time": "17:00",
+        "title": "Фотосессия"
+      },
+      {
+        "time": "18:00",
+        "title": "Праздничный ужин",
+        "text": "Главный зал усадьбы.\nРассадка — по карточкам."
+      },
+      {
+        "time": "23:00",
+        "title": "Завершение вечера"
+      }
+    ]
+  },
+  "media": {
+    "registry-1": {
+      "type": "image",
+      "file": "registry-1.png",
+      "alt": "Дворец бракосочетания"
+    },
+    "venue-1": {
+      "type": "image",
+      "file": "venue-1.png",
+      "alt": "Усадьба со стороны пруда"
+    },
+    "venue-2": {
+      "type": "image",
+      "file": "venue-2.png",
+      "alt": "Сад усадьбы"
+    },
+    "venue-3": {
+      "type": "image",
+      "file": "venue-3.png",
+      "alt": "Главный зал"
+    },
+    "venue-4": {
+      "type": "image",
+      "file": "venue-4.png",
+      "alt": "Веранда"
+    },
+    "directions": {
+      "type": "image",
+      "file": "directions.png",
+      "alt": "Схема проезда"
+    },
+    "story-1": {
+      "type": "image",
+      "file": "story-1.png",
+      "alt": "Первая встреча"
+    },
+    "story-2": {
+      "type": "image",
+      "file": "story-2.png",
+      "alt": "Помолвка"
+    },
+    "proposal": {
+      "type": "video",
+      "file": "proposal.mp4",
+      "poster": "proposal-poster.png",
+      "width": 720,
+      "height": 1280,
+      "alt": "Видео предложения"
+    },
+    "walk": {
+      "type": "video",
+      "file": "walk.mp4",
+      "poster": "walk-poster.png",
+      "width": 1280,
+      "height": 720,
+      "alt": "Прогулка по усадьбе"
     }
   }
 }

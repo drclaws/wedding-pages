@@ -103,9 +103,30 @@ class FixtureTests(SchemaTestCase):
         self.assertEqual(_schema.VIDEO_EXTENSIONS, frozenset({".mp4"}))
 
 
+#: Data in the old format (fictional): the build reads none of it.
+OLD_SITE = {
+    "coupleNames": "Алиса и Боб",
+    "dateISO": "2030-06-01T16:00:00+03:00",
+    "dateText": "1 июня 2030 года",
+    "rsvpDeadline": "1 мая 2030 года",
+    "mediaDir": "m3d1a-f1xtur3-dir",
+    "outOfTownText": "Из Энска ходит автобус.",
+    "venue": {"ready": True, "name": "Усадьба в Энске", "address": "Энск, Вымышленная улица, 1"},
+    "schedule": [{"time": "16:00", "title": "Сбор гостей"}],
+}
+OLD_INVITATIONS = [
+    {"token": "EveToken-0123456789abcdefg", "greeting": "Дорогая Ева!", "ty": True, "vy": False,
+     "plusOne": False, "outOfTown": False, "note": "Личная приписка для Евы."},
+    {"token": "KarlKlaraToken-zyxwvutsrq98", "greeting": "Дорогие Карл и Клара!", "ty": False,
+     "vy": True, "plusOne": True, "outOfTown": False},
+    {"token": "GoshaToken-qwertyuiop12345", "greeting": "Дорогой Гоша!", "ty": True,
+     "vy": False, "plusOne": False, "outOfTown": True, "travelNote": "Встретим Гошу."},
+]  # fmt: skip
+
+
 class VersionTests(SchemaTestCase):
     def test_old_data_gives_one_message_per_file(self):
-        report = run(site=support.site_data(), invitations=support.invitations_data())
+        report = run(site=OLD_SITE, invitations=OLD_INVITATIONS)
         self.assertEqual(len(report.errors), 2)
         self.assertTrue(report.errors[0].startswith("site.json: is in the old data format (it has "))
         self.assertIn("'dateISO'", report.errors[0])
@@ -115,7 +136,13 @@ class VersionTests(SchemaTestCase):
             report.errors[1].startswith("invitations.json: all 3 invitations are in the old data format")
         )
         self.assertIn("'plusOne'", report.errors[1])
-        for value in support.PRIVATE_STRINGS:
+        private = [
+            value
+            for invitation in OLD_INVITATIONS
+            for key, value in invitation.items()
+            if isinstance(value, str)
+        ]
+        for value in (*private, OLD_SITE["coupleNames"], OLD_SITE["venue"]["name"]):
             for message in report.messages:
                 self.assertNotIn(value, message)
 
@@ -575,6 +602,16 @@ class MediaDataTests(SchemaTestCase):
             report, "site.json: field 'media.story-1.poster' is not allowed: only a video has a poster"
         )
 
+    def test_a_tile_has_no_caption(self):
+        for media_id in ("story-1", "proposal"):
+            with self.subTest(media_id):
+                report = run(lambda s, i: s["media"][media_id].update(caption="Энск, 2024"))
+                self.assertOneError(
+                    report,
+                    f"site.json: field 'media.{media_id}.caption' is not supported: a tile "
+                    "shows no caption; describe the picture in 'alt'",
+                )
+
     def test_size_is_a_pair_of_positive_numbers(self):
         report = run(lambda s, i: s["media"]["proposal"].pop("height"))
         self.assertOneError(
@@ -605,13 +642,20 @@ class MediaDataTests(SchemaTestCase):
         self.assertIn("field 'media.proposal.thumb' must be an image", report.errors[0])
 
     def test_unsafe_file_names(self):
-        for name in ("../x.png", "event.ics", ".x.png"):
+        for name in ("../x.png", ".x.png", "a:b.png"):
             with self.subTest(name):
                 report = run(lambda s, i: s["media"]["story-1"].update(file=name))
                 self.assertEqual(len(report.errors), 1)
                 self.assertTrue(report.errors[0].startswith("site.json: field 'media.story-1.file' must "))
-                if name != "event.ics":  # the reserved name itself is no data
-                    self.assertNotIn(name, report.errors[0])
+                self.assertNotIn(name, report.errors[0])
+
+    def test_no_name_is_reserved_for_the_calendar(self):
+        # the calendar files live next to the pages, not in the media directory
+        self.assertIsNone(_data.check_media_name("event.png"))
+        report = run(lambda s, i: s["media"]["story-1"].update(file="event.ics"))
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("has an unsupported file type", report.errors[0])
+        self.assertNotIn("reserved", report.errors[0])
 
     def test_type_is_required(self):
         report = run(lambda s, i: s["media"]["story-1"].pop("type"))

@@ -559,9 +559,10 @@ class LoadFragmentsTests(TempDirTestCase):
 
 
 #: The fixture page with the venue and a footer moved into fragments.
-FRAGMENT_TEMPLATE = TEMPLATE.replace(
-    "<h2>{{venue.name}}</h2>", "<!-- with:venue --><!-- include:venue/card --><!-- endwith -->"
-).replace("</body>", "<!-- include:parts/footer -->\n</body>")
+FRAGMENT_LINE = "<!-- with:primaryEvent.location --><!-- include:venue/card --><!-- endwith -->"
+FRAGMENT_TEMPLATE = TEMPLATE.replace("</main>", f"</main>\n{FRAGMENT_LINE}").replace(
+    "</body>", "<!-- include:parts/footer -->\n</body>"
+)
 FRAGMENT_FILES = {
     "venue/card.html": "<!-- a note in a fragment: never published -->\n"
                        '<h2 class="venue-card">{{.name}}</h2>\n',
@@ -606,9 +607,7 @@ class BuildWithFragmentsTests(CliTestCase):
         (self.code / "fragments" / "venue" / "card.html").write_text(
             "<h2>\n{{.nme}}</h2>", encoding="utf-8"
         )
-        line = FRAGMENT_TEMPLATE.splitlines().index(
-            "<!-- with:venue --><!-- include:venue/card --><!-- endwith -->"
-        ) + 1
+        line = FRAGMENT_TEMPLATE.splitlines().index(FRAGMENT_LINE) + 1
         result = self.build_in_process()
         self.assertEqual(result.returncode, 1)
         self.assertIn(
