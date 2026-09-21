@@ -273,8 +273,8 @@
     calc(var(--space-2xl-mobile) / var(--vw-min) * 100vw));
 
   /* Отступ между секциями страницы. */
-  --space-section-mobile: 56;   /* TEMP */
-  --space-section-desktop: 104; /* TEMP */
+  --space-section-mobile: 37;   /* TEMP */
+  --space-section-desktop: 69;  /* TEMP */
   --space-section: min(
     clamp(min(var(--space-section-mobile) / 16 * 1rem, var(--space-section-desktop) / 16 * 1rem),
       calc(var(--space-section-mobile) / 16 * 1rem + (var(--space-section-desktop) - var(--space-section-mobile)) * var(--fluid)),
