@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests import support
 from tools import _data as data_tools
@@ -124,6 +125,23 @@ class ValidateCommandTests(CliTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("invitation #1 (ZZZZ…): 'token' is too long", result.stderr)
         self.assertNotIn("Z" * 10, result.stderr)
+
+    def test_repeated_ids_of_the_markup_stop_the_build(self):
+        # a safeguard: the ids are unique by construction, unless joined ambiguously
+        site = site_data()
+        site["sections"].append(
+            {"id": "invite-w1", "title": "Ещё", "widgets": [{"type": "text", "text": "x"}]}
+        )
+        write_data(self.data, site=site)
+        with mock.patch.object(build.page_tools, "DOM_SEPARATOR", "-"):
+            result = self.build_in_process()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "error: invitation #1 (EveT…): ids of the markup repeat on the page ('s-invite-w1')",
+            result.stderr,
+        )
+        self.assertFalse(self.out.exists())
+        self.assertNoPrivateData(result.stdout, result.stderr)
 
     def test_warnings_go_to_stderr(self):
         invitations = invitations_data()
