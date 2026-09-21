@@ -189,14 +189,34 @@ class BuildError(Exception):
 
 
 class TemplateError(BuildError):
-    """Malformed template or a value that cannot be rendered."""
+    """Malformed template or a value that cannot be rendered.
 
-    def __init__(self, message: str, line: int | None = None, name: str = "template"):
+    An error inside a fragment names the fragment file and line, followed by
+    the places it was included from (`chain`, innermost first).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        line: int | None = None,
+        name: str = "template",
+        chain: Sequence[str] = (),
+    ):
         self.reason = message
         self.line = line
         self.name = name
+        self.chain = tuple(chain)
         where = f"{name} line {line}" if line else name
-        super().__init__(f"{where}: {message}")
+        text = f"{where}: {message}"
+        if self.chain:
+            text += f" (included from {' <- '.join(self.chain)})"
+        super().__init__(text)
+
+    def via(self, name: str, line: int) -> "TemplateError":
+        """The same error, seen from the include at `name` line `line`."""
+        return TemplateError(
+            self.reason, self.line, self.name, self.chain + (f"{name} line {line}",)
+        )
 
 
 class ValidationError(BuildError):
@@ -260,19 +280,38 @@ MISSING = _MissingType()
 # --------------------------------------------------------------------------
 
 _NAME = r"[A-Za-z_][A-Za-z0-9_]*"
-#: `field`, `venue.name`, `.field` (field of the current each item), `.` (item)
+#: `field`, `venue.name`, `.field` (field of the current item), `.` (the item)
 _PATH_RE = re.compile(rf"(?:\.|\.?{_NAME}(?:\.{_NAME})*)\Z")
 _PLACEHOLDER_RE = re.compile(r"\{\{(.*?)\}\}")
 _BRACES_RE = re.compile(r"\{\{|\}\}")
 _COMMENT_RE = re.compile(r"<!--(.*?)-->", re.DOTALL)
+#: Words that open a directive: `<!-- if:… -->`, `<!-- endif -->` and so on.
+_DIRECTIVE_WORDS = r"(?:if|each|with|include)\s*:|(?:endif|endeach|endwith)\b"
 #: A comment that is meant to be a directive (anything else stays literal text).
-_DIRECTIVE_LIKE_RE = re.compile(r"(?:if|each)\s*:|(?:endif|endeach)\b", re.IGNORECASE)
+_DIRECTIVE_LIKE_RE = re.compile(_DIRECTIVE_WORDS, re.IGNORECASE)
 _IF_RE = re.compile(r"if\s*:\s*(!?)\s*(\S*)\Z")
 _EACH_RE = re.compile(r"each\s*:\s*(\S*)\Z")
+_WITH_RE = re.compile(r"with\s*:\s*(\S*)\Z")
 #: Template syntax that must not survive rendering.
-_LEFTOVER_RE = re.compile(
-    r"\{\{|\}\}|<!--\s*(?:(?:if|each)\s*:|(?:endif|endeach)\b)", re.IGNORECASE
+_LEFTOVER_RE = re.compile(rf"\{{\{{|\}}\}}|<!--\s*(?:{_DIRECTIVE_WORDS})", re.IGNORECASE)
+
+#: Fragments of the template live in this directory next to `template.html`.
+#: They are code: read once before rendering and never copied to the output.
+FRAGMENTS_DIRNAME = "fragments"
+FRAGMENT_SUFFIX = ".html"
+#: One part of a fragment name: `widgets/text` is the file `widgets/text.html`.
+#: A value that chooses a fragment must be exactly one such part.
+_SEGMENT = r"[a-z][a-z0-9-]{0,39}"
+_SEGMENT_RE = re.compile(rf"{_SEGMENT}\Z")
+_FRAGMENT_NAME_RE = re.compile(rf"{_SEGMENT}(?:/{_SEGMENT})*\Z")
+#: `include:dir/name` (a fixed fragment) or `include:dir/{{.field}}` (the
+#: value of the field names a fragment in `dir/`).
+_INCLUDE_RE = re.compile(
+    rf"include\s*:\s*(?:({_SEGMENT}(?:/{_SEGMENT})*)"
+    rf"|((?:{_SEGMENT}/)+)\{{\{{\s*(\S+?)\s*\}}\}})\Z"
 )
+#: Fragments nested deeper than this are a runaway recursion through the data.
+MAX_INCLUDE_DEPTH = 12
 
 _PARAGRAPH_BREAK_RE = re.compile(r"\n(?:[ \t]*\n)+")
 _LEADING_BLANK_RE = re.compile(r"\A(?:[ \t]*\n)+")
@@ -290,16 +329,35 @@ class _Var:
 
 
 class _Block:
-    """`<!-- if:path -->…<!-- endif -->` or `<!-- each:path -->…<!-- endeach -->`."""
+    """`<!-- if:path -->…<!-- endif -->`, `<!-- each:path -->…<!-- endeach -->`
+    or `<!-- with:path -->…<!-- endwith -->`."""
 
     __slots__ = ("kind", "path", "negate", "line", "children")
 
     def __init__(self, kind: str, path: str, negate: bool, line: int):
-        self.kind = kind  # "if" | "each"
+        self.kind = kind  # "if" | "each" | "with"
         self.path = path
         self.negate = negate
         self.line = line
         self.children: list[Any] = []
+
+
+class _Include:
+    """`<!-- include:dir/name -->` or `<!-- include:dir/{{.field}} -->`."""
+
+    __slots__ = ("name", "directory", "path", "line", "in_scope")
+
+    def __init__(self, name: str, directory: str, path: str, line: int, in_scope: bool):
+        self.name = name  # a fixed fragment, or "" when the data chooses it
+        self.directory = directory  # the data chooses a fragment in this directory
+        self.path = path  # ... by the value of this field of the current item
+        self.line = line
+        #: Inside `each`/`with` of the same file: the item there is its own.
+        self.in_scope = in_scope
+
+    def shown(self) -> str:
+        target = self.name or f"{self.directory}/{{{{{self.path}}}}}"
+        return f"<!-- include:{target} -->"
 
 
 def text_to_html(text: str) -> str:
@@ -325,7 +383,7 @@ def lookup(path: str, context: dict, item: Any = MISSING) -> Any:
     """Resolve a template path; returns MISSING when the field does not exist.
 
     `field` / `a.b.c` are resolved against the page context, `.field` against
-    the current `each` item and `.` is the item itself.
+    the current item (of `each` or `with`) and `.` is the item itself.
     """
     if path == ".":
         return item
@@ -384,29 +442,195 @@ def _shorten(text: str, limit: int = 60) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _walk(nodes: Sequence[Any]) -> Iterable[Any]:
+    """Every node, depth first, including the contents of blocks."""
+    for node in nodes:
+        yield node
+        if isinstance(node, _Block):
+            yield from _walk(node.children)
+
+
+class _Fragment:
+    """One parsed fragment file."""
+
+    __slots__ = ("nodes", "shown", "needs_item")
+
+    def __init__(self, nodes: list[Any], shown: str, needs_item: bool):
+        self.nodes = nodes
+        #: The file as messages name it: `fragments/widgets/text.html`.
+        self.shown = shown
+        #: Uses the item of the place it is included from: `.field` outside its
+        #: own `each`/`with`, directly or through a fragment it includes.
+        self.needs_item = needs_item
+
+
+class Fragments:
+    """The fragments of the template by name (`widgets/text`).
+
+    Every fragment is parsed and checked once, before any page is rendered:
+    a fixed include names an existing fragment, fixed includes never form a
+    cycle, and a directory that the data chooses from is not empty.  The set
+    is fixed from then on, so a value from the data can only pick one of
+    these files and never becomes a path.
+    """
+
+    def __init__(self, sources: dict[str, str] | None = None):
+        self._items: dict[str, _Fragment] = {}
+        for name, source in sorted((sources or {}).items()):
+            shown = f"{FRAGMENTS_DIRNAME}/{name}{FRAGMENT_SUFFIX}"
+            if not _FRAGMENT_NAME_RE.match(name):
+                raise TemplateError(
+                    "a fragment name uses a-z, 0-9 and '-' and starts with a letter "
+                    "(at most 40 characters), '/' separates directories",
+                    None,
+                    shown,
+                )
+            nodes, needs_item = _parse(source, shown, fragment=True)
+            self._items[name] = _Fragment(nodes, shown, needs_item)
+        for fragment in self._items.values():
+            self._check_includes(fragment.nodes, fragment.shown)
+        self._check_cycles()
+        self._propagate_needs_item()
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._items
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def get(self, name: str) -> _Fragment:
+        return self._items[name]
+
+    def names(self, directory: str) -> list[str]:
+        """Names a value may choose in `directory` (its files, not subdirectories)."""
+        prefix = directory + "/"
+        return sorted(
+            name[len(prefix) :]
+            for name in self._items
+            if name.startswith(prefix) and "/" not in name[len(prefix) :]
+        )
+
+    def check_page(self, nodes: Sequence[Any], name: str) -> None:
+        """Check the includes of the page template (`name`) before rendering.
+
+        On top of the checks every fragment passes, a fragment that uses the
+        current item may only be included where there is one.
+        """
+        self._check_includes(nodes, name)
+        for node in _walk(nodes):
+            if (
+                isinstance(node, _Include)
+                and node.name
+                and not node.in_scope
+                and self._items[node.name].needs_item
+            ):
+                raise TemplateError(
+                    f"{node.shown()}: the fragment uses the current item ('.'), "
+                    "include it inside <!-- each:… --> or <!-- with:… -->",
+                    node.line,
+                    name,
+                )
+
+    def _check_includes(self, nodes: Sequence[Any], name: str) -> None:
+        for node in _walk(nodes):
+            if not isinstance(node, _Include):
+                continue
+            if node.name:
+                if node.name not in self._items:
+                    raise TemplateError(
+                        f"{node.shown()}: no fragment "
+                        f"{FRAGMENTS_DIRNAME}/{node.name}{FRAGMENT_SUFFIX}",
+                        node.line,
+                        name,
+                    )
+            elif not self.names(node.directory):
+                raise TemplateError(
+                    f"{node.shown()}: no fragments in "
+                    f"{FRAGMENTS_DIRNAME}/{node.directory}/",
+                    node.line,
+                    name,
+                )
+
+    def _check_cycles(self) -> None:
+        done: set[str] = set()
+        stack: list[str] = []
+
+        def visit(current: str) -> None:
+            stack.append(current)
+            fragment = self._items[current]
+            for node in _walk(fragment.nodes):
+                if not isinstance(node, _Include) or not node.name or node.name in done:
+                    continue
+                if node.name in stack:
+                    cycle = stack[stack.index(node.name) :] + [node.name]
+                    raise TemplateError(
+                        f"{node.shown()}: fragments include each other in a cycle: "
+                        + " -> ".join(cycle),
+                        node.line,
+                        fragment.shown,
+                    )
+                visit(node.name)
+            stack.pop()
+            done.add(current)
+
+        for name in self._items:
+            if name not in done:
+                visit(name)
+
+    def _propagate_needs_item(self) -> None:
+        # a fragment that includes one needing the item outside its own
+        # each/with passes its item on, so it needs one as well
+        changed = True
+        while changed:
+            changed = False
+            for fragment in self._items.values():
+                if fragment.needs_item:
+                    continue
+                if any(
+                    isinstance(node, _Include)
+                    and node.name
+                    and not node.in_scope
+                    and self._items[node.name].needs_item
+                    for node in _walk(fragment.nodes)
+                ):
+                    fragment.needs_item = True
+                    changed = True
+
+
 class Template:
     """A parsed template; parse once, render for every invitation."""
 
-    def __init__(self, source: str, name: str = "template"):
+    def __init__(
+        self, source: str, name: str = "template", fragments: Fragments | None = None
+    ):
         self.name = name
-        self.nodes = _parse(source, name)
+        self.fragments = fragments if fragments is not None else Fragments()
+        self.nodes, _needs_item = _parse(source, name)
+        self.fragments.check_page(self.nodes, name)
 
     def render(self, context: dict) -> str:
         out: list[str] = []
-        _render_nodes(self.nodes, context, MISSING, out, self.name)
+        _Renderer(context, self.fragments, out).nodes(self.nodes, MISSING, self.name, 0)
         result = "".join(out)
         check_rendered(result, self.name)
         return result
 
 
-def parse_template(source: str, name: str = "template") -> Template:
+def parse_template(
+    source: str, name: str = "template", fragments: Fragments | None = None
+) -> Template:
     """Parse a template, raising TemplateError with a line number on failure."""
-    return Template(source, name)
+    return Template(source, name, fragments)
 
 
-def render(template_source: str, context: dict, name: str = "template") -> str:
-    """Parse and render a template in one step."""
-    return Template(template_source, name).render(context)
+def render(
+    template_source: str,
+    context: dict,
+    name: str = "template",
+    fragments: dict[str, str] | None = None,
+) -> str:
+    """Parse and render a template in one step (`fragments`: name -> source)."""
+    return Template(template_source, name, Fragments(fragments)).render(context)
 
 
 def check_rendered(
@@ -426,7 +650,13 @@ def check_rendered(
         raise TemplateError(f"{problem}: " + "; ".join(problems), None, name)
 
 
-def _parse(source: str, name: str) -> list[Any]:
+def _parse(source: str, name: str, fragment: bool = False) -> tuple[list[Any], bool]:
+    """Parse a template or a fragment into (nodes, needs_item).
+
+    In the page template `.field` is only allowed inside `each`/`with`.  A
+    fragment may use it anywhere: outside its own `each`/`with` it means the
+    item of the place the fragment is included from, and `needs_item` says so.
+    """
     newlines = [m.start() for m in re.finditer("\n", source)]
 
     def line_at(pos: int) -> int:
@@ -434,24 +664,53 @@ def _parse(source: str, name: str) -> list[Any]:
 
     root: list[Any] = []
     stack: list[_Block] = []
+    needs_item = False
 
     def children() -> list[Any]:
         return stack[-1].children if stack else root
 
-    def in_each() -> bool:
-        return any(block.kind == "each" for block in stack)
+    def in_scope() -> bool:
+        return any(block.kind in ("each", "with") for block in stack)
 
-    def check_path(path: str, line: int, shown: str) -> None:
+    def check_syntax(path: str, line: int, shown: str) -> None:
         if not path:
             raise TemplateError(f"{shown} has no field path", line, name)
         if not _PATH_RE.match(path):
             raise TemplateError(f"{shown} has an invalid field path", line, name)
-        if path.startswith(".") and not in_each():
+
+    def check_path(path: str, line: int, shown: str) -> None:
+        nonlocal needs_item
+        check_syntax(path, line, shown)
+        if path.startswith(".") and not in_scope():
+            if not fragment:
+                raise TemplateError(
+                    f"{shown} refers to the current item but is not inside "
+                    "<!-- each:… --> or <!-- with:… -->",
+                    line,
+                    name,
+                )
+            needs_item = True
+
+    def add_include(match: re.Match, line: int, shown: str) -> None:
+        fixed, directory, path = match.groups()
+        if fixed:
+            children().append(_Include(fixed, "", "", line, in_scope()))
+            return
+        check_syntax(path, line, shown)
+        if not path.startswith(".") or path == ".":
             raise TemplateError(
-                f"{shown} refers to an each item but is not inside <!-- each:… -->",
+                f"{shown}: a fragment is chosen by a field of the current item, "
+                "write {{.field}}",
                 line,
                 name,
             )
+        if not in_scope():
+            # the item changes before every choice, so a fragment can never
+            # choose itself again by the item it was chosen for
+            raise TemplateError(
+                f"{shown} must be inside <!-- each:… --> or <!-- with:… -->", line, name
+            )
+        children().append(_Include("", directory.rstrip("/"), path, line, True))
 
     def add_literal(literal: str, offset: int) -> None:
         if not literal:
@@ -486,8 +745,8 @@ def _parse(source: str, name: str) -> list[Any]:
         line = line_at(match.start())
         shown = _shorten(match.group(0))
 
-        if inner in ("endif", "endeach"):
-            kind = "if" if inner == "endif" else "each"
+        if inner in ("endif", "endeach", "endwith"):
+            kind = inner[len("end") :]
             if not stack:
                 raise TemplateError(
                     f"{shown} without a matching <!-- {kind}:… -->", line, name
@@ -503,17 +762,36 @@ def _parse(source: str, name: str) -> list[Any]:
             stack.pop()
             continue
 
+        include_match = _INCLUDE_RE.match(inner)
+        if include_match:
+            add_include(include_match, line, shown)
+            continue
+        if inner[: len("include")].lower() == "include":
+            raise TemplateError(
+                f"malformed directive {shown} (expected <!-- include:dir/name --> or "
+                "<!-- include:dir/{{.field}} -->, all lowercase; a name uses a-z, "
+                "0-9 and '-' and starts with a letter)",
+                line,
+                name,
+            )
+
         if_match = _IF_RE.match(inner)
         each_match = _EACH_RE.match(inner)
+        with_match = _WITH_RE.match(inner)
         if if_match:
             kind, negate, path = "if", bool(if_match.group(1)), if_match.group(2)
         elif each_match:
             kind, negate, path = "each", False, each_match.group(1)
+        elif with_match:
+            kind, negate, path = "with", False, with_match.group(1)
+            if path == ".":
+                raise TemplateError(f"{shown}: '.' is the current item already", line, name)
         else:
             raise TemplateError(
                 f"malformed directive {shown} (expected <!-- if:path -->, "
-                "<!-- if:!path -->, <!-- endif -->, <!-- each:path --> or "
-                "<!-- endeach -->, all lowercase)",
+                "<!-- if:!path -->, <!-- endif -->, <!-- each:path -->, "
+                "<!-- endeach -->, <!-- with:path -->, <!-- endwith --> or "
+                "<!-- include:dir/name -->, all lowercase)",
                 line,
                 name,
             )
@@ -532,42 +810,116 @@ def _parse(source: str, name: str) -> list[Any]:
             open_block.line,
             name,
         )
-    return root
+    return root, needs_item
 
 
-def _render_nodes(
-    nodes: Sequence[Any], context: dict, item: Any, out: list[str], name: str
-) -> None:
-    for node in nodes:
-        if isinstance(node, str):
-            out.append(node)
-        elif isinstance(node, _Var):
-            value = lookup(node.path, context, item)
-            if value is MISSING:
-                raise TemplateError(f"field '{node.path}' not found", node.line, name)
-            out.append(format_value(value, node.path, node.line, name))
-        elif node.kind == "if":
-            if is_truthy(lookup(node.path, context, item)) is not node.negate:
-                _render_nodes(node.children, context, item, out, name)
-        else:  # each
-            sequence = lookup(node.path, context, item)
-            if sequence is MISSING:
-                raise TemplateError(
-                    f"<!-- each:{node.path} -->: field '{node.path}' not found",
-                    node.line,
-                    name,
-                )
-            if sequence is None:
-                continue
-            if not isinstance(sequence, (list, tuple)):
-                raise TemplateError(
-                    f"<!-- each:{node.path} -->: field '{node.path}' is "
-                    f"{json_type(sequence)}, expected an array",
-                    node.line,
-                    name,
-                )
-            for element in sequence:
-                _render_nodes(node.children, context, element, out, name)
+class _Renderer:
+    """Renders parsed nodes of the template and its fragments into `out`."""
+
+    __slots__ = ("context", "fragments", "out")
+
+    def __init__(self, context: dict, fragments: Fragments, out: list[str]):
+        self.context = context
+        self.fragments = fragments
+        self.out = out
+
+    def nodes(self, nodes: Sequence[Any], item: Any, name: str, depth: int) -> None:
+        """Render `nodes` of the file `name`; `depth` counts nested fragments."""
+        context, out = self.context, self.out
+        for node in nodes:
+            if isinstance(node, str):
+                out.append(node)
+            elif isinstance(node, _Var):
+                value = lookup(node.path, context, item)
+                if value is MISSING:
+                    raise TemplateError(f"field '{node.path}' not found", node.line, name)
+                out.append(format_value(value, node.path, node.line, name))
+            elif isinstance(node, _Include):
+                self.include(node, item, name, depth)
+            elif node.kind == "if":
+                if is_truthy(lookup(node.path, context, item)) is not node.negate:
+                    self.nodes(node.children, item, name, depth)
+            elif node.kind == "with":
+                value = lookup(node.path, context, item)
+                if value is MISSING:
+                    raise TemplateError(
+                        f"<!-- with:{node.path} -->: field '{node.path}' not found",
+                        node.line,
+                        name,
+                    )
+                if value is None or value is False:
+                    continue
+                if not isinstance(value, dict):
+                    raise TemplateError(
+                        f"<!-- with:{node.path} -->: field '{node.path}' is "
+                        f"{json_type(value)}, expected an object",
+                        node.line,
+                        name,
+                    )
+                if value:
+                    self.nodes(node.children, value, name, depth)
+            else:  # each
+                sequence = lookup(node.path, context, item)
+                if sequence is MISSING:
+                    raise TemplateError(
+                        f"<!-- each:{node.path} -->: field '{node.path}' not found",
+                        node.line,
+                        name,
+                    )
+                if sequence is None:
+                    continue
+                if not isinstance(sequence, (list, tuple)):
+                    raise TemplateError(
+                        f"<!-- each:{node.path} -->: field '{node.path}' is "
+                        f"{json_type(sequence)}, expected an array",
+                        node.line,
+                        name,
+                    )
+                for element in sequence:
+                    self.nodes(node.children, element, name, depth)
+
+    def include(self, node: _Include, item: Any, name: str, depth: int) -> None:
+        target = node.name or self.choose(node, item, name)
+        if depth >= MAX_INCLUDE_DEPTH:
+            raise TemplateError(
+                f"{node.shown()}: fragments are nested deeper than "
+                f"{MAX_INCLUDE_DEPTH} levels",
+                node.line,
+                name,
+            )
+        fragment = self.fragments.get(target)
+        try:
+            self.nodes(fragment.nodes, item, fragment.shown, depth + 1)
+        except TemplateError as exc:
+            raise exc.via(name, node.line) from None
+
+    def choose(self, node: _Include, item: Any, name: str) -> str:
+        """The fragment named by the value of `node.path`.
+
+        The value comes from the data: it is only compared with the names of
+        the loaded files (one part, no '/') and never quoted in a message.
+        """
+        value = lookup(node.path, self.context, item)
+        if value is MISSING:
+            raise TemplateError(
+                f"{node.shown()}: field '{node.path}' not found", node.line, name
+            )
+        if not isinstance(value, str) or not _SEGMENT_RE.match(value):
+            raise TemplateError(
+                f"{node.shown()}: the value of '{node.path}' is not a fragment name",
+                node.line,
+                name,
+            )
+        target = f"{node.directory}/{value}"
+        if target not in self.fragments:
+            raise TemplateError(
+                f"{node.shown()}: no fragment in {FRAGMENTS_DIRNAME}/{node.directory}/ "
+                f"for the value of '{node.path}' "
+                f"(known: {', '.join(self.fragments.names(node.directory))})",
+                node.line,
+                name,
+            )
+        return target
 
 
 # --------------------------------------------------------------------------
@@ -3248,9 +3600,59 @@ def _read_source(path: Path, what: str) -> str:
         ) from None
 
 
+def load_fragments(directory: Path) -> Fragments:
+    """Read and parse every fragment below `directory` (`fragments/`).
+
+    A missing directory means that there are no fragments.  Dot-files and
+    dot-directories are skipped; symbolic links, other kinds of files and any
+    extension but `.html` are an error.  Nothing is read after this.
+    """
+    directory = Path(directory)
+    if directory.is_symlink():
+        raise BuildError(
+            f"the fragments directory must not be a symbolic link: {display_path(directory)}"
+        )
+    if not directory.exists():
+        return Fragments()
+    if not directory.is_dir():
+        raise BuildError(f"not a directory: {display_path(directory)}")
+    sources: dict[str, str] = {}
+    pending = [directory]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = sorted(current.iterdir())
+        except OSError as exc:
+            raise BuildError(
+                f"cannot read the fragments directory {display_path(current)}: {exc.strerror}"
+            ) from None
+        for path in entries:
+            if path.name.startswith("."):
+                continue
+            mode = path.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                raise BuildError(
+                    f"symbolic links are not allowed in fragments: {display_path(path)}"
+                )
+            if stat.S_ISDIR(mode):
+                pending.append(path)
+                continue
+            if not stat.S_ISREG(mode):
+                raise BuildError(f"not a regular file in fragments: {display_path(path)}")
+            relative = path.relative_to(directory).as_posix()
+            if path.suffix != FRAGMENT_SUFFIX:
+                raise BuildError(
+                    f"{FRAGMENTS_DIRNAME}/{relative}: only {FRAGMENT_SUFFIX} files "
+                    "are allowed in fragments"
+                )
+            sources[relative[: -len(FRAGMENT_SUFFIX)]] = _read_source(path, "fragment")
+    return Fragments(sources)
+
+
 def load_template(path: Path) -> Template:
-    """Read and parse the page template."""
-    return parse_template(_read_source(path, "template"), path.name)
+    """Read and parse the page template with the fragments next to it."""
+    fragments = load_fragments(path.parent / FRAGMENTS_DIRNAME)
+    return parse_template(_read_source(path, "template"), path.name, fragments)
 
 
 #: The only fields the stub may use: they say nothing about the site.
@@ -3271,17 +3673,26 @@ def load_stub(path: Path, images: dict | None = None) -> str:
         + " (the stub gets no data)"
     )
     try:
-        template = parse_template(source, path.name)
+        nodes, _needs_item = _parse(source, path.name)
     except TemplateError as exc:
         raise TemplateError(f"{problem}: {exc.reason}", exc.line, path.name) from None
+
+    def shown(node: Any) -> str:
+        if isinstance(node, _Var):
+            return f"'{{{{{node.path}}}}}'"
+        if isinstance(node, _Include):
+            return "'<!-- include:… -->'"
+        return f"'<!-- {node.kind}:… -->'"
+
     found = [
-        f"line {node.line}: "
-        + (f"'{{{{{node.path}}}}}'" if isinstance(node, _Var) else f"'<!-- {node.kind}:… -->'")
-        for node in template.nodes
-        if isinstance(node, _Block) or (isinstance(node, _Var) and node.path not in STUB_FIELDS)
+        f"line {node.line}: {shown(node)}"
+        for node in nodes
+        if isinstance(node, (_Block, _Include))
+        or (isinstance(node, _Var) and node.path not in STUB_FIELDS)
     ]
     if found:
         raise TemplateError(f"{problem}: " + "; ".join(found[:5]), None, path.name)
+    template = parse_template(source, path.name)  # no includes: no fragments needed
     fields = images if images is not None else site_images_context()
     rendered = template.render({field: fields[field] for field in STUB_FIELDS})
     return strip_html_comments(rendered, path.name)
