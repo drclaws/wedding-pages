@@ -1,0 +1,10 @@
+<!-- Секция из виджетов; ожидает в `.` секцию: domId, titleId, title, titleHidden, align (start | center), width (narrow | wide), note, widgets[]. Единственное место страницы с меткой появления: одна на секцию, на контейнере «заголовок + тело». -->
+<section class="section section--{{.align}}" id="{{.domId}}" aria-labelledby="{{.titleId}}">
+  <div class="container container--{{.width}}" data-reveal>
+    <!-- include:partials/section-head -->
+    <div class="stack section__body">
+      <!-- each:.widgets --><!-- include:widgets/{{.type}} --><!-- endeach -->
+      <!-- include:partials/section-note -->
+    </div>
+  </div>
+</section>

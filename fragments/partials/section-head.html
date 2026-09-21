@@ -1,0 +1,7 @@
+<!-- Заголовок секции (h2); ожидает в `.` секцию: title, titleId, titleHidden. Скрытый заголовок не виден, но остаётся доступным именем секции. -->
+<!-- if:!.titleHidden -->
+<h2 class="section__title" id="{{.titleId}}">{{.title}}</h2>
+<!-- endif -->
+<!-- if:.titleHidden -->
+<h2 class="section__title visually-hidden" id="{{.titleId}}">{{.title}}</h2>
+<!-- endif -->

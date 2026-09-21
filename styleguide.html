@@ -458,6 +458,232 @@
         </p>
       </div>
       <!-- /sg:media-tile -->
+
+      <!-- sg:section -->
+      <div class="sg-demo">
+        <p class="sg-demo__label">Секция из виджетов: .section--start | --center, .container--narrow | --wide, .section__body, .section__note</p>
+        <p class="sg-note">
+          Каркас каждой обычной секции страницы: заголовок h2 (здесь — h3, внутри раздела витрины) и тело — виджеты
+          подряд с шагом <code>--space-lg</code>, в конце приписка гостя
+          (<code>.card.section__note</code>, не шире текстовой колонки).
+          Ширину и выравнивание выбирает конфигурация. Заголовок можно скрыть
+          (<code>.visually-hidden</code>): он остаётся доступным именем секции.
+          Метка появления — одна на секцию, на контейнере. По порядку: узкая
+          слева с припиской; широкая по центру; скрытый заголовок; секция из
+          одной приписки.
+        </p>
+        <section class="section section--start" aria-labelledby="sg-section-1">
+          <div class="container container--narrow">
+            <h3 class="section__title" id="sg-section-1">Гостям из других городов</h3>
+            <div class="stack section__body">
+              <div class="widget text-widget text-widget--body prose">
+                <p>От вокзала до усадьбы и обратно ходит трансфер.</p>
+              </div>
+              <div class="card section__note">
+                <div class="prose">
+                  <p>Встретим тебя на вокзале — скажи, каким поездом приедешь.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="section section--center" aria-labelledby="sg-section-2">
+          <div class="container container--wide">
+            <h3 class="section__title" id="sg-section-2">Подтверждение</h3>
+            <div class="stack section__body">
+              <div class="widget text-widget text-widget--lead prose">
+                <p>Пожалуйста, ответьте нам до 1 мая 2030.</p><p>Будем очень рады встрече!</p>
+              </div>
+              <div class="widget text-widget text-widget--signature prose">
+                <p>Алиса и Боб</p>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="section section--start" aria-labelledby="sg-section-3">
+          <div class="container container--narrow">
+            <h3 class="section__title visually-hidden" id="sg-section-3">Скрытый заголовок</h3>
+            <div class="stack section__body">
+              <div class="widget text-widget text-widget--body prose">
+                <p>У этой секции заголовок скрыт визуально: его прочтёт экранный диктор, а на экране секция начинается сразу с текста.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="section section--start" aria-labelledby="sg-section-4">
+          <div class="container container--narrow">
+            <h3 class="section__title" id="sg-section-4">Несколько слов лично</h3>
+            <div class="stack section__body">
+              <div class="card section__note">
+                <div class="prose">
+                  <p>Помнишь, как мы познакомились в поезде?</p><p>Обнимаем и ждём!</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+      <!-- /sg:section -->
+
+      <!-- sg:location-card -->
+      <div class="sg-demo">
+        <p class="sg-demo__label">Карточка места: .location-card — полная, .location-card--compact, ready: false</p>
+        <p class="sg-note">
+          Полная карточка на десктопе стоит в две колонки (<code>.grid</code>,
+          <code>.venue__*</code>): название, адрес, описание, кнопки карт и
+          схема проезда слева, лента фото и видео справа. Компактная —
+          только название, адрес и кнопки карт. Пока место не объявлено —
+          «Подробности сообщим позже.». В отдельном виджете название — h3,
+          внутри карточки события — h4. Кнопки карт на странице — ссылки на
+          сервисы карт, здесь — кнопки без действия.
+        </p>
+        <div class="stack stack--loose">
+        <div class="widget location-widget">
+          <div class="grid venue__layout location-card">
+            <div class="stack venue__info">
+              <h3 class="venue__name">Усадьба «Образец»</h3>
+              <p class="venue__address">г. Энск, ул. Примерная, д. 1</p>
+              <div class="prose venue__description">
+                <p>Старинная усадьба на берегу пруда.</p><p>На территории есть бесплатная парковка.</p>
+              </div>
+              <ul class="venue__maps" role="list" aria-label="Открыть на карте">
+                <li class="venue__map"><button type="button" class="btn btn--secondary">Google Карты</button></li>
+                <li class="venue__map"><button type="button" class="btn btn--secondary">Яндекс Карты</button></li>
+                <li class="venue__map"><button type="button" class="btn btn--secondary">Apple Карты</button></li>
+              </ul>
+              <figure class="venue__scheme">
+                <div class="media media--scheme sg-plate"></div>
+                <figcaption class="gallery__caption">Схема проезда</figcaption>
+              </figure>
+            </div>
+            <ul class="gallery gallery--ribbon venue__gallery" role="list">
+              <li class="gallery__item">
+                <button type="button" class="gallery__link media-tile">
+                  <span class="visually-hidden">Сад усадьбы</span>
+                  <span class="sg-plate sg-plate--fill"></span>
+                </button>
+              </li>
+              <li class="gallery__item">
+                <button type="button" class="gallery__link media-tile media-tile--video">
+                  <span class="visually-hidden">Видео: прогулка по саду, 0:05</span>
+                  <span class="sg-plate sg-plate--fill"></span>
+                  <span class="media-tile__badge" aria-hidden="true"><svg class="media-tile__icon" viewBox="0 0 24 24" focusable="false"><path d="M8 5v14l11-7z"/></svg></span>
+                  <span class="media-tile__duration" aria-hidden="true">0:05</span>
+                </button>
+              </li>
+              <li class="gallery__item">
+                <button type="button" class="gallery__link media-tile">
+                  <span class="visually-hidden">Главный зал</span>
+                  <span class="sg-plate sg-plate--fill"></span>
+                </button>
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="widget location-widget">
+            <div class="card stack location-card location-card--compact">
+              <h3 class="venue__name">Гостиница «Пример»</h3>
+              <p class="venue__address">г. Энск, Вокзальная ул., д. 5</p>
+              <ul class="venue__maps" role="list" aria-label="Открыть на карте">
+                <li class="venue__map"><button type="button" class="btn btn--secondary">Google Карты</button></li>
+                <li class="venue__map"><button type="button" class="btn btn--secondary">Яндекс Карты</button></li>
+              </ul>
+            </div>
+          </div>
+          <div class="widget location-widget">
+            <div class="card location-card location-card--pending venue__pending">
+              <p>Подробности сообщим позже.</p>
+            </div>
+          </div>
+        </div>
+        </div>
+      </div>
+      <!-- /sg:location-card -->
+
+      <!-- sg:event-card -->
+      <div class="sg-demo">
+        <p class="sg-demo__label">Карточка события без скрипта: .events__panel, .events__panel--primary</p>
+        <p class="sg-note">
+          Без скрипта карточки событий идут подряд по времени начала,
+          первостепенная для гостя — в рамке цвета акцента. Порядок в
+          карточке: название (h3), когда, кнопка календаря, описание,
+          приписка гостя (<code>.events__note</code>), место (название — h4),
+          программа (подзаголовок h4, пункты h5). Список вкладок, пометки
+          «прошло» / «идёт сейчас» и показ одной карточки за раз добавляет
+          скрипт — это отдельный компонент. По порядку: первостепенная
+          карточка с местом и программой; обычная, место ещё не объявлено.
+        </p>
+        <div class="widget events-widget events">
+          <article class="card event events__panel events__panel--primary" aria-labelledby="sg-event-1">
+            <header class="events__head">
+              <h3 class="card__title events__title" id="sg-event-1">Праздничный ужин</h3>
+              <p class="events__when"><time datetime="2030-06-15T16:00:00+03:00">Суббота, 15 июня 2030, 16:00–23:30</time></p>
+              <p class="events__actions"><button type="button" class="btn btn--secondary">Добавить в календарь</button></p>
+            </header>
+            <div class="prose events__description">
+              <p>Дресс-код — светлые тона.</p>
+            </div>
+            <div class="card events__note">
+              <div class="prose">
+                <p>Напиши нам, пожалуйста, про аллергию — подберём блюда из меню.</p>
+              </div>
+            </div>
+            <div class="grid venue__layout location-card">
+              <div class="stack venue__info">
+                <h4 class="venue__name">Усадьба «Образец»</h4>
+                <p class="venue__address">г. Энск, ул. Примерная, д. 1</p>
+                <ul class="venue__maps" role="list" aria-label="Открыть на карте">
+                  <li class="venue__map"><button type="button" class="btn btn--secondary">Google Карты</button></li>
+                </ul>
+              </div>
+              <ul class="gallery gallery--ribbon venue__gallery" role="list">
+                <li class="gallery__item">
+                  <button type="button" class="gallery__link media-tile">
+                    <span class="visually-hidden">Сад усадьбы</span>
+                    <span class="sg-plate sg-plate--fill"></span>
+                  </button>
+                </li>
+                <li class="gallery__item">
+                  <button type="button" class="gallery__link media-tile">
+                    <span class="visually-hidden">Главный зал</span>
+                    <span class="sg-plate sg-plate--fill"></span>
+                  </button>
+                </li>
+              </ul>
+            </div>
+            <section class="events__program" aria-labelledby="sg-event-1-program">
+              <h4 class="events__program-title" id="sg-event-1-program">Программа</h4>
+              <ol class="schedule__list" role="list">
+                <li class="schedule__item">
+                  <span class="time-label schedule__time">15:30</span>
+                  <div class="stack stack--tight schedule__body">
+                    <h5 class="schedule__name">Сбор гостей</h5>
+                    <p>Напитки и закуски в саду.</p>
+                  </div>
+                </li>
+                <li class="schedule__item">
+                  <span class="time-label schedule__time">18:00</span>
+                  <div class="stack stack--tight schedule__body">
+                    <h5 class="schedule__name">Праздничный ужин</h5>
+                  </div>
+                </li>
+              </ol>
+            </section>
+          </article>
+          <article class="card event events__panel events__panel--regular" aria-labelledby="sg-event-2">
+            <header class="events__head">
+              <h3 class="card__title events__title" id="sg-event-2">Второй день</h3>
+              <p class="events__when"><time datetime="2030-06-16T12:00:00+03:00">Воскресенье, 16 июня 2030, 12:00</time></p>
+              <p class="events__actions"><button type="button" class="btn btn--secondary">Добавить в календарь</button></p>
+            </header>
+            <div class="location-card location-card--pending venue__pending">
+              <p>Подробности сообщим позже.</p>
+            </div>
+          </article>
+        </div>
+      </div>
+      <!-- /sg:event-card -->
     </div>
   </section>
 

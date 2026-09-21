@@ -1,0 +1,45 @@
+<!-- Виджет событий; ожидает в `.` виджет: domId, labelledBy, items[] (события гостя по времени начала), multiple, primaryDomId. Без скрипта список вкладок скрыт и все карточки идут подряд; первостепенная — в рамке (events__panel--primary). Пометки «прошло» и «идёт сейчас» ставит скрипт. Таймера в карточках нет. -->
+<div class="widget events-widget events" id="{{.domId}}" data-events data-events-primary="{{.primaryDomId}}">
+  <!-- if:.multiple -->
+  <div class="events__tabs" role="tablist" aria-labelledby="{{.labelledBy}}" data-events-tablist hidden>
+    <!-- each:.items -->
+    <button class="events__tab" type="button" role="tab" id="{{.domId}}--tab" aria-controls="{{.domId}}" aria-selected="false" tabindex="-1" data-events-tab>
+      <span class="events__tab-title">{{.title}}</span>
+      <span class="events__tab-time"><time datetime="{{.startISO}}">{{.tabText}}</time></span>
+      <span class="time-label" data-events-when="past" hidden>прошло</span>
+      <span class="time-label time-label--strong" data-events-when="now" hidden>идёт сейчас</span>
+    </button>
+    <!-- endeach -->
+  </div>
+  <!-- endif -->
+  <!-- each:.items -->
+  <article class="card event events__panel events__panel--{{.kind}}" id="{{.domId}}" aria-labelledby="{{.domId}}--title" data-events-panel data-events-start="{{.startISO}}" data-events-end="{{.endISO}}">
+    <header class="events__head">
+      <h3 class="card__title events__title" id="{{.domId}}--title">{{.title}}</h3>
+      <p class="events__when"><time datetime="{{.startISO}}">{{.whenText}}</time>
+        <span class="time-label" data-events-when="past" hidden>событие прошло</span>
+        <span class="time-label time-label--strong" data-events-when="now" hidden>идёт сейчас</span></p>
+      <p class="events__actions"><a class="btn btn--secondary" href="{{.icsPath}}" type="text/calendar">Добавить в календарь</a></p>
+    </header>
+    <!-- if:.description -->
+    <div class="prose events__description">
+      <p>{{.description}}</p>
+    </div>
+    <!-- endif -->
+    <!-- if:.note -->
+    <div class="card events__note">
+      <div class="prose">
+        <p>{{.note}}</p>
+      </div>
+    </div>
+    <!-- endif -->
+    <!-- with:.location --><!-- include:partials/location-card --><!-- endwith -->
+    <!-- with:.program -->
+    <section class="events__program" aria-labelledby="{{.domId}}">
+      <h4 class="events__program-title" id="{{.domId}}">Программа</h4>
+      <!-- include:partials/schedule -->
+    </section>
+    <!-- endwith -->
+  </article>
+  <!-- endeach -->
+</div>

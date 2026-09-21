@@ -1,0 +1,11 @@
+<!-- Обложка; ожидает в `.` секцию-обложку: domId, titleId, eyebrow, event (первостепенное событие гостя: startISO, dateText); из корня — coupleNames. Имена пары — единственный h1 страницы. Метки появления нет: у обложки своя анимация. -->
+<section class="cover" id="{{.domId}}" aria-labelledby="{{.titleId}}">
+  <div class="container cover__inner">
+    <!-- if:.eyebrow -->
+    <p class="section__subtitle cover__eyebrow">{{.eyebrow}}</p>
+    <!-- endif -->
+    <h1 class="cover__title" id="{{.titleId}}">{{coupleNames}}</h1>
+    <hr class="divider divider--accent cover__divider">
+    <p class="cover__date"><time datetime="{{.event.startISO}}">{{.event.dateText}}</time></p>
+  </div>
+</section>

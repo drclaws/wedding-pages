@@ -1,0 +1,6 @@
+<!-- Виджет медиа; ожидает в `.` виджет: items[] (медиа: плитка по type — media/image, media/video), layout (grid | ribbon | single). Виджет — своя группа листания в окне просмотра. -->
+<div class="widget media-widget">
+  <ul class="gallery gallery--{{.layout}}" role="list" data-gallery>
+    <!-- each:.items --><!-- include:media/{{.type}} --><!-- endeach -->
+  </ul>
+</div>

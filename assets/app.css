@@ -777,6 +777,13 @@ hr {
   max-width: calc(var(--container-wide) + var(--container-gutter) + var(--container-gutter));
 }
 
+/* Узкий контейнер — та же текстовая колонка, что и .container без
+   модификатора. Нужен каркасу секции: ширину выбирает конфигурация
+   (narrow | wide), и у каждого значения есть свой класс. */
+.container--narrow {
+  max-width: calc(var(--container-text) + var(--container-gutter) + var(--container-gutter));
+}
+
 .container--flush {
   padding-inline: 0;
 }
@@ -1615,6 +1622,117 @@ a.btn[aria-disabled="true"] {
   font-size: var(--text-lg);
   font-weight: var(--font-weight-heading);
   line-height: var(--line-height-heading);
+}
+
+/* --- Каркас секции из виджетов ---------------------------------------------
+   Секция: заголовок h2 (может быть скрыт визуально) и тело — виджеты подряд,
+   в конце приписка гостя. Ширина — .container--narrow | --wide (секция 4),
+   выравнивание — .section--start | --center. Шаг между виджетами задан
+   прямо детям тела, а не через --flow-space: переменная наследуется и
+   поменяла бы шаг абзацев внутри .prose. */
+.section__body > * + * {
+  margin-block-start: var(--space-lg);
+}
+
+.section--center .section__title,
+.section--center .section__body {
+  text-align: center;
+}
+
+.section--center .section__body .prose,
+.section--center .section__note {
+  margin-inline: auto;
+}
+
+/* Приписка гостя не шире текстовой колонки и в широкой секции. */
+.section__note {
+  max-inline-size: var(--container-text);
+}
+
+/* --- Плитки медиа из фрагментов ----------------------------------------------
+   Плитка не знает, в какой раскладке стоит, поэтому размерник .gallery__sizer
+   (секция 5) есть в каждой; нужен он только одиночной плитке. В сетке и
+   ленте пропорцию задаёт сам элемент галереи — там размерник не выводится. */
+.gallery:not(.gallery--single) .gallery__sizer {
+  display: none;
+}
+
+/* --- Виджет: текст ------------------------------------------------------------ */
+.text-widget--lead {
+  font-size: var(--text-md);
+}
+
+.text-widget--signature {
+  font-family: var(--font-heading);
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-heading);
+  line-height: var(--line-height-heading);
+}
+
+/* --- Виджет: программа -------------------------------------------------------
+   Список — сам контейнер: узкий список ставит время над описанием по своей
+   ширине (@container программы дня выше). */
+.schedule-widget {
+  container-type: inline-size;
+}
+
+/* --- Карточка места: компактная и отложенная ------------------------------ */
+.location-card--compact {
+  max-inline-size: var(--container-text);
+}
+
+/* --- Виджет: события (вид без скрипта) ---------------------------------------
+   Карточки идут подряд с зазором; первостепенная — в рамке акцентом. Вид
+   вкладок и пометок «прошло» / «идёт сейчас» — отдельный блок. */
+.events__panel + .events__panel {
+  margin-block-start: var(--space-lg);
+}
+
+.events__panel--primary {
+  border-color: var(--color-accent);
+  border-width: var(--line-width);
+}
+
+.event > * + * {
+  margin-block-start: var(--space-md);
+}
+
+.events__head > * + * {
+  margin-block-start: var(--space-2xs);
+}
+
+/* Размеры следуют уровням заголовков: событие (h3) крупнее своего места
+   (h4) — в отдельном виджете место само h3 и остаётся крупным. */
+.events__title {
+  margin-block-end: 0;
+  font-size: var(--text-lg);
+}
+
+.event .venue__name {
+  font-size: var(--text-md);
+}
+
+.events__when {
+  color: var(--color-text-muted);
+}
+
+.events__head > .events__actions {
+  margin-block-start: var(--space-sm);
+}
+
+/* Приписка гостя внутри карточки события — светлая плашка без тени. */
+.events__note {
+  background-color: var(--color-bg);
+  box-shadow: none;
+}
+
+/* Программа в карточке — сама контейнер (как .schedule-widget). */
+.events__program {
+  container-type: inline-size;
+}
+
+.events__program-title {
+  margin-block-end: var(--space-sm);
 }
 
 /* --- Заглушка ---------------------------------------------------------------- */

@@ -1,0 +1,7 @@
+<!-- Плитка фото; ожидает в `.` медиа: src, thumbSrc, alt, width, height (пустые, если размер неизвестен). Без скрипта — ссылка на файл. Перед ссылкой — невидимый размерник .gallery__sizer: пропорцию одиночной плитки (gallery--single) он задаёт без атрибута style, в сетке и ленте он не показывается. -->
+<!-- if:.width -->
+<li class="gallery__item"><svg class="gallery__sizer" width="{{.width}}" height="{{.height}}" viewBox="0 0 {{.width}} {{.height}}" aria-hidden="true" focusable="false"></svg><a class="gallery__link media-tile" href="{{.src}}" data-lightbox><img src="{{.thumbSrc}}" alt="{{.alt}}" width="{{.width}}" height="{{.height}}" loading="lazy" decoding="async"></a></li>
+<!-- endif -->
+<!-- if:!.width -->
+<li class="gallery__item"><span class="gallery__sizer gallery__sizer--default" aria-hidden="true"></span><a class="gallery__link media-tile" href="{{.src}}" data-lightbox><img src="{{.thumbSrc}}" alt="{{.alt}}" loading="lazy" decoding="async"></a></li>
+<!-- endif -->

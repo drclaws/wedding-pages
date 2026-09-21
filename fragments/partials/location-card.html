@@ -1,0 +1,64 @@
+<!-- Карточка места; ожидает в `.` место: ready, name, address, description, mapLinks, hasMapLinks, photos[], directions (медиа или null), compact, nested.
+     compact — только название, адрес и кнопки карт; nested — место внутри карточки события: название h4 вместо h3, без собственной рамки. -->
+<!-- if:.ready -->
+<!-- if:.compact -->
+<div class="card stack location-card location-card--compact">
+  <!-- if:!.nested -->
+  <h3 class="venue__name">{{.name}}</h3>
+  <!-- endif -->
+  <!-- if:.nested -->
+  <h4 class="venue__name">{{.name}}</h4>
+  <!-- endif -->
+  <!-- if:.address -->
+  <p class="venue__address">{{.address}}</p>
+  <!-- endif -->
+  <!-- include:partials/map-links -->
+</div>
+<!-- endif -->
+<!-- if:!.compact -->
+<div class="grid venue__layout location-card">
+  <div class="stack venue__info">
+    <!-- if:!.nested -->
+    <h3 class="venue__name">{{.name}}</h3>
+    <!-- endif -->
+    <!-- if:.nested -->
+    <h4 class="venue__name">{{.name}}</h4>
+    <!-- endif -->
+    <!-- if:.address -->
+    <p class="venue__address">{{.address}}</p>
+    <!-- endif -->
+    <!-- if:.description -->
+    <div class="prose venue__description">
+      <p>{{.description}}</p>
+    </div>
+    <!-- endif -->
+    <!-- include:partials/map-links -->
+    <!-- with:.directions -->
+    <figure class="venue__scheme">
+      <a class="media media--scheme" href="{{.src}}" data-lightbox>
+        <img src="{{.thumbSrc}}" alt="{{.alt}}" loading="lazy" decoding="async">
+      </a>
+      <figcaption class="gallery__caption">Схема проезда</figcaption>
+    </figure>
+    <!-- endwith -->
+  </div>
+  <!-- if:.photos -->
+  <ul class="gallery gallery--ribbon venue__gallery" role="list" data-gallery>
+    <!-- each:.photos --><!-- include:media/{{.type}} --><!-- endeach -->
+  </ul>
+  <!-- endif -->
+</div>
+<!-- endif -->
+<!-- endif -->
+<!-- if:!.ready -->
+<!-- if:!.nested -->
+<div class="card location-card location-card--pending venue__pending">
+  <p>Подробности сообщим позже.</p>
+</div>
+<!-- endif -->
+<!-- if:.nested -->
+<div class="location-card location-card--pending venue__pending">
+  <p>Подробности сообщим позже.</p>
+</div>
+<!-- endif -->
+<!-- endif -->
