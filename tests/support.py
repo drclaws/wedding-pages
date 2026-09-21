@@ -46,6 +46,7 @@ OUT_OF_TOWN_TEXT = "Из Энска ходит автобус.\n\nПодскаж
 
 PLACE_NAME = "Усадьба в Энске"
 PLACE_ADDRESS = "Энск, Вымышленная улица, 1"
+PLACE_QUERY = "Гостевой вход усадьбы, Энск"
 MEDIA_DIR = "m3d1a-f1xtur3-dir"
 
 GREETING_TY = "Дорогая Ева!"
@@ -80,6 +81,7 @@ PRIVATE_STRINGS = (
     OUT_OF_TOWN_TEXT.splitlines()[0],
     PLACE_NAME,
     PLACE_ADDRESS,
+    PLACE_QUERY,
     TOKEN_A,
     TOKEN_B,
     TOKEN_C,
@@ -153,6 +155,11 @@ SITE: dict = {
             "address": PLACE_ADDRESS,
             "description": "Описание площадки.",
             "geo": {"lat": 10.5, "lng": 20.25},
+            "maps": {
+                "googleQuery": PLACE_QUERY,
+                "yandexQuery": PLACE_QUERY,
+                "applePlaceId": "IEXAMPLE0000001",
+            },
             "photos": ["venue-1", "venue-2"],
             "directions": "route",
         }

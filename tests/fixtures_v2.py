@@ -153,6 +153,11 @@ SITE = {
             "name": "Дворец бракосочетания Энска",
             "address": "г. Энск, Центральная площадь, д. 2",
             "geo": {"lat": 12.340001, "lng": 23.450002},
+            "maps": {
+                "googleQuery": "Гостевой вход, Дворец бракосочетания, Энск",
+                "yandexGeoId": "1234567890",
+                "appleQuery": "Гостевой вход, Дворец бракосочетания, Энск",
+            },
             "photos": ["registry-1"],
         },
         "manor": {
@@ -162,7 +167,11 @@ SITE = {
             "пройдёт в саду, ужин — в главном зале.\n\nНа территории есть бесплатная "
             "парковка.",
             "geo": {"lat": 12.345678, "lng": 23.456789},
-            "maps": {"googlePlaceId": "EXAMPLE-not-a-real-place-id"},
+            "maps": {
+                "googlePlaceId": "EXAMPLE-not-a-real-place-id",
+                "yandexOrgId": "1000000001",
+                "applePlaceId": "IEXAMPLE0000001",
+            },
             "photos": ["venue-1", "venue-2", "walk", "venue-3", "venue-4"],
             "directions": "directions",
         },

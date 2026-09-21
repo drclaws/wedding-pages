@@ -692,6 +692,91 @@ class LocationTests(SchemaTestCase):
             "(use the identifier, not a link)",
         )
 
+    def maps_report(self, **maps):
+        return run(lambda s, i: s["locations"]["hotel"].update(maps=maps))
+
+    def test_every_map_field_is_accepted(self):
+        report = self.maps_report(
+            googlePlaceId="EXAMPLE_place-id",
+            googleQuery="Гостевой вход, Энск",
+            yandexGeoId="1234567890",
+            yandexQuery="Гостевой вход, Энск",
+            applePlaceId="IEXAMPLE0000001",
+            appleQuery="Гостевой вход, Энск",
+        )
+        self.assertEqual(report.errors, [])
+
+    def test_new_map_ids_have_a_format(self):
+        cases = {
+            "yandexGeoId": ("12a", "may only contain digits"),
+            "applePlaceId": ("I-EXAMPLE", "may only contain A-Z, a-z and 0-9"),
+        }
+        for key, (value, rule) in cases.items():
+            with self.subTest(key=key):
+                self.assertOneError(
+                    self.maps_report(**{key: value}),
+                    f"site.json: field 'locations.hotel.maps.{key}' {rule} "
+                    "(use the identifier, not a link)",
+                )
+        link = "https://maps.apple.com/place?place-id=IEXAMPLE0000001"
+        self.assertEqual(len(self.maps_report(applePlaceId=link).errors), 1)
+
+    def test_yandex_org_and_geo_ids_exclude_each_other(self):
+        self.assertOneError(
+            self.maps_report(yandexOrgId="1000000001", yandexGeoId="1234567890"),
+            "site.json: field 'locations.hotel.maps' has both 'yandexOrgId' and "
+            "'yandexGeoId': set either 'yandexOrgId' or 'yandexGeoId'",
+        )
+        self.assertEqual(self.maps_report(yandexOrgId="1000000001", yandexGeoId="").errors, [])
+
+    def test_bad_map_queries(self):
+        cases = {
+            "": "must not be empty (remove the field instead)",
+            "   ": "must not be empty (remove the field instead)",
+            "Вход\nЭнск": "must be a single line (no line breaks)",
+            "Вход\rЭнск": "must be a single line (no line breaks)",
+            "Вход\tЭнск": "must not contain control characters",
+            "Вход\x00": "must not contain control characters",
+            "Вход\x7f": "must not contain control characters",
+            "я" * 201: "is longer than 200 characters",
+        }
+        for key in ("googleQuery", "yandexQuery", "appleQuery"):
+            for value, problem in cases.items():
+                with self.subTest(key=key, value=value[:12]):
+                    self.assertOneError(
+                        self.maps_report(**{key: value}),
+                        f"site.json: field 'locations.hotel.maps.{key}' {problem}",
+                    )
+            with self.subTest(key=key, value="200 characters"):
+                self.assertEqual(self.maps_report(**{key: "я" * 200}).errors, [])
+            with self.subTest(key=key, value="not a string"):
+                self.assertOneError(
+                    self.maps_report(**{key: 5}),
+                    f"site.json: field 'locations.hotel.maps.{key}' must be a string, got a number",
+                )
+
+    def test_map_queries_are_not_quoted_in_messages(self):
+        report = self.maps_report(googleQuery="Секретный вход\nЭнск")
+        self.assertTrue(report.errors)
+        self.assertNotIn("Секретный", " ".join(report.errors))
+
+    def test_unknown_map_fields(self):
+        self.assertOneError(
+            self.maps_report(yandexGeoID="1"),
+            "site.json: unknown field 'locations.hotel.maps.yandexGeoID' "
+            "(did you mean 'yandexGeoId'?)",
+        )
+        self.assertOneError(
+            self.maps_report(appleQueri="Энск"),
+            "site.json: unknown field 'locations.hotel.maps.appleQueri' "
+            "(did you mean 'appleQuery'?)",
+        )
+        self.assertOneError(
+            self.maps_report(query="Энск"),
+            "site.json: field 'locations.hotel.maps.query' is not supported: a text query "
+            "belongs to one map service, use 'googleQuery', 'yandexQuery' or 'appleQuery'",
+        )
+
     def test_old_directions_field(self):
         report = run(lambda s, i: s["locations"]["hotel"].update(directionsImage="x.png"))
         self.assertOneError(
