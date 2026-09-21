@@ -419,6 +419,9 @@ class SiteIndex:
     section_positions: dict[str, int] = field(default_factory=dict)
     #: Section id -> the ids of its widgets.
     widget_ids: dict[str, list[str]] = field(default_factory=dict)
+    #: Sections with a widget of broken shape, type or id: the references of
+    #: the invitations to their widgets are not checked.
+    broken_widgets: set[str] = field(default_factory=set)
     #: False when a section has no usable id or type: the references of the
     #: invitations to sections are not checked then.
     sections_ok: bool = True
@@ -860,11 +863,19 @@ def _check_widget(
     index: SiteIndex,
     section_id: str | None,
 ) -> None:
+    def broken() -> None:
+        # the invitations may refer to this widget: their references to the
+        # widgets of the section are not checked, the problem is reported here
+        if section_id is not None:
+            index.broken_widgets.add(section_id)
+
     widget = check.object(widget, parts)
     if widget is None:
+        broken()
         return
     if "type" not in widget:
         check.error((*parts, "type"), f"is required ({', '.join(WIDGET_TYPES)})")
+        broken()
         return
     kind = widget["type"]
     if kind not in WIDGET_TYPES:
@@ -874,6 +885,7 @@ def _check_widget(
             f"names an unknown widget type{shown}{did_you_mean(kind, WIDGET_TYPES)}; "
             f"known: {', '.join(WIDGET_TYPES)}",
         )
+        broken()
         return
     check.unknown_fields(widget, WIDGET_BASE_FIELDS + WIDGET_FIELDS[kind], parts)
     check.value(widget, "visible", "boolean", parts)
@@ -881,6 +893,7 @@ def _check_widget(
         widget_id = widget["id"]
         if not is_identifier(widget_id):
             check.error((*parts, "id"), f"must be an identifier: {ID_RULE}")
+            broken()
         elif section_id is not None:
             if widget_id in index.widget_ids[section_id]:
                 check.error((*parts, "id"), f"repeats {show_id(widget_id)} within the section")
@@ -1110,6 +1123,8 @@ def _check_guest_sections(check: _Checker, invitation: dict, index: SiteIndex) -
         for widget_id, widget_override in widgets.items():
             widget_parts = (*parts, "widgets", widget_id)
             if widget_id not in declared:
+                if section_id in index.broken_widgets:
+                    continue  # it may be the broken widget, reported in site.json
                 hint = (
                     f"{did_you_mean(widget_id, declared)}; widgets with an id: "
                     f"{', '.join(declared)}"

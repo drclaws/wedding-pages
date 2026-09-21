@@ -812,6 +812,26 @@ class InvitationTests(SchemaTestCase):
         self.assertEqual(len(report.errors), 1)
         self.assertIn("sections[6].id", report.errors[0])
 
+    def test_broken_widgets_are_not_reported_again_for_the_invitations(self):
+        cases = {
+            "type": lambda widget: widget.update(type="txt"),
+            "id": lambda widget: widget.update(id="Hotel_Booked"),
+        }
+        for name, change in cases.items():
+            with self.subTest(name):
+                report = run(lambda s, i: change(s["sections"][6]["widgets"][2]))
+                self.assertEqual(len(report.errors), 1, report.errors)
+                self.assertTrue(report.errors[0].startswith("site.json: field 'sections[6].widgets[2]."))
+
+    def test_other_sections_still_check_widget_references(self):
+        def change(site, invitations):
+            site["sections"][6]["widgets"][2]["type"] = "txt"
+            invitations[1]["sections"] = {"where": {"widgets": {"events": {"visible": False}}}}
+
+        report = run(change)
+        self.assertEqual(len(report.errors), 2)
+        self.assertIn("refers to no widget of section 'where'", report.errors[1])
+
     def test_broken_events_registry_is_not_reported_again(self):
         report = run(lambda s, i: s.update(events=[]))
         self.assertTrue(all(message.startswith("site.json") for message in report.errors))
