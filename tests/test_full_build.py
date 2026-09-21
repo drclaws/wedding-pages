@@ -6,6 +6,7 @@ import json
 import shutil
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 
 from tests import fixtures_v2 as F
 from tests import support
@@ -274,6 +275,7 @@ class OutputContentsTests(FullBuildTestCase):
         self.build()
         page = self.page(support.TOKEN_A)
         video, poster = published_name("clip.mp4"), published_name("poster.png")
+        query = quote(support.PLACE_QUERY, safe="")
         for fragment in (
             f'<img src="/{MEDIA}/{published_name("venue-1.png")}"',
             f'<img src="/{MEDIA}/{published_name("venue-2.png")}"',
@@ -284,9 +286,10 @@ class OutputContentsTests(FullBuildTestCase):
             "0:02",
             calendar_link("dinner"),
             calendar_link("brunch"),
-            'href="https://www.google.com/maps/search/?api=1&amp;query=10.5,20.25"',
-            'href="https://yandex.ru/maps/?pt=20.25,10.5&amp;z=16"',
-            'href="https://maps.apple.com/?ll=10.5,20.25&amp;q=',
+            f'href="https://www.google.com/maps/search/?api=1&amp;query={query}"',
+            f'href="https://yandex.ru/maps/?text={query}&amp;ll=20.25,10.5&amp;z=16"',
+            'href="https://maps.apple.com/place?place-id=IEXAMPLE0000001'
+            f'&amp;coordinate=10.5,20.25&amp;name={quote(support.PLACE_NAME, safe="")}"',
             '<h1 class="cover__title" id="s-cover--title">Алиса и Боб</h1>',
             "Приходи 1 июня 2030.",
         ):

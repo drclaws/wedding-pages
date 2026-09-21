@@ -1,7 +1,8 @@
 """Links to map services and the URLs of media files (standard library only).
 
-- `map_links` builds the links to Google, Yandex and Apple maps from the name,
-  the address, the coordinates and the ids of a place;
+- `map_links` builds the links to Google, Yandex and Apple maps from the ids
+  and the text queries of a place (the name, the address and the coordinates
+  only complete them);
 - `place_coordinates` and `format_coordinate` write coordinates as text;
 - `media_url` is the URL of a file in the media directory.
 
@@ -56,27 +57,36 @@ def _url_component(text: str) -> str:
 
 
 def map_links(name: str, address: str, geo: Any, maps: Any) -> dict[str, str]:
-    """Ready-made map URLs; "" when there is no data for a service.
+    """Ready-made map URLs; "" when the place is not set for a service.
 
-    * Google: the place id when it is set (`query` is required by the URL
-      format and only used as a fallback: the name, else the coordinates, else
-      the address), otherwise the coordinates;
-    * Yandex: the organisation id when it is set, otherwise the coordinates
-      (longitude first);
-    * Apple: the coordinates, labelled with the name.
+    A service gets a link only when `maps` names the place for it: by its
+    id, else by its own text query.  The coordinates alone give no link; they
+    only narrow down a text query to the area (and help Apple find a place
+    whose id it does not know).
+
+    * Google: `googlePlaceId` (the URL format requires `query` too, used only
+      when the id is not found: `googleQuery`, else the name, else the
+      coordinates, else the address), else `googleQuery`;
+    * Yandex: `yandexOrgId` (an organisation) or `yandexGeoId` (a building or
+      another map object), else `yandexQuery` near the coordinates;
+    * Apple: `applePlaceId` (with the coordinates and the name), else
+      `appleQuery` near the coordinates.
     """
     maps = maps if isinstance(maps, dict) else {}
+
+    def field(key: str) -> str:
+        return _optional_text(maps.get(key)).strip()
+
     name = name.strip()
-    place_id = _optional_text(maps.get("googlePlaceId")).strip()
-    org_id = _optional_text(maps.get("yandexOrgId")).strip()
     coordinates = place_coordinates(geo)
     lat, lng = coordinates if coordinates else ("", "")
 
     google = yandex = apple = ""
-    if place_id:
+    google_id, google_query = field("googlePlaceId"), field("googleQuery")
+    if google_id:
         query = (
-            _url_component(name)
-            if name
+            _url_component(google_query or name)
+            if google_query or name
             else f"{lat},{lng}"
             if coordinates
             else _url_component(address.strip())
@@ -84,20 +94,32 @@ def map_links(name: str, address: str, geo: Any, maps: Any) -> dict[str, str]:
         if query:
             google = (
                 "https://www.google.com/maps/search/?api=1"
-                f"&query={query}&query_place_id={_url_component(place_id)}"
+                f"&query={query}&query_place_id={_url_component(google_id)}"
             )
-    elif coordinates:
-        google = f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
+    elif google_query:
+        google = f"https://www.google.com/maps/search/?api=1&query={_url_component(google_query)}"
 
+    org_id, geo_id, yandex_query = field("yandexOrgId"), field("yandexGeoId"), field("yandexQuery")
     if org_id:
         yandex = f"https://yandex.ru/maps/org/{_url_component(org_id)}"
-    elif coordinates:
-        yandex = f"https://yandex.ru/maps/?pt={lng},{lat}&z={YANDEX_MAPS_ZOOM}"
+    elif geo_id:
+        yandex = f"https://yandex.ru/maps/geo/{_url_component(geo_id)}/"
+    elif yandex_query:
+        yandex = f"https://yandex.ru/maps/?text={_url_component(yandex_query)}"
+        if coordinates:
+            yandex += f"&ll={lng},{lat}&z={YANDEX_MAPS_ZOOM}"
 
-    if coordinates:
-        apple = f"https://maps.apple.com/?ll={lat},{lng}"
+    apple_id, apple_query = field("applePlaceId"), field("appleQuery")
+    if apple_id:
+        apple = f"https://maps.apple.com/place?place-id={_url_component(apple_id)}"
+        if coordinates:
+            apple += f"&coordinate={lat},{lng}"
         if name:
-            apple += f"&q={_url_component(name)}"
+            apple += f"&name={_url_component(name)}"
+    elif apple_query:
+        apple = f"https://maps.apple.com/search?query={_url_component(apple_query)}"
+        if coordinates:
+            apple += f"&center={lat},{lng}"
     return {"google": google, "yandex": yandex, "apple": apple}
 
 

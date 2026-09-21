@@ -330,7 +330,14 @@ class LinkTests(FailingBuildTestCase):
         self.add_to_template(
             f'<a href="{MAP_LINK}" target="_blank" rel="nofollow NoReferrer noopener">x</a>\n'
             '<a href="https://yandex.ru/maps/org/1" target="_BLANK" rel="noopener noreferrer">y</a>\n'
-            '<a href="https://maps.apple.com/?ll=1,2" target="_blank" rel="noopener noreferrer">a</a>'
+            '<a href="https://maps.apple.com/?ll=1,2" target="_blank" rel="noopener noreferrer">a</a>\n'
+            '<a href="https://yandex.ru/maps/geo/1/" target="_blank" rel="noopener noreferrer">g</a>\n'
+            '<a href="https://yandex.ru/maps/?text=%D0%AD&amp;ll=2,1&amp;z=16" target="_blank" '
+            'rel="noopener noreferrer">t</a>\n'
+            '<a href="https://maps.apple.com/place?place-id=IEXAMPLE0&amp;name=x" target="_blank" '
+            'rel="noopener noreferrer">p</a>\n'
+            '<a href="https://maps.apple.com/search?query=x&amp;center=1,2" target="_blank" '
+            'rel="noopener noreferrer">s</a>'
         )
         self.assertBuildPasses()
 

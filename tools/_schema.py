@@ -20,6 +20,7 @@ Standard library only; no input/output.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Collection, Iterable, Mapping, Sequence
@@ -139,13 +140,33 @@ LOCATION_FIELDS = (
 V1_LOCATION_HINTS = {"directionsImage": "use 'directions' with the id of a media item"}
 GEO_FIELDS = ("lat", "lng")
 GEO_LIMITS = {"lat": 90.0, "lng": 180.0}
-MAPS_FIELDS = ("googlePlaceId", "yandexOrgId")
+_LETTERS_DIGITS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+)
 _MAP_ID_RULES = {
     "googlePlaceId": (
-        frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"),
+        _LETTERS_DIGITS | frozenset("_-"),
         "may only contain A-Z, a-z, 0-9, '_' and '-'",
     ),
     "yandexOrgId": (frozenset("0123456789"), "may only contain digits"),
+    "yandexGeoId": (frozenset("0123456789"), "may only contain digits"),
+    "applePlaceId": (_LETTERS_DIGITS, "may only contain A-Z, a-z and 0-9"),
+}
+#: A text query to a map service: what a guest would type in its search box.
+MAP_QUERY_FIELDS = ("googleQuery", "yandexQuery", "appleQuery")
+MAP_QUERY_MAX_LENGTH = 200
+MAPS_FIELDS = (
+    "googlePlaceId",
+    "googleQuery",
+    "yandexOrgId",
+    "yandexGeoId",
+    "yandexQuery",
+    "applePlaceId",
+    "appleQuery",
+)
+_MAPS_PROBLEMS = {
+    "query": "is not supported: a text query belongs to one map service, "
+    "use 'googleQuery', 'yandexQuery' or 'appleQuery'",
 }
 SCHEDULE_ITEM_FIELDS = ("time", "title", "text")
 MEDIA_FIELDS = {
@@ -725,13 +746,7 @@ def _check_locations(check: _Checker, site: dict, index: SiteIndex) -> dict | No
                     check.error((*geo_parts, key), f"is outside [-{limit:g}, {limit:g}]")
         maps = check.value(place, "maps", "object", parts)
         if maps is not MISSING:
-            maps_parts = (*parts, "maps")
-            check.unknown_fields(maps, MAPS_FIELDS, maps_parts)
-            for key in MAPS_FIELDS:
-                value = check.value(maps, key, "string", maps_parts)
-                allowed, rule = _MAP_ID_RULES[key]
-                if value is not MISSING and not set(value.strip()) <= allowed:
-                    check.error((*maps_parts, key), f"{rule} (use the identifier, not a link)")
+            _check_maps(check, maps, (*parts, "maps"))
         check.ref_list(
             place, "photos", parts, index.media, "media item", required=False, allow_empty=True
         )
@@ -744,6 +759,34 @@ def _check_locations(check: _Checker, site: dict, index: SiteIndex) -> dict | No
                     f"must be an image, but {show_id(found)} is a {kind}",
                 )
     return locations
+
+
+def _check_maps(check: _Checker, maps: dict, parts: Sequence[PathPart]) -> None:
+    """Ids and text queries of a place in the map services."""
+    check.unknown_fields(maps, MAPS_FIELDS, parts, _MAPS_PROBLEMS)
+    for key, (allowed, rule) in _MAP_ID_RULES.items():
+        value = check.value(maps, key, "string", parts)
+        if value is not MISSING and not set(value.strip()) <= allowed:
+            check.error((*parts, key), f"{rule} (use the identifier, not a link)")
+    for key in MAP_QUERY_FIELDS:
+        where = (*parts, key)
+        if key in maps and isinstance(maps[key], str) and not maps[key].strip():
+            check.error(where, "must not be empty (remove the field instead)")
+            continue
+        value = check.value(maps, key, "string", parts, single_line=True)
+        if value is MISSING:
+            continue
+        if any(unicodedata.category(char) == "Cc" for char in value):
+            check.error(where, "must not contain control characters")
+        elif len(value) > MAP_QUERY_MAX_LENGTH:
+            check.error(where, f"is longer than {MAP_QUERY_MAX_LENGTH} characters")
+    both = ("yandexOrgId", "yandexGeoId")
+    if all(isinstance(maps.get(key), str) and maps[key].strip() for key in both):
+        check.error(
+            parts,
+            "has both 'yandexOrgId' and 'yandexGeoId': "
+            "set either 'yandexOrgId' or 'yandexGeoId'",
+        )
 
 
 def _media_type(index: SiteIndex, media_id: str | None) -> str | None:
