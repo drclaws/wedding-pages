@@ -30,7 +30,7 @@ so other tools (tests, preview scripts) can reuse the public helpers:
     page_trees(data, images)           -> list of page trees
     render(template_source, context)   -> str
     parse_template(source).render(ctx) -> str
-    event_calendar(media_dir, event)   -> bytes
+    event_calendar(media_dir, event, couple_names=...) -> bytes
     calendar_files(data)               -> {event id: CalendarFile}
     check_output(out_dir, pages)       -> OutputStats
 
@@ -178,6 +178,8 @@ ICS_UID_DOMAIN = "invitation"
 #: `DTSTAMP` is a constant so that equal inputs give a byte-identical output.
 ICS_DTSTAMP = "20000101T000000Z"
 ICS_LINE_OCTETS = 75
+#: Between the names of the couple and the title of the event in `SUMMARY`.
+ICS_SUMMARY_SEPARATOR = " · "
 
 #: The only external links a page may contain: map services, opened on click.
 #: (host, required path prefix); the scheme is always https.
@@ -1481,15 +1483,18 @@ def build_event_ics(
     return "".join(ics_fold(line) + "\r\n" for line in lines).encode("utf-8")
 
 
-def event_calendar(media_dir: str, event: dict) -> bytes:
+def event_calendar(media_dir: str, event: dict, *, couple_names: str) -> bytes:
     """The calendar file of one event, the same for every invitation.
 
     `event` is an event of `tools._page.calendar_events` (an event of a page
-    tree has the same fields).  Nothing of an invitation goes into the file:
-    the notes stay on the page.  The uid depends on the media directory, the
-    id and the start of the event, so a new time gives a new entry, while a
-    new title, end or place updates the entry saved before.  The place is
-    included once it is announced.
+    tree has the same fields); `couple_names` is `coupleNames` of the site.
+    The title of the entry is `<couple names> · <event title>`, so that it
+    stands out among the other entries of a calendar.  Nothing of an
+    invitation goes into the file: the notes stay on the page.  The uid
+    depends on the media directory, the id and the start of the event, so a
+    new time gives a new entry, while a new title, names, end or place
+    updates the entry saved before.  The place is included once it is
+    announced.
     """
     uid = hashlib.sha256(
         f"{media_dir}\n{event['id']}\n{event['startISO']}".encode("utf-8")
@@ -1502,8 +1507,7 @@ def event_calendar(media_dir: str, event: dict) -> bytes:
         uid=uid,
         start=parse_date_iso(event["startISO"]),
         end=parse_date_iso(event["endISO"]),
-        # default: the title of the event is the title of the calendar entry
-        summary=event["title"],
+        summary=f"{couple_names}{ICS_SUMMARY_SEPARATOR}{event['title']}",
         location=location,
     )
 
@@ -1550,7 +1554,9 @@ def calendar_files(data: Data) -> dict[str, CalendarFile]:
     key = calendar_key(invitation["token"] for invitation in data.invitations)
     files = {}
     for event in page_tools.calendar_events(data.site, data.invitations, settings):
-        content = event_calendar(data.site["mediaDir"], event)
+        content = event_calendar(
+            data.site["mediaDir"], event, couple_names=data.site["coupleNames"]
+        )
         files[event["id"]] = CalendarFile(calendar_name(key, content), content)
     return files
 
