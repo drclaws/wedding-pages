@@ -155,11 +155,15 @@ class PrivacyTests(ExamplePagesTestCase):
             for invitation in invitations:
                 page = f"i/{invitation['token']}/index.html"
                 for value in [invitation["greeting"], *notes(invitation)]:
-                    text = support.build.html.escape(value, quote=True).replace("\n", "<br>")
-                    first_line = text.split("<br>")[0]
+                    # the whole text as the page writes it: escaped, with paragraphs
+                    text = build.text_to_html(value)
                     with self.subTest(data=name, value=value[:20]):
-                        found = [path for path, content in files.items() if first_line in content]
+                        found = [path for path, content in files.items() if text in content]
                         self.assertEqual(found, [page])
+                        for line in filter(None, (part.strip() for part in value.split("\n"))):
+                            html_line = build.text_to_html(line)
+                            found = [path for path, content in files.items() if html_line in content]
+                            self.assertEqual(found, [page], line)
                         checked += 1
         # 8 + 3 greetings; notes: 9 in the main set, 2 in the other
         self.assertEqual(checked, 11 + 11)
@@ -226,9 +230,10 @@ class PrivacyTests(ExamplePagesTestCase):
                         continue
                     with self.subTest(data=name, file=path):
                         for value in [invitation["greeting"], invitation["token"], *notes(invitation)]:
-                            self.assertNotIn(value.split("\n")[0], content)
+                            for line in filter(None, (part.strip() for part in value.split("\n"))):
+                                self.assertNotIn(line, content)
 
-    def test_tokens_are_only_names_of_directories(self):
+    def test_a_token_is_only_in_its_own_directory_and_page(self):
         for name, _site, invitations, files in self.sets():
             for invitation in invitations:
                 token = invitation["token"]
@@ -249,10 +254,30 @@ class PrivacyTests(ExamplePagesTestCase):
     def test_media_names_of_the_data_are_not_published(self):
         site, _invitations, files = self.built["data"]
         for item in site["media"].values():
-            for key in ("file", "poster"):
+            for key in ("file", "poster", "thumb"):
                 if key in item:
                     self.assertFalse(any(item[key] in path for path in files), item[key])
                     self.assertFalse(any(item[key] in content for content in files.values()), item[key])
+
+    def test_the_name_of_a_tile_picture_is_not_published_either(self):
+        site, invitations = load("data")
+        site["media"]["walk"]["thumb"] = "walk-thumb.png"
+        data = support.write_data(self.tmp / "data-thumb", site=site, invitations=invitations)
+        names = sorted(
+            {item[key] for item in site["media"].values()
+             for key in ("file", "poster", "thumb") if key in item}
+        )  # fmt: skip
+        media = support.write_media(self.tmp / "media-thumb", names)
+        (media / "walk-thumb.png").write_bytes(support.png_bytes(16, 9))
+        out = self.tmp / "dist-thumb"
+        build.build_site(data, media, out, code_dir=ROOT, log=lambda _l: None)
+        thumb = build.media_tools.hashed_name(media / "walk-thumb.png")
+        contents = [path.read_bytes() for path in out.rglob("*") if path.is_file()]
+        for name in names:
+            self.assertFalse(any(name in str(path) for path in out.rglob("*")), name)
+            self.assertFalse(any(name.encode() in content for content in contents), name)
+        page = (out / "i" / invitations[0]["token"] / "index.html").read_text(encoding="utf-8")
+        self.assertIn(f'<img src="/assets/{site["mediaDir"]}/{thumb}" alt=""', page)
 
 
 class MarkupTests(ExamplePagesTestCase):
