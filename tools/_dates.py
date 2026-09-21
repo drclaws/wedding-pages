@@ -5,16 +5,53 @@ local time of the place: never in UTC and never in the time zone of the
 machine that runs the build.  The names of the months and of the days of the
 week come from the tables below, not from the locale of the operating system.
 
-The functions take `datetime` values with a UTC offset (as the build parses
-them); a value without an offset raises `ValueError`.  Pure functions, no
-input/output.  Standard library only.
+The functions take `datetime` values with a UTC offset (as `parse_date_iso`
+reads them from the data); a value without an offset raises `ValueError`.
+Pure functions, no input/output.  Standard library only.
 """
 
 from __future__ import annotations
 
 import bisect
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, NamedTuple
+
+_DATE_ISO_RE = re.compile(
+    r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}(?::\d{2}(?:\.\d{3}|\.\d{6})?)?)"
+    r"(Z|z|[+-]\d{2}:\d{2})?\Z"
+)
+
+
+def parse_date_iso(value: str) -> datetime:
+    """Parse a date and time from the data; a UTC offset is required.
+
+    Accepts a strict subset of ISO 8601 so that the result does not depend on
+    the Python version (3.10's `fromisoformat` is stricter than 3.11's), and
+    normalises the `Z` suffix, which `fromisoformat` rejects before 3.11.
+    """
+    match = _DATE_ISO_RE.match(value) if isinstance(value, str) else None
+    if not match:
+        raise ValueError(
+            "must be an ISO 8601 date and time with a UTC offset, "
+            "e.g. 2030-01-02T18:30:00+03:00"
+        )
+    if not match.group(3):
+        raise ValueError(
+            "has no UTC offset; append the offset, e.g. +03:00 (or Z for UTC)"
+        )
+    offset = match.group(3)
+    text = f"{match.group(1)}T{match.group(2)}" + (
+        "+00:00" if offset in ("Z", "z") else offset
+    )
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        raise ValueError("is not a valid date and time") from None
+    if parsed.utcoffset() is None:  # pragma: no cover - guarded by the regex
+        raise ValueError("has no UTC offset")
+    return parsed
+
 
 #: Months in the genitive case, as in "15 июня".
 MONTHS_GENITIVE = (
