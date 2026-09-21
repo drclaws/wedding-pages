@@ -34,7 +34,7 @@ EXPECTED_HEADERS = """/*
 """
 
 #: Every file of the fixture build.
-FILES_IN_TOTAL = 20
+FILES_IN_TOTAL = 18
 
 
 def pending_site() -> dict:
@@ -46,12 +46,13 @@ def pending_site() -> dict:
     return site
 
 
-def calendar_files() -> list[str]:
-    return [
-        f"i/{token}/{event_id}.ics"
-        for token, event_ids in support.VISIBLE_EVENTS.items()
-        for event_id in event_ids
-    ]
+def calendar_files(site: dict | None = None) -> list[str]:
+    """The calendar files of the fixture build: one per event somebody sees."""
+    return [f"{MEDIA}/{name}" for name in support.calendar_names(site).values()]
+
+
+def calendar_link(event_id: str, site: dict | None = None) -> str:
+    return f'href="/{MEDIA}/{support.calendar_names(site)[event_id]}"'
 
 
 class FullBuildTestCase(CliTestCase):
@@ -116,7 +117,7 @@ class OutputContentsTests(FullBuildTestCase):
                     "assets/og.png",
                     "assets/fonts/sans.woff2",
                     *(f"i/{token}/index.html" for token in TOKENS),
-                    *calendar_files(),
+                    *calendar_files(pending_site()),
                     "index.html",
                     "robots.txt",
                 ]
@@ -127,8 +128,9 @@ class OutputContentsTests(FullBuildTestCase):
         self.assertNotIn("<video", page)
         self.assertNotIn("<img", page)
         self.assertNotIn("maps", page)
-        self.assertNotIn(support.MEDIA_DIR, page)
-        self.assertIn(f'href="/i/{support.TOKEN_A}/dinner.ics"', page)
+        # the media directory holds the calendar files alone
+        self.assertEqual(page.count(f"/{MEDIA}/"), page.count(".ics\""))
+        self.assertIn(calendar_link("dinner", pending_site()), page)
 
     def test_top_level_matches_the_allow_list(self):
         self.build()
@@ -142,26 +144,83 @@ class OutputContentsTests(FullBuildTestCase):
         )
         self.assertEqual(list(self.out.rglob("sitemap*")), [])
 
-    def test_no_shared_calendar_file(self):
+    def test_one_calendar_file_per_event_in_the_media_directory(self):
         self.build()
-        self.assertEqual(
-            sorted(path.relative_to(self.out).as_posix() for path in self.out.rglob("*.ics")),
-            sorted(calendar_files()),
-        )
+        found = sorted(path.relative_to(self.out).as_posix() for path in self.out.rglob("*.ics"))
+        self.assertEqual(found, sorted(calendar_files()))
+        self.assertEqual(len(found), 2)  # the dinner, and the brunch Eve sees
+        self.assertEqual(list((self.out / "i").rglob("*.ics")), [])
+        for token in TOKENS:
+            self.assertEqual(
+                sorted(path.name for path in (self.out / "i" / token).iterdir()), ["index.html"]
+            )
 
-    def test_calendar_files_are_those_of_the_tree(self):
+    def test_calendar_files_are_those_of_the_data(self):
         self.build()
         data = build.load_data(self.data)
         expected = build.calendar_files(data)
-        self.assertEqual(
-            {token: sorted(files) for token, files in expected.items()},
-            {token: sorted(events) for token, events in support.VISIBLE_EVENTS.items()},
+        self.assertEqual(list(expected), ["dinner", "brunch"])
+        for entry in expected.values():
+            self.assertRegex(entry.name, r"\A[0-9a-f]{16}\.ics\Z")
+            self.assertEqual((self.out / MEDIA / entry.name).read_bytes(), entry.content)
+
+    def test_an_event_without_an_end_is_a_warning(self):
+        site = site_data()
+        del site["events"]["dinner"]["end"]
+        write_data(self.data, site=site)
+        result = self.build()
+        self.assertIn(
+            "warning: site.json: field 'events.dinner.end' is not set: the calendar and the "
+            "past/now marks use start + 6 h",
+            result.stderr,
         )
-        for token, files in expected.items():
-            for event_id, content in files.items():
-                self.assertEqual(
-                    (self.out / "i" / token / f"{event_id}.ics").read_bytes(), content
-                )
+        entry = build.calendar_files(build.load_data(self.data))["dinner"]
+        self.assertIn(b"DTEND:20300601T190000Z\r\n", entry.content)
+        page = self.page(support.TOKEN_B)
+        self.assertIn('data-events-end="2030-06-01T22:00:00+03:00"', page)
+        # the end is not on the page: no `showEnd`
+        self.assertNotIn("16:00–22:00", page)
+
+    def test_the_end_is_on_the_page_with_show_end(self):
+        self.build()
+        self.assertNotIn("16:00–22:00", self.page(support.TOKEN_B))
+        site = site_data()
+        site["events"]["dinner"]["showEnd"] = True
+        write_data(self.data, site=site)
+        result = self.build()
+        self.assertEqual(result.stderr, "")
+        self.assertIn("16:00–22:00", self.page(support.TOKEN_B))
+
+    def test_a_calendar_file_never_takes_the_name_of_a_media_file(self):
+        calendars = support.fixture_calendars()
+        destination = self.tmp / "media-out"
+        with self.assertRaises(build.BuildError) as caught:
+            build.write_calendars(destination, calendars, {calendars["brunch"].name})
+        self.assertIn("has the name of another file of the media directory", str(caught.exception))
+        self.assertFalse(destination.exists())
+        # without media files the directory is created for the calendars alone
+        self.assertEqual(build.write_calendars(destination, calendars), 2)
+        self.assertEqual(
+            sorted(path.name for path in destination.iterdir()),
+            sorted(entry.name for entry in calendars.values()),
+        )
+        # a directory that is already there is an entry of assets/: refused
+        with self.assertRaises(build.BuildError):
+            build.write_calendars(destination, calendars)
+
+    def test_an_event_nobody_sees_has_no_calendar_file(self):
+        invitations = invitations_data()
+        del invitations[0]["events"]
+        write_data(self.data, invitations=invitations)
+        result = self.build()
+        self.assertIn("event 'brunch' is not shown on any page", result.stderr)
+        found = [path.relative_to(self.out).as_posix() for path in self.out.rglob("*.ics")]
+        self.assertEqual(found, calendar_files()[:1])
+        brunch = support.calendar_names()["brunch"]
+        for path in self.out.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(brunch.encode(), path.read_bytes(), path)
+                self.assertNotIn(support.HIDDEN_EVENT_TITLE.encode(), path.read_bytes(), path)
 
     def test_media_files_are_published_under_the_hash_of_their_contents(self):
         self.build()
@@ -182,7 +241,7 @@ class OutputContentsTests(FullBuildTestCase):
         write_data(self.data, site=site)
         (self.media / "venue-copy.png").write_bytes(support.media_bytes("venue-1.png"))
         self.build()
-        self.assertEqual(len(list((self.out / MEDIA).iterdir())), len(support.MEDIA_FILES) - 1)
+        self.assertEqual(len(list((self.out / MEDIA).glob("*.png"))), len(support.MEDIA_FILES) - 2)
         page = self.page(support.TOKEN_A)
         # both photos of the place, in both cards of the events that take place there
         self.assertEqual(page.count(f'src="/{MEDIA}/{published_name("venue-1.png")}"'), 4)
@@ -223,8 +282,8 @@ class OutputContentsTests(FullBuildTestCase):
             f'data-media-poster="/{MEDIA}/{poster}"',
             f'data-media-ratio="{support.VIDEO_SIZE[0]} / {support.VIDEO_SIZE[1]}"',
             "0:02",
-            f'href="/i/{support.TOKEN_A}/dinner.ics"',
-            f'href="/i/{support.TOKEN_A}/brunch.ics"',
+            calendar_link("dinner"),
+            calendar_link("brunch"),
             'href="https://www.google.com/maps/search/?api=1&amp;query=10.5,20.25"',
             'href="https://yandex.ru/maps/?pt=20.25,10.5&amp;z=16"',
             'href="https://maps.apple.com/?ll=10.5,20.25&amp;q=',
@@ -285,7 +344,8 @@ class OutputContentsTests(FullBuildTestCase):
     def test_log_has_counters_and_no_data(self):
         result = self.build()
         self.assertIn("3 invitation(s), 5 media file(s) validated", result.stdout)
-        self.assertIn("3 page(s) and 4 calendar file(s)", result.stdout)
+        self.assertIn("wrote 3 page(s) to dist/i/", result.stdout)
+        self.assertIn("wrote 2 calendar file(s), one per event", result.stdout)
         self.assertIn("2 asset file(s)", result.stdout)
         self.assertIn("copied 5 media file(s) under the hash of their contents", result.stdout)
         last = result.stdout.strip().splitlines()[-1]
@@ -353,9 +413,11 @@ class PrivacyTests(FullBuildTestCase):
         contents = self.contents()
         title = support.HIDDEN_EVENT_TITLE.encode()
         found = sorted(name for name, content in contents.items() if title in content)
-        self.assertEqual(
-            found, [f"i/{support.TOKEN_A}/brunch.ics", f"i/{support.TOKEN_A}/index.html"]
-        )
+        brunch = support.calendar_names()["brunch"]
+        self.assertEqual(sorted(found), sorted([f"{MEDIA}/{brunch}", f"i/{support.TOKEN_A}/index.html"]))
+        # the link to its calendar file is on Eve's page only
+        linked = sorted(name for name, content in contents.items() if brunch.encode() in content)
+        self.assertEqual(linked, [f"i/{support.TOKEN_A}/index.html"])
         for token in (support.TOKEN_B, support.TOKEN_C):
             page = contents[f"i/{token}/index.html"]
             self.assertNotIn(b"brunch", page)
@@ -367,36 +429,34 @@ class PrivacyTests(FullBuildTestCase):
         for token in TOKENS:
             own_page = f"i/{token}/index.html"
             for name, content in contents.items():
-                if name != own_page:  # the page links to its own calendar files
-                    self.assertNotIn(token.encode(), content, name)
-                    self.assertNotIn(token.lower().encode(), content.lower(), name)
+                self.assertNotIn(token.encode(), content, name)
+                self.assertNotIn(token.lower().encode(), content.lower(), name)
             paths = sorted(name for name in contents if token in name)
-            self.assertEqual(
-                paths,
-                sorted(
-                    [own_page, *(f"i/{token}/{event}.ics" for event in support.VISIBLE_EVENTS[token])]
-                ),
-            )
+            self.assertEqual(paths, [own_page])
+            # the page links the calendar files of the events it shows, no other
+            names = support.calendar_names()
             links = {
                 part.split('"', 1)[0]
-                for part in contents[own_page].decode().split(f"/{token}/")[1:]
+                for part in contents[own_page].decode().split(f"/{MEDIA}/")[1:]
+                if part.split('"', 1)[0].endswith(".ics")
             }
-            self.assertEqual(links, {f"{event}.ics" for event in support.VISIBLE_EVENTS[token]})
+            self.assertEqual(links, {names[event] for event in support.VISIBLE_EVENTS[token]})
 
     def test_calendar_files_carry_no_guest_data(self):
         self.build()
-        for token, event_ids in support.VISIBLE_EVENTS.items():
-            for event_id in event_ids:
-                content = (self.out / "i" / token / f"{event_id}.ics").read_text(encoding="utf-8")
-                for secret in (
-                    support.GREETING_TY, support.GREETING_VY, support.GREETING_THIRD,
-                    support.NOTE, support.TRAVEL_NOTE, support.EVENT_NOTE, support.COUPLE_NAMES,
-                    *TOKENS,
-                ):  # fmt: skip
-                    self.assertNotIn(secret, content)
-        # the file of an event is the same for everybody who sees it
-        dinner = {(self.out / "i" / token / "dinner.ics").read_bytes() for token in TOKENS}
-        self.assertEqual(len(dinner), 1)
+        for path in self.out.rglob("*.ics"):
+            content = path.read_text(encoding="utf-8")
+            for secret in (
+                support.GREETING_TY, support.GREETING_VY, support.GREETING_THIRD,
+                support.NOTE, support.TRAVEL_NOTE, support.EVENT_NOTE, support.COUPLE_NAMES,
+                *TOKENS,
+            ):  # fmt: skip
+                self.assertNotIn(secret, content)
+        # the file of an event is the same for everybody who sees it: every
+        # page links the same one
+        dinner = calendar_link("dinner")
+        for token in TOKENS:
+            self.assertIn(dinner, self.page(token))
 
     def test_names_stay_on_the_pages(self):
         self.build()
@@ -479,18 +539,26 @@ class ExampleDataTests(CliTestCase):
         )  # fmt: skip
         out = self.build_example("data", names)
         media = out / "assets" / site["mediaDir"]
+        calendars = support.calendar_names(site, invitations)
+        self.assertEqual(list(calendars), ["ceremony", "dinner", "brunch"])
         self.assertEqual(
-            sorted(p.name for p in media.iterdir()), sorted({published_name(n) for n in names})
+            sorted(p.name for p in media.iterdir()),
+            sorted({published_name(n) for n in names} | set(calendars.values())),
         )
         self.assertEqual(len(list((out / "i").iterdir())), len(invitations))
-        self.assertEqual(len(list((out / "i").rglob("*.ics"))), 17)
-        self.assertEqual(list(out.rglob("event.ics")), [])
+        self.assertEqual(list((out / "i").rglob("*.ics")), [])
+        self.assertEqual(len(list(out.rglob("*.ics"))), 3)
 
     def test_example_with_pending_venue(self):
         site, invitations = self.load("data-venue-pending")
         out = self.build_example("data-venue-pending")
-        self.assertFalse((out / "assets" / site["mediaDir"]).exists())
-        self.assertEqual(len(list((out / "i").rglob("*.ics"))), len(invitations))
+        # no media: the media directory holds the one calendar file alone
+        calendars = support.calendar_names(site, invitations)
+        self.assertEqual(
+            sorted(p.name for p in (out / "assets" / site["mediaDir"]).iterdir()),
+            [calendars["celebration"]],
+        )
+        self.assertEqual(list((out / "i").rglob("*.ics")), [])
         # readable tokens, a short one among them, are directory names as they are
         self.assertEqual(
             sorted(p.name for p in (out / "i").iterdir()),

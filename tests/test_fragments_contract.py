@@ -367,7 +367,7 @@ class PageTree:
             timeText=item["timeText"], whenText=item["whenText"],
             tabText=item["timeText"] if self.same_day
             else f"{item['dayMonth']}, {item['timeText']}",
-            icsPath=f"/i/{self.guest['token']}/{event_id}.ics",
+            icsPath=hashed_url(f"{event_id}.ics"),
             location=location_node(item["location"],
                                    join_id(dom_id or "", f"l-{item['location']}"),
                                    compact=False, nested=True, url=self.url),
@@ -578,7 +578,7 @@ def bare_event(event_id: str, full: bool, primary: bool = False, with_dom_id: bo
         kind="primary" if primary else "regular", startISO="2030-06-15T16:00:00+03:00",
         endISO="2030-06-15T22:00:00+03:00", dateText="15 июня 2030", timeText="16:00",
         whenText="Суббота, 15 июня 2030, 16:00", tabText="16:00",
-        icsPath=f"/i/t/{event_id}.ics",
+        icsPath=f"/assets/m/{event_id}.ics",
         location=bare_location(full, ready=full, nested=True),
         program=node(PROGRAM_FIELDS, domId=f"w--e-{event_id}--program", nested=True, items=[
             node(SCHEDULE_ITEM_FIELDS, time="16:00", title="Пункт", text="Текст"),
@@ -868,7 +868,7 @@ class FragmentContractTests(unittest.TestCase):
             showEventTitle=True)])
         self.assertIn('data-countdown="2030-06-15T16:00:00+03:00"', on)
         self.assertRegex(on, r'<div class="countdown date__countdown"[^>]* hidden>')
-        self.assertIn('href="/i/t/e.ics"', on)
+        self.assertIn('href="/assets/m/e.ics"', on)
         self.assertIn("15 июня 2030, 16:00", on)
         self.assertIn("date__event", on)
         off = self.render("widgets", [bare_widget(

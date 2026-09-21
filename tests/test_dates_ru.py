@@ -247,49 +247,38 @@ class TimelineTests(unittest.TestCase):
         ends = self.ends(("dinner", "2030-06-15T16:00+03:00", None), duration=timedelta(hours=2))
         self.assertEqual(ends["dinner"], (at("2030-06-15T18:00+03:00"), False))
 
-    def test_cut_by_the_next_start(self):
+    def test_the_next_event_does_not_cut_the_end(self):
         ends = self.ends(
             ("ceremony", "2030-06-15T11:00+03:00", None),
             ("lunch", "2030-06-15T12:00+03:00", None),
             ("dinner", "2030-06-15T20:00+03:00", None),
         )
-        self.assertEqual(ends["ceremony"], (at("2030-06-15T12:00+03:00"), False))
-        # the default duration is shorter than the gap to the dinner
+        self.assertEqual(ends["ceremony"], (at("2030-06-15T17:00+03:00"), False))
         self.assertEqual(ends["lunch"], (at("2030-06-15T18:00+03:00"), False))
         self.assertEqual(ends["dinner"], (at("2030-06-16T02:00+03:00"), False))
 
-    def test_the_next_event_starts_strictly_later(self):
-        ends = self.ends(
-            ("a", "2030-06-15T11:00+03:00", None),
-            ("b", "2030-06-15T11:00+03:00", None),
-            ("c", "2030-06-15T08:00Z", None),  # 11:00 at +03:00 as well
-            ("d", "2030-06-15T13:00+03:00", None),
-        )
-        for event_id in ("a", "b", "c"):
-            self.assertEqual(ends[event_id], (at("2030-06-15T13:00+03:00"), False))
-        self.assertEqual(ends["d"], (at("2030-06-15T19:00+03:00"), False))
+    def test_the_other_events_change_nothing(self):
+        # the end of an event is the same whoever sees which events: a lunch
+        # at 12:00 does not shorten the registration
+        registration = ("registration", "2030-06-15T11:00+03:00", None)
+        lunch = ("lunch", "2030-06-15T12:00+03:00", None)
+        dinner = ("dinner", "2030-06-15T16:00+03:00", "2030-06-15T23:00+03:00")
+        with_lunch = self.ends(registration, lunch, dinner)
+        without_lunch = self.ends(registration, dinner)
+        self.assertEqual(with_lunch["registration"], (at("2030-06-15T17:00+03:00"), False))
+        self.assertEqual(without_lunch["registration"], with_lunch["registration"])
+        self.assertNotIn("lunch", without_lunch)
 
     def test_an_implicit_end_is_on_the_clock_of_its_start(self):
         entries = self.timeline(
             ("ceremony", "2030-06-15T11:00+03:00", None),
             ("call", "2030-06-15T14:00+05:00", None),  # 12:00 at +03:00
         )
-        self.assertEqual(entries[0].end, at("2030-06-15T12:00+03:00"))
+        self.assertEqual(entries[0].end, at("2030-06-15T17:00+03:00"))
         self.assertEqual(entries[0].end.utcoffset(), timedelta(hours=3))
-        self.assertEqual(entries[0].end.hour, 12)
+        self.assertEqual(entries[0].end.hour, 17)
+        self.assertEqual(entries[1].end, at("2030-06-15T20:00+05:00"))
         self.assertEqual(entries[1].end.utcoffset(), timedelta(hours=5))
-
-    def test_only_the_given_events_count(self):
-        # the caller passes the events a guest sees: a hidden lunch at 12:00
-        # must not shorten the registration of somebody who is not invited
-        registration = ("registration", "2030-06-15T11:00+03:00", None)
-        lunch = ("lunch", "2030-06-15T12:00+03:00", None)
-        dinner = ("dinner", "2030-06-15T16:00+03:00", "2030-06-15T23:00+03:00")
-        with_lunch = self.ends(registration, lunch, dinner)
-        without_lunch = self.ends(registration, dinner)
-        self.assertEqual(with_lunch["registration"], (at("2030-06-15T12:00+03:00"), False))
-        self.assertEqual(without_lunch["registration"], (at("2030-06-15T16:00+03:00"), False))
-        self.assertNotIn("lunch", without_lunch)
 
     def test_an_end_that_is_not_later_than_the_start(self):
         for end in ("2030-06-15T16:00+03:00", "2030-06-15T12:00+03:00", "2030-06-15T13:00Z"):
@@ -309,6 +298,10 @@ class TimelineTests(unittest.TestCase):
             ("dinner", "2030-06-15T16:00+03:00", None), duration=build.ICS_DEFAULT_DURATION
         )[0]
         self.assertEqual(entry.end - entry.start, build.ICS_DEFAULT_DURATION)
+        # the default of the timeline is the constant of the build
+        self.assertEqual(dates.DEFAULT_EVENT_DURATION, build.ICS_DEFAULT_DURATION)
+        entry = dates.event_timeline([("dinner", at("2030-06-15T16:00+03:00"), None)])[0]
+        self.assertEqual(entry.end, at("2030-06-15T22:00+03:00"))
 
 
 if __name__ == "__main__":  # pragma: no cover

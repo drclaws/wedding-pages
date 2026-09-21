@@ -107,8 +107,22 @@ class TreePrivacyTests(unittest.TestCase):
         dinner = pages[1]["primaryEvent"]  # the brunch is hidden here
         self.assertEqual(dinner["endISO"], "2030-06-15T22:00:00+03:00")
         self.assertNotIn("20:00", json.dumps(pages[1], ensure_ascii=False))
-        dinner = pages[0]["primaryEvent"]  # and switched on here
-        self.assertEqual(dinner["endISO"], "2030-06-15T20:00:00+03:00")
+        dinner = pages[0]["primaryEvent"]  # and switched on here: the same end
+        self.assertEqual(dinner["endISO"], "2030-06-15T22:00:00+03:00")
+
+    def test_calendar_events_hold_nothing_of_an_invitation(self):
+        site, invitations = F.site(), F.invitations()
+        events = _page.calendar_events(site, invitations, F.settings())
+        self.assertEqual([event["id"] for event in events], ["ceremony", "dinner", "brunch"])
+        text = json.dumps(events, ensure_ascii=False)
+        for invitation in invitations:
+            for value in [*guest_strings(invitation), invitation["token"]]:
+                self.assertNotIn(value, text)
+        # an event nobody sees is left out
+        for invitation in invitations:
+            invitation.get("events", {}).pop("brunch", None)
+        events = _page.calendar_events(site, invitations, F.settings())
+        self.assertEqual([event["id"] for event in events], ["ceremony", "dinner"])
 
 
 if __name__ == "__main__":

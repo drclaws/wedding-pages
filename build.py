@@ -13,10 +13,10 @@ The data is in the format 2 (`site.json` with `"schemaVersion": 2` and
 invitation is rendered from its page tree (`tools/_page.py`) with the page
 template and its fragments.
 
-`build` writes the pages (`i/<token>/index.html`) with one calendar file per
-event the invitation sees (`i/<token>/<eventId>.ics`), the stub (`index.html`
+`build` writes the pages (`i/<token>/index.html`), the stub (`index.html`
 and `404.html`), `assets/` (including `assets/<mediaDir>/` with the media files
-that at least one page shows, published under the hash of their contents, and
+that at least one page shows and one calendar file for every event that at
+least one invitation sees, all published under the hash of their contents, and
 the icon and the link preview image, which are generated from the design
 tokens of `assets/app.css` unless the media directory provides them),
 `_headers` and `robots.txt`, and then checks the finished output: nothing but
@@ -31,6 +31,7 @@ so other tools (tests, preview scripts) can reuse the public helpers:
     render(template_source, context)   -> str
     parse_template(source).render(ctx) -> str
     event_calendar(media_dir, event)   -> bytes
+    calendar_files(data)               -> {event id: CalendarFile}
     check_output(out_dir, pages)       -> OutputStats
 
 Exit codes: 0 - success, 1 - data/build error, 2 - bad command line.
@@ -80,7 +81,7 @@ from tools._data import (  # noqa: E402
     json_type,
     short_token_summary,
 )
-from tools._dates import parse_date_iso  # noqa: E402
+from tools._dates import DEFAULT_EVENT_DURATION, parse_date_iso  # noqa: E402
 from tools._maps import _url_component, media_url  # noqa: E402
 
 # --------------------------------------------------------------------------
@@ -100,7 +101,8 @@ INVITATIONS_FILE = "invitations.json"
 #: Output layout.
 PAGES_DIRNAME = "i"
 PAGE_FILE = "index.html"
-#: The calendar file of an event, next to the page: `i/<token>/<eventId>.ics`.
+#: The calendar file of an event, in the media directory:
+#: `assets/<mediaDir>/<sha256[:16]>.ics` of its contents.
 CALENDAR_SUFFIX = ".ics"
 #: The stub is published under both names, byte for byte the same.
 STUB_OUTPUTS = ("index.html", "404.html")
@@ -167,9 +169,9 @@ HEADERS_TEXT = """\
 """
 ROBOTS_TEXT = "User-agent: *\nDisallow: /\n"
 
-#: How long an event without an end lasts (it ends earlier when the next event
-#: of the invitation starts).
-ICS_DEFAULT_DURATION = timedelta(hours=6)
+#: How long an event without an end lasts (in its calendar file and for the
+#: past/now marks of the page); `site.json` gets a warning for such an event.
+ICS_DEFAULT_DURATION = DEFAULT_EVENT_DURATION
 ICS_PRODID = "-//invitation//static site build//RU"
 ICS_UID_DOMAIN = "invitation"
 #: `DTSTAMP` is a constant so that equal inputs give a byte-identical output.
@@ -1345,13 +1347,17 @@ def load_data(
 
 
 def page_settings(
-    site: dict, images: dict | None = None, media: dict[str, MediaFile] | None = None
+    site: dict,
+    images: dict | None = None,
+    media: dict[str, MediaFile] | None = None,
+    calendars: Mapping[str, CalendarFile] | None = None,
 ) -> page_tools.PageSettings:
     """What the page trees need from the build.
 
     `images` are the fields of the site images (`site_images_context`),
     `media` the files that `check_media` found: a media file is addressed by
-    its published name.
+    its published name; `calendars` are the calendar files of the events
+    (`calendar_files`), addressed the same way.
     """
     media = media or {}
     media_path = f"/{ASSETS_DIRNAME}/{site['mediaDir']}"
@@ -1360,10 +1366,15 @@ def page_settings(
         entry = media.get(name)
         return media_url(media_path, entry.published if entry is not None else name)
 
+    def calendar_src(event_id: str) -> str:
+        entry = (calendars or {}).get(event_id)
+        return media_url(media_path, entry.name if entry is not None else event_id + CALENDAR_SUFFIX)
+
     return page_tools.PageSettings(
         default_duration=ICS_DEFAULT_DURATION,
         site_images=images if images is not None else {},
         media_src=media_src,
+        calendar_src=calendar_src,
         media_info={name: entry.info for name, entry in media.items()},
         pages_path=f"/{PAGES_DIRNAME}",
         assets_path=f"/{ASSETS_DIRNAME}",
@@ -1372,9 +1383,8 @@ def page_settings(
 
 def page_trees(data: Data, images: dict | None = None) -> list[dict]:
     """The page tree of every invitation, in the order of `invitations.json`."""
-    trees, _usage = page_tools.build_pages(
-        data.site, data.invitations, page_settings(data.site, images, data.media)
-    )
+    settings = page_settings(data.site, images, data.media, calendar_files(data))
+    trees, _usage = page_tools.build_pages(data.site, data.invitations, settings)
     return trees
 
 
@@ -1462,13 +1472,14 @@ def build_event_ics(
 
 
 def event_calendar(media_dir: str, event: dict) -> bytes:
-    """The calendar file of one event of an invitation (`i/<token>/<id>.ics`).
+    """The calendar file of one event, the same for every invitation.
 
-    `event` is an event of the page tree.  Nothing of the invitation goes
-    into the file: the notes stay on the page.  The uid depends on the media
-    directory, the id and the start of the event, so the file of an event is
-    the same for everybody who sees it and a new time gives a new entry.  The
-    place is included once it is announced.
+    `event` is an event of `tools._page.calendar_events` (an event of a page
+    tree has the same fields).  Nothing of an invitation goes into the file:
+    the notes stay on the page.  The uid depends on the media directory, the
+    id and the start of the event, so a new time gives a new entry, while a
+    new title, end or place updates the entry saved before.  The place is
+    included once it is announced.
     """
     uid = hashlib.sha256(
         f"{media_dir}\n{event['id']}\n{event['startISO']}".encode("utf-8")
@@ -1487,16 +1498,28 @@ def event_calendar(media_dir: str, event: dict) -> bytes:
     )
 
 
-def calendar_files(data: Data, images: dict | None = None) -> dict[str, dict[str, bytes]]:
-    """Token -> {event id -> calendar file} for every event each invitation sees."""
-    settings = page_settings(data.site, images, data.media)
-    return {
-        invitation["token"]: {
-            event["id"]: event_calendar(data.site["mediaDir"], event)
-            for event in page_tools.visible_events(data.site, invitation, settings)
-        }
-        for invitation in data.invitations
-    }
+class CalendarFile(NamedTuple):
+    """The calendar file of an event that at least one invitation sees."""
+
+    #: `<sha256[:16]>.ics` of the contents: nobody can work the name out
+    #: without knowing the event (the media directory and the ids are not
+    #: secret, the title, the time and the place are).
+    name: str
+    content: bytes
+
+
+def calendar_files(data: Data) -> dict[str, CalendarFile]:
+    """Event id -> its calendar file, for every event that at least one
+    invitation sees, in the order of their start.  An event nobody sees gets
+    no file."""
+    settings = page_settings(data.site)
+    files = {}
+    for event in page_tools.calendar_events(data.site, data.invitations, settings):
+        content = event_calendar(data.site["mediaDir"], event)
+        files[event["id"]] = CalendarFile(
+            media_tools.hashed_name(content, f"{event['id']}{CALENDAR_SUFFIX}"), content
+        )
+    return files
 
 
 # --------------------------------------------------------------------------
@@ -2369,29 +2392,28 @@ def _media_path(name: str) -> str:
 def _check_output_tree(
     files: dict[str, int],
     directories: Sequence[str],
-    pages: Mapping[str, Iterable[str]],
+    pages: Iterable[str],
     media_dir: str = "",
     media: Collection[str] = (),
+    calendars: Collection[str] = (),
 ) -> list[str]:
     """Allow-list of the output: only what the site needs is published.
 
-    `pages` maps the token of every invitation to the ids of the events it
-    sees: `i/<token>/` holds the page and exactly one calendar file for each
-    of these events.  `assets/<media_dir>/` holds exactly the published names
-    `media` (and does not exist without them); besides it `assets/` may only
-    hold the files of the code and the directories `ASSET_DIRECTORIES`.
+    `pages` are the tokens of the invitations: `i/<token>/` holds the page
+    and nothing else.  `assets/<media_dir>/` holds exactly the published
+    names `media` and the calendar files `calendars` (and does not exist
+    without them); besides it `assets/` may only hold the files of the code
+    and the directories `ASSET_DIRECTORIES`.
     """
     problems: list[str] = []
     media_prefix = f"{ASSETS_DIRNAME}/{media_dir}/" if media_dir else None
-    expected_media = {f"{media_prefix}{name}" for name in media} if media_prefix else set()
+    expected_media = (
+        {f"{media_prefix}{name}" for name in (*media, *calendars)} if media_prefix else set()
+    )
     allowed_asset_dirs = {f"{ASSETS_DIRNAME}/{name}" for name in ASSET_DIRECTORIES}
-    expected_pages = {f"{PAGES_DIRNAME}/{token}/{PAGE_FILE}" for token in pages}
-    expected_calendars = {
-        f"{PAGES_DIRNAME}/{token}/{event_id}{CALENDAR_SUFFIX}"
-        for token, event_ids in pages.items()
-        for event_id in event_ids
-    }
-    expected_dirs = {f"{PAGES_DIRNAME}/{token}" for token in pages}
+    tokens = list(pages)
+    expected_pages = {f"{PAGES_DIRNAME}/{token}/{PAGE_FILE}" for token in tokens}
+    expected_dirs = {f"{PAGES_DIRNAME}/{token}" for token in tokens}
 
     for relative in directories:
         parts = relative.split("/")
@@ -2436,17 +2458,17 @@ def _check_output_tree(
             if relative not in OUTPUT_TOP_LEVEL or relative in OUTPUT_TOP_LEVEL_DIRS:
                 problems.append(f"{relative}: unexpected file at the top of the output")
         elif parts[0] == PAGES_DIRNAME:
-            if relative not in expected_pages and relative not in expected_calendars:
+            if relative not in expected_pages:
                 problems.append(
-                    f"{relative}: unexpected file (only <token>/{PAGE_FILE} and the "
-                    f"calendar files of the events of the invitation are allowed in "
+                    f"{relative}: unexpected file (only <token>/{PAGE_FILE} is allowed in "
                     f"{PAGES_DIRNAME}/)"
                 )
         elif media_prefix and relative.startswith(media_prefix):
             if relative not in expected_media:
                 problems.append(
                     f"{_media_path(relative[len(media_prefix):])}: unexpected file (only the "
-                    "media the pages show are published, under the hash of their contents)"
+                    "media the pages show and the calendar files of the events are "
+                    "published, under the hash of their contents)"
                 )
         elif parts[0] == ASSETS_DIRNAME:
             if extension not in ASSET_EXTENSIONS:
@@ -2466,7 +2488,7 @@ def _check_output_tree(
         *STUB_OUTPUTS,
         HEADERS_FILE,
         ROBOTS_FILE,
-        *sorted(expected_pages | expected_calendars),
+        *sorted(expected_pages),
     ]
     for relative in required:
         if relative not in files:
@@ -2479,16 +2501,17 @@ def _check_output_tree(
 
 def check_output(
     out_dir: Path | str,
-    pages: Mapping[str, Iterable[str]],
+    pages: Iterable[str],
     base_url: str = "",
     media_dir: str = "",
     media: Collection[str] = (),
+    calendars: Collection[str] = (),
 ) -> OutputStats:
     """Check a finished output directory; raises `OutputError` with every problem.
 
-    * only the expected files are present (see `_check_output_tree`; `pages`
-      maps every token to the ids of the events of its calendar files), none
-      of them larger than `MAX_FILE_BYTES`;
+    * only the expected files are present (see `_check_output_tree`: `pages`
+      are the tokens, `media` and `calendars` the published names in the
+      media directory), none of them larger than `MAX_FILE_BYTES`;
     * HTML: no template syntax or comments left, no external resources, no
       inline scripts or event handlers, no embedded documents; external links
       only to the map services and with `target`/`rel`; every local URL
@@ -2509,7 +2532,7 @@ def check_output(
         raise BuildError(
             f"cannot read the output directory {display_path(root)}: {exc.strerror}"
         ) from None
-    problems += _check_output_tree(files, directories, pages, media_dir, media)
+    problems += _check_output_tree(files, directories, pages, media_dir, media, calendars)
     problems = [_redact_paths(problem) for problem in problems]
 
     known_dirs = set(directories)
@@ -2921,6 +2944,19 @@ def copy_assets(
     return sum(len(files) for _root, _dirs, files in os.walk(destination))
 
 
+def _make_media_dir(destination: Path) -> None:
+    """Create `assets/<mediaDir>/`; it must not exist yet."""
+    try:
+        destination.mkdir(parents=True)
+    except FileExistsError:
+        raise BuildError(
+            f"{SITE_FILE}: field 'mediaDir' collides with an entry of "
+            f"{ASSETS_DIRNAME}/; the media directory needs a name of its own"
+        ) from None
+    except OSError as exc:
+        raise BuildError(f"cannot create the media directory: {exc.strerror}") from None
+
+
 def copy_media(
     media: Mapping[str, MediaFile], media_dir: Path | str, destination: Path
 ) -> int:
@@ -2931,15 +2967,7 @@ def copy_media(
     names = {entry.published: entry.name for entry in media.values()}
     if not names:
         return 0
-    try:
-        destination.mkdir(parents=True)
-    except FileExistsError:
-        raise BuildError(
-            f"{SITE_FILE}: field 'mediaDir' collides with an entry of "
-            f"{ASSETS_DIRNAME}/; the media directory needs a name of its own"
-        ) from None
-    except OSError as exc:
-        raise BuildError(f"cannot create the media directory: {exc.strerror}") from None
+    _make_media_dir(destination)
     for published, name in sorted(names.items()):
         source = Path(media_dir) / name
         if source.is_symlink():
@@ -3194,14 +3222,29 @@ def write_pages(stage: Path, pages: Iterable[tuple[str, str]]) -> int:
     return count
 
 
-def write_calendars(stage: Path, calendars: Mapping[str, Mapping[str, bytes]]) -> int:
-    """Write `i/<token>/<eventId>.ics` for every event of every invitation."""
-    count = 0
-    for token, files in calendars.items():
-        for event_id, content in files.items():
-            _write_file(stage / PAGES_DIRNAME / token / f"{event_id}{CALENDAR_SUFFIX}", content)
-            count += 1
-    return count
+def write_calendars(
+    destination: Path, calendars: Mapping[str, CalendarFile], media: Collection[str] = ()
+) -> int:
+    """Write the calendar file of every event into the media directory
+    `destination` (`assets/<mediaDir>/`), under its published name; `media`
+    are the published names of the media files already there.  Returns the
+    number of files written."""
+    names = [entry.name for entry in calendars.values()]
+    taken = set(media)
+    for name in names:
+        # a safeguard: the types differ, but a clash would lose a file
+        if name in taken:
+            raise BuildError(
+                f"the calendar file {_media_path(name)} has the name of another file of "
+                "the media directory"
+            )
+        taken.add(name)
+    if names and not media:
+        # no media file is published: `copy_media` did not create it
+        _make_media_dir(destination)
+    for entry in calendars.values():
+        _write_file(destination / entry.name, entry.content)
+    return len(names)
 
 
 def _write_file(path: Path, content: bytes) -> None:
@@ -3255,39 +3298,44 @@ def build_site(
 
     template = load_template(code_dir / TEMPLATE_FILE)
     stub = load_stub(code_dir / STUB_FILE, images_context).encode("utf-8")
-    pages = render_pages(template, data.invitations, page_trees(data, images_context))
-    calendars = calendar_files(data, images_context)
+    calendars = calendar_files(data)
+    settings = page_settings(data.site, images_context, data.media, calendars)
+    trees, _usage = page_tools.build_pages(data.site, data.invitations, settings)
+    pages = render_pages(template, data.invitations, trees)
     media_name = data.site["mediaDir"]
+    published = {entry.published for entry in data.media.values()}
 
     with _StagedOutput(out_dir, warn=report.warn) as stage:
         written = write_pages(stage, pages)
-        events = write_calendars(stage, calendars)
         for name in STUB_OUTPUTS:
             _write_file(stage / name, stub)
         assets = copy_assets(assets_dir, stage / ASSETS_DIRNAME, ignore=is_styleguide_asset)
         write_site_images(images, stage / ASSETS_DIRNAME, palette)
         media = copy_media(data.media, media_dir, stage / ASSETS_DIRNAME / media_name)
+        events = write_calendars(stage / ASSETS_DIRNAME / media_name, calendars, published)
         _write_file(stage / HEADERS_FILE, HEADERS_TEXT.encode("utf-8"))
         _write_file(stage / ROBOTS_FILE, ROBOTS_TEXT.encode("utf-8"))
         stats = check_output(
             stage,
-            calendars,
+            [invitation["token"] for invitation in data.invitations],
             base_url=base_url,
             media_dir=media_name,
-            media={entry.published for entry in data.media.values()},
+            media=published,
+            calendars=[entry.name for entry in calendars.values()],
         )
 
     out_shown = display_path(out_dir)
-    log(
-        f"build: wrote {written} page(s) and {events} calendar file(s) to "
-        f"{out_shown}/{PAGES_DIRNAME}/"
-    )
+    log(f"build: wrote {written} page(s) to {out_shown}/{PAGES_DIRNAME}/")
     log(f"build: copied {assets} asset file(s) to {out_shown}/{ASSETS_DIRNAME}/")
     log(
         f"build: copied {media} media file(s) under the hash of their contents to "
         f"{out_shown}/{ASSETS_DIRNAME}/<mediaDir>/"
         if media
-        else "build: no media file is shown on the pages, nothing is published"
+        else "build: no media file is shown on the pages, none is published"
+    )
+    log(
+        f"build: wrote {events} calendar file(s), one per event the invitations see, "
+        f"under the hash of their contents to {out_shown}/{ASSETS_DIRNAME}/<mediaDir>/"
     )
     for image in images:
         origin = "generated from the design tokens" if image.source is None else (

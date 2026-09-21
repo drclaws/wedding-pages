@@ -136,6 +136,7 @@ SITE: dict = {
             "title": "Праздничный ужин",
             "location": "manor",
             "start": "2030-06-01T16:00:00+03:00",
+            "end": "2030-06-01T22:00:00+03:00",
             "schedule": "day",
         },
         "brunch": {
@@ -192,7 +193,7 @@ INVITATIONS: list = [
     },
 ]
 
-#: The events each fixture invitation sees (its calendar files).
+#: The events each fixture invitation sees (the calendar files its page links).
 VISIBLE_EVENTS = {TOKEN_A: ("brunch", "dinner"), TOKEN_B: ("dinner",), TOKEN_C: ("dinner",)}
 
 #: Fixture template: the page frame of `template.html` (the sections come
@@ -339,6 +340,18 @@ def write_media(directory: Path, names=MEDIA_FILES) -> Path:
 def published_name(name: str) -> str:
     """The name the build publishes a fixture media file under."""
     return build.media_tools.hashed_name(media_bytes(name), name)
+
+
+def fixture_calendars(site: dict | None = None, invitations: list | None = None) -> dict:
+    """Event id -> `build.CalendarFile` of the fixture data (or of the given data)."""
+    site = site_data() if site is None else site
+    invitations = invitations_data() if invitations is None else invitations
+    return build.calendar_files(build.Data(site, invitations, build.page_tools.Usage(), {}))
+
+
+def calendar_names(site: dict | None = None, invitations: list | None = None) -> dict[str, str]:
+    """Event id -> the name the build publishes its calendar file under."""
+    return {event_id: entry.name for event_id, entry in fixture_calendars(site, invitations).items()}
 
 
 def write_assets(directory: Path) -> Path:

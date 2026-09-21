@@ -1,5 +1,5 @@
-"""Tests for the calendar files: one per event an invitation sees
-(`i/<token>/<eventId>.ics`)."""
+"""Tests for the calendar files: one per event that at least one invitation
+sees, for the whole site (`assets/<mediaDir>/<sha256[:16]>.ics`)."""
 
 from __future__ import annotations
 
@@ -25,33 +25,58 @@ def properties(payload: bytes) -> dict[str, str]:
     return dict(line.split(":", 1) for line in lines if not line.startswith(("BEGIN", "END")))
 
 
-def calendars(site: dict | None = None, invitations: list | None = None) -> dict:
-    """Token -> {event id -> calendar file} of valid data."""
+def calendars(site: dict | None = None, invitations: list | None = None) -> dict[str, bytes]:
+    """Event id -> the calendar file of valid data."""
     site = site_data() if site is None else site
     invitations = invitations_data() if invitations is None else invitations
     report = F.Collector()
     assert _schema.check_data(site, invitations, report).ok, report.errors
-    return build.calendar_files(build.Data(site, invitations, build.page_tools.Usage(), {}))
+    return {
+        event_id: entry.content
+        for event_id, entry in support.fixture_calendars(site, invitations).items()
+    }
 
 
-def dinner(site: dict | None = None, token: str = support.TOKEN_B) -> dict[str, str]:
-    """The properties of the dinner in the calendar of one invitation."""
-    return properties(calendars(site)[token]["dinner"])
+def dinner(site: dict | None = None) -> dict[str, str]:
+    """The properties of the calendar file of the dinner."""
+    return properties(calendars(site)["dinner"])
 
 
 class CalendarFileTests(unittest.TestCase):
-    def test_one_file_per_event_the_invitation_sees(self):
-        found = calendars()
-        self.assertEqual(
-            {token: sorted(files) for token, files in found.items()},
-            {token: sorted(events) for token, events in support.VISIBLE_EVENTS.items()},
-        )
+    def test_one_file_per_event_somebody_sees(self):
+        # Eve sees the brunch: every event has a file, in the order of the start
+        self.assertEqual(list(calendars()), ["dinner", "brunch"])
+        # nobody sees the brunch: no file for it
+        self.assertEqual(list(calendars(invitations=invitations_data()[1:])), ["dinner"])
         site = site_data()
-        site["events"]["brunch"]["visible"] = True
-        self.assertEqual(sorted(calendars(site)[support.TOKEN_C]), ["brunch", "dinner"])
+        invitations = invitations_data()
+        invitations[1]["events"]["brunch"] = {"visible": True}
+        del invitations[0]["events"]
+        self.assertEqual(list(calendars(site, invitations)), ["dinner", "brunch"])
+
+    def test_the_name_is_the_hash_of_the_contents(self):
+        found = support.fixture_calendars()
+        for event_id, entry in found.items():
+            with self.subTest(event=event_id):
+                digest = hashlib.sha256(entry.content).hexdigest()[:16]
+                self.assertEqual(entry.name, f"{digest}.ics")
+                # the id of the event and the media directory are not in it
+                self.assertNotIn(event_id, entry.name)
+        self.assertNotEqual(found["dinner"].name, found["brunch"].name)
+        # another end, title or place: another name (and the same uid)
+        site = site_data()
+        site["events"]["dinner"]["end"] = "2030-06-01T23:00:00+03:00"
+        changed = support.fixture_calendars(site)["dinner"]
+        self.assertNotEqual(changed.name, found["dinner"].name)
+        self.assertEqual(properties(changed.content)["UID"], dinner()["UID"])
+        # the notes and the greetings of the invitations change nothing
+        invitations = invitations_data()
+        invitations[1]["events"]["dinner"]["note"] = "Другая приписка."
+        invitations[0]["greeting"] = "Привет!"
+        self.assertEqual(support.fixture_calendars(invitations=invitations), found)
 
     def test_structure(self):
-        payload = calendars()[support.TOKEN_A]["dinner"]
+        payload = calendars()["dinner"]
         self.assertEqual(
             [line.split(":", 1)[0] for line in unfold(payload)],
             [
@@ -79,32 +104,39 @@ class CalendarFileTests(unittest.TestCase):
         self.assertEqual(lines[-3:], ["END:VEVENT", "END:VCALENDAR", ""])
 
     def test_line_breaks_are_crlf_only(self):
-        for files in calendars().values():
-            for payload in files.values():
-                self.assertTrue(payload.endswith(b"END:VCALENDAR\r\n"))
-                self.assertNotIn(b"\n", payload.replace(b"\r\n", b""))
-                self.assertNotIn(b"\r", payload.replace(b"\r\n", b""))
-                self.assertFalse(payload.startswith(b"\xef\xbb\xbf"))
+        for payload in calendars().values():
+            self.assertTrue(payload.endswith(b"END:VCALENDAR\r\n"))
+            self.assertNotIn(b"\n", payload.replace(b"\r\n", b""))
+            self.assertNotIn(b"\r", payload.replace(b"\r\n", b""))
+            self.assertFalse(payload.startswith(b"\xef\xbb\xbf"))
 
-    def test_start_and_the_effective_end_are_utc(self):
-        # the dinner at 16:00 +03:00 has no end: six hours
+    def test_start_and_end_are_utc(self):
         self.assertEqual(dinner()["DTSTART"], "20300601T130000Z")
         self.assertEqual(dinner()["DTEND"], "20300601T190000Z")
-        # the brunch has an end of its own
-        brunch = properties(calendars()[support.TOKEN_A]["brunch"])
+        brunch = properties(calendars()["brunch"])
         self.assertEqual((brunch["DTSTART"], brunch["DTEND"]), ("20300602T090000Z", "20300602T110000Z"))
 
-    def test_the_end_is_cut_by_the_next_event_the_invitation_sees(self):
+    def test_an_event_without_an_end_lasts_six_hours(self):
         site = site_data()
-        site["events"]["brunch"].update(start="2030-06-01T20:00:00+03:00", end="2030-06-01T23:00:00+03:00")
-        # Eve sees the brunch: her dinner ends when it starts
-        self.assertEqual(dinner(site, support.TOKEN_A)["DTEND"], "20300601T170000Z")
-        # nobody else sees it, so it shortens nothing of theirs
-        self.assertEqual(dinner(site, support.TOKEN_B)["DTEND"], "20300601T190000Z")
-        self.assertEqual(dinner(site, support.TOKEN_C)["DTEND"], "20300601T190000Z")
+        del site["events"]["dinner"]["end"]
+        self.assertEqual(dinner(site)["DTEND"], "20300601T190000Z")
+        site["events"]["dinner"]["end"] = ""
+        self.assertEqual(dinner(site)["DTEND"], "20300601T190000Z")
+
+    def test_the_end_is_not_cut_by_the_next_event(self):
+        # the brunch starts two hours after the dinner, which has no end: the
+        # dinner still lasts six hours, for everybody
+        site = site_data()
+        del site["events"]["dinner"]["end"]
+        site["events"]["brunch"].update(start="2030-06-01T18:00:00+03:00", end="2030-06-01T23:00:00+03:00")
+        self.assertEqual(dinner(site)["DTEND"], "20300601T190000Z")
+        # nor is an explicit end that overlaps the next event
+        site["events"]["dinner"]["end"] = "2030-06-01T23:30:00+03:00"
+        self.assertEqual(dinner(site)["DTEND"], "20300601T203000Z")
 
     def test_other_time_zone(self):
         site = site_data()
+        del site["events"]["dinner"]["end"]
         site["events"]["dinner"]["start"] = "2030-08-10T15:00:00+05:00"
         site["events"]["brunch"]["start"] = "2030-08-11T12:00:00+05:00"
         site["events"]["brunch"]["end"] = "2030-08-11T14:00:00+05:00"
@@ -114,21 +146,23 @@ class CalendarFileTests(unittest.TestCase):
     def test_utc_midnight_is_crossed_in_both_directions(self):
         site = site_data()
         del site["events"]["brunch"]
+        del site["events"]["dinner"]["end"]
         invitations = invitations_data()
         del invitations[0]["events"]
         # early morning east of Greenwich: still the previous day in UTC
         site["events"]["dinner"]["start"] = "2030-08-10T02:30:00+05:00"
-        found = properties(calendars(site, invitations)[support.TOKEN_B]["dinner"])
+        found = properties(calendars(site, invitations)["dinner"])
         self.assertEqual(found["DTSTART"], "20300809T213000Z")
         self.assertEqual(found["DTEND"], "20300810T033000Z")
         # evening west of Greenwich: already the next day in UTC, new year too
         site["events"]["dinner"]["start"] = "2030-12-31T20:00:00-05:00"
-        found = properties(calendars(site, invitations)[support.TOKEN_B]["dinner"])
+        found = properties(calendars(site, invitations)["dinner"])
         self.assertEqual(found["DTSTART"], "20310101T010000Z")
         self.assertEqual(found["DTEND"], "20310101T070000Z")
 
     def test_z_suffix_and_seconds(self):
         site = site_data()
+        del site["events"]["dinner"]["end"]
         site["events"]["dinner"]["start"] = "2030-06-01T16:00Z"
         self.assertEqual(dinner(site)["DTSTART"], "20300601T160000Z")
         site["events"]["dinner"]["start"] = "2030-06-01T16:00:30.500+03:00"
@@ -139,24 +173,20 @@ class CalendarFileTests(unittest.TestCase):
 
     def test_summary_is_the_title_of_the_event(self):
         self.assertEqual(dinner()["SUMMARY"], "Праздничный ужин")
-        for files in calendars().values():
-            for payload in files.values():
-                text = payload.decode("utf-8")
-                for secret in (support.COUPLE_NAMES, "Алиса", "Боб"):
-                    self.assertNotIn(secret, text)
+        for payload in calendars().values():
+            text = payload.decode("utf-8")
+            for secret in (support.COUPLE_NAMES, "Алиса", "Боб"):
+                self.assertNotIn(secret, text)
 
-    def test_nothing_of_the_invitation_goes_into_the_file(self):
-        found = calendars()
-        for token, files in found.items():
-            for payload in files.values():
-                text = payload.decode("utf-8")
-                for secret in (
-                    support.GREETING_TY, support.GREETING_VY, support.GREETING_THIRD,
-                    support.NOTE, support.TRAVEL_NOTE, support.EVENT_NOTE, token,
-                ):  # fmt: skip
-                    self.assertNotIn(secret, text)
-        # the note to the dinner makes no difference to its file
-        self.assertEqual(found[support.TOKEN_B]["dinner"], found[support.TOKEN_C]["dinner"])
+    def test_nothing_of_the_invitations_goes_into_the_file(self):
+        for payload in calendars().values():
+            text = payload.decode("utf-8")
+            for secret in (
+                support.GREETING_TY, support.GREETING_VY, support.GREETING_THIRD,
+                support.NOTE, support.TRAVEL_NOTE, support.EVENT_NOTE,
+                support.TOKEN_A, support.TOKEN_B, support.TOKEN_C, support.MEDIA_DIR,
+            ):  # fmt: skip
+                self.assertNotIn(secret, text)
 
     def test_location_only_when_the_place_is_announced(self):
         self.assertEqual(
@@ -166,7 +196,7 @@ class CalendarFileTests(unittest.TestCase):
         site["locations"]["manor"] = {"ready": False}
         del site["media"]
         site["sections"] = [section for section in site["sections"] if section["id"] != "video"]
-        payload = calendars(site)[support.TOKEN_B]["dinner"]
+        payload = calendars(site)["dinner"]
         self.assertNotIn("LOCATION", properties(payload))
         self.assertNotIn("Энск", payload.decode("utf-8"))
 
@@ -205,17 +235,22 @@ class CalendarFileTests(unittest.TestCase):
         self.assertEqual(first, dinner()["UID"])
         self.assertRegex(first, r"\A[0-9a-f]{32}@invitation\Z")
         self.assertNotIn(support.MEDIA_DIR, first)
-        # the same event has the same uid for everybody
-        self.assertEqual(first, dinner(token=support.TOKEN_A)["UID"])
+        # the uid: sha256 of the media directory, the id and the start
+        expected = hashlib.sha256(
+            f"{support.MEDIA_DIR}\ndinner\n2030-06-01T16:00:00+03:00".encode()
+        ).hexdigest()[:32]
+        self.assertEqual(first, f"{expected}@invitation")
         # another start, media directory or event: another uid
         site = site_data()
         site["events"]["dinner"]["start"] = "2030-06-01T17:00:00+03:00"
         self.assertNotEqual(first, dinner(site)["UID"])
         self.assertNotEqual(first, dinner(site_data(mediaDir="another-m3d1a-d1rectory"))["UID"])
-        self.assertNotEqual(first, properties(calendars()[support.TOKEN_A]["brunch"])["UID"])
-        # nothing else takes part: names and titles may change without a new entry
+        self.assertNotEqual(first, properties(calendars()["brunch"])["UID"])
+        # nothing else takes part: names, titles and ends may change without a
+        # new entry
         site = site_data(coupleNames="Кто-то ещё")
         site["events"]["dinner"]["title"] = "Ужин"
+        site["events"]["dinner"]["end"] = "2030-06-01T20:00:00+03:00"
         self.assertEqual(first, dinner(site)["UID"])
 
     def test_output_is_deterministic(self):
@@ -266,7 +301,7 @@ class FoldingTests(unittest.TestCase):
         site["locations"]["manor"]["address"] = (
             "Вымышленная область, Энский район, посёлок Примерный, улица Образцовая, 1"
         )
-        payload = calendars(site)[support.TOKEN_B]["dinner"]
+        payload = calendars(site)["dinner"]
         for chunk in payload.split(b"\r\n"):
             self.assertLessEqual(len(chunk), 75, chunk)
             chunk.decode("utf-8")
@@ -318,7 +353,7 @@ class SingleEventCalendarTests(unittest.TestCase):
             f"{support.MEDIA_DIR}\ndinner\n2030-06-01T16:00:00+03:00".encode()
         ).hexdigest()[:32]
         expected = self.FIXTURE_ICS.format(uid=uid).encode("utf-8")
-        self.assertEqual(calendars()[support.TOKEN_B]["dinner"], expected)
+        self.assertEqual(calendars()["dinner"], expected)
         self.assertEqual(
             build.build_event_ics(
                 uid=uid,
@@ -338,7 +373,7 @@ class SingleEventCalendarTests(unittest.TestCase):
             .replace("SEQUENCE:1", "SEQUENCE:0")
             .replace("LOCATION:Усадьба в Энске\\, Энск\\, Вымышленная \r\n улица\\, 1\r\n", "")
         )
-        self.assertEqual(calendars(site)[support.TOKEN_B]["dinner"], pending.encode("utf-8"))
+        self.assertEqual(calendars(site)["dinner"], pending.encode("utf-8"))
 
     def test_structure_and_times(self):
         payload = self.event_ics()

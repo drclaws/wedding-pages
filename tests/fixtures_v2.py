@@ -137,12 +137,14 @@ SITE = {
             "location": "manor",
             "start": "2030-06-15T16:00:00+03:00",
             "end": "2030-06-15T23:30:00+03:00",
+            "showEnd": True,
             "schedule": "dinner",
         },
         "brunch": {
             "title": "Второй день",
             "location": "terrace",
             "start": "2030-06-16T12:00:00+03:00",
+            "end": "2030-06-16T15:00:00+03:00",
             "visible": False,
         },
     },
@@ -390,6 +392,7 @@ PENDING_SITE = {
             "title": "Праздник",
             "location": "venue",
             "start": "2030-08-10T15:00:00+05:00",
+            "end": "2030-08-10T22:00:00+05:00",
             "schedule": "day",
         }
     },
