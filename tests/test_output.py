@@ -190,12 +190,44 @@ class ReplaceableOutputTests(TempDirTestCase):
         message = str(caught.exception)
         self.assertIn("('…' is not a regular file)", message)
         self.assertNotIn("_headers", message)
-        # elsewhere short names are shown: they help to find the directory
+        # a copy of the pages under another name: names of token characters
+        # are hidden, file names and names too short for a token are shown
         other = self.tmp / "notes"
-        (other / "quokka").mkdir(parents=True)
+        for name in ("quokka", "otter_king", "abcd"):
+            (other / name).mkdir(parents=True)
+        (other / "todo.txt").write_text("x", encoding="utf-8")
         with self.assertRaises(build.BuildError) as caught:
             build.check_replaceable(other)
-        self.assertIn("'quokka'", str(caught.exception))
+        message = str(caught.exception)
+        self.assertIn("(unexpected: 'abcd', '…', '…' and 1 more)", message)
+        self.assertNotIn("quo", message)
+        self.assertNotIn("ott", message)
+        (self.tmp / "notes-files").mkdir()
+        (self.tmp / "notes-files" / "todo.txt").write_text("x", encoding="utf-8")
+        with self.assertRaises(build.BuildError) as caught:
+            build.check_replaceable(self.tmp / "notes-files")
+        self.assertIn("'todo.txt'", str(caught.exception))
+
+    def test_pages_directory_in_another_letter_case(self):
+        # "I" is the same directory as "i" on a file system that ignores case
+        pages = self.tmp / "dist" / "I"
+        (pages / "zorro").mkdir(parents=True)
+        (pages / "_headers").mkdir()
+        with self.assertRaises(build.BuildError) as caught:
+            build.check_replaceable(pages)
+        message = str(caught.exception)
+        self.assertIn("(unexpected: '…')", message)
+        self.assertNotIn("zor", message)
+        self.assertNotIn("_headers", message)
+        # a token that is also a known name of the output
+        (pages / "zorro").rmdir()
+        with self.assertRaises(build.BuildError) as caught:
+            build.check_replaceable(pages)
+        message = str(caught.exception)
+        self.assertIn("('…' is not a regular file)", message)
+        self.assertNotIn("_headers", message)
+        redacted = build._redact_paths("dist/I/zorro/index.html")
+        self.assertEqual(redacted, "dist/I/…/index.html")
 
     def test_known_names(self):
         self.assertEqual(

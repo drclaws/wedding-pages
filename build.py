@@ -70,7 +70,7 @@ from tools import _schema as schema  # noqa: E402
 from tools import gen_assets  # noqa: E402
 from tools._data import (  # noqa: E402
     IMAGE_EXTENSIONS,
-    MIN_MEDIA_DIR_LENGTH,
+    MIN_TOKEN_LENGTH,
     _extension_list,
     check_token_prefix,
     format_size,
@@ -2580,11 +2580,14 @@ def display_path(path: Path | str) -> str:
 #: `i/<token>`: both are whole path components, `i` may start the path, and a
 #: name with a dot (`i/index.html`) is a file, not a token.  Tokens may be as
 #: short as a word, so the whole component is hidden, whatever its length.
+#: `I/` counts as well: on a file system that ignores letter case it is the
+#: same directory.
 _TOKEN_IN_PATH_RE = re.compile(
-    rf"(?<![A-Za-z0-9_.-])({PAGES_DIRNAME}[/\\])[A-Za-z0-9_-]+(?![A-Za-z0-9_.-])"
+    rf"(?<![A-Za-z0-9_.-])((?i:{PAGES_DIRNAME})[/\\])[A-Za-z0-9_-]+(?![A-Za-z0-9_.-])"
 )
-#: A name that may be a media directory (or a long token).
-_SECRET_LIKE_RE = re.compile(rf"[A-Za-z0-9_-]{{{MIN_MEDIA_DIR_LENGTH},}}\Z")
+#: A directory entry that may be a token or a media directory: token
+#: characters only (no dot, so not a file name), at least as long as a token.
+_TOKEN_LIKE_RE = re.compile(rf"[A-Za-z0-9_-]{{{MIN_TOKEN_LENGTH},}}\Z")
 #: What takes the place of a hidden name.
 NAME_MASK = "…"
 
@@ -2625,11 +2628,12 @@ def mask_site(text: str, base_url: str) -> str:
 def _mask_name(name: str, *, pages: bool = False) -> str:
     """A directory entry for an error message.
 
-    Every entry of a pages directory (`pages`: the directory is named `i`) may
-    be a token, however short, and names that look like a media directory or
-    a long token are secrets as well: all of them are hidden completely.
+    Any name made of token characters only (no dot: not a file) may be a token
+    or a media directory, so it is hidden completely, and so is every entry of
+    a pages directory (`pages`: the directory is named `i` in any letter case),
+    even one that is also a known name of the output.
     """
-    if pages or _SECRET_LIKE_RE.match(name):
+    if pages or _TOKEN_LIKE_RE.match(name):
         return NAME_MASK
     return _shorten(name, 40)
 
@@ -2727,7 +2731,8 @@ def check_replaceable(out_dir: Path | str) -> None:
 
     The message never shows a name that may be a token or a media directory
     (`--out` may point inside a previous build by mistake): the entries of a
-    directory named `i` and long names of token characters are shown as `…`.
+    directory named `i` (in any letter case) and every name of 5 or more token
+    characters without a dot are shown as `…` (see `_mask_name`).
     """
     out = Path(out_dir)
     try:
@@ -2742,7 +2747,7 @@ def check_replaceable(out_dir: Path | str) -> None:
     entries = [entry for entry in entries if entry.name not in OS_JUNK_FILES]
     advice = "remove it manually or choose another --out"
     unexpected = [entry.name for entry in entries if entry.name not in OUTPUT_TOP_LEVEL]
-    pages = Path(os.path.abspath(out)).name == PAGES_DIRNAME
+    pages = Path(os.path.abspath(out)).name.casefold() == PAGES_DIRNAME
     if unexpected:
         listed = ", ".join(f"'{_mask_name(name, pages=pages)}'" for name in unexpected[:3])
         more = f" and {len(unexpected) - 3} more" if len(unexpected) > 3 else ""
@@ -2761,7 +2766,8 @@ def check_replaceable(out_dir: Path | str) -> None:
             expected = "a directory" if is_directory else "a regular file"
             raise BuildError(
                 f"refusing to replace {display_path(out)}: it does not look like a "
-                f"previous build output ('{_mask_name(entry.name, pages=pages)}' is not "
+                # a known name of the output, unless it is inside a pages directory
+                f"previous build output ('{NAME_MASK if pages else entry.name}' is not "
                 f"{expected}); {advice}"
             )
 
@@ -3347,7 +3353,9 @@ def cmd_build(args: argparse.Namespace) -> int:
         Path(args.out) if args.out is not None else DEFAULT_OUT_DIR,
         code_dir=code_dir,
         report=_cli_report(),
-        log=_stdout,
+        # the log shows the paths of --data, --media and --out, and --out may
+        # point at a directory named like a token (`dist/i/<token>`)
+        log=lambda message: _stdout(_redact_paths(message)),
         base_url=base_url,
     )
     return EXIT_OK
@@ -3360,10 +3368,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
     report = _cli_report()
     data = load_data(data_dir, media_dir, report, assets_dir=code_dir / ASSETS_DIRNAME)
     _stdout(
-        f"validate: OK - {len(data.invitations)} invitation(s), "
-        f"{len(data.site['events'])} event(s), {len(data.site['sections'])} section(s), "
-        f"{report.media_files} media file(s) (data: {display_path(data_dir)}, "
-        f"media: {display_path(media_dir)})"
+        _redact_paths(
+            f"validate: OK - {len(data.invitations)} invitation(s), "
+            f"{len(data.site['events'])} event(s), {len(data.site['sections'])} section(s), "
+            f"{report.media_files} media file(s) (data: {display_path(data_dir)}, "
+            f"media: {display_path(media_dir)})"
+        )
     )
     summary = short_token_summary(data.invitations)
     if summary:

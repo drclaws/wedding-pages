@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import unittest
 from pathlib import Path
@@ -595,6 +597,8 @@ class NoPersonalDataInLogsTests(CliTestCase):
 
     def assertNoPieceOfTheTokens(self, *outputs: str) -> None:
         for output in outputs:
+            # the random name of the temporary directory is not a token
+            output = output.replace(str(self.tmp), "<tmp>")
             for token in self.SHORT_TOKENS:
                 for start in range(len(token) - 2):
                     self.assertNotIn(token[start : start + 3], output, token)
@@ -643,6 +647,32 @@ class NoPersonalDataInLogsTests(CliTestCase):
         for result in cases:
             self.assertNoPieceOfTheTokens(result.stdout, result.stderr)
             self.assertNoPrivateData(result.stdout, result.stderr)
+
+    def test_paths_in_warnings_are_redacted(self):
+        # e.g. a leftover directory next to an --out inside a pages directory
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            build._cli_report().warn(
+                "could not remove dist/i/zyzzyva/.old; delete dist/I/kumquat_jx by hand"
+            )
+        self.assertEqual(
+            stderr.getvalue(),
+            "warning: could not remove dist/i/…/.old; delete dist/I/… by hand\n",
+        )
+
+    def test_output_directory_named_like_a_token_stays_out_of_the_log(self):
+        self.write_short_tokens()
+        self.out = self.work / "fresh" / "i" / "zyzzyva"
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"to {Path('fresh', 'i', '…', 'i')}{os.sep}", result.stdout)
+        self.assertIn(f"build: OK -> {Path('fresh', 'i', '…')} ", result.stdout)
+        self.assertNoPieceOfTheTokens(result.stdout, result.stderr)
+        result = run_cli(
+            self.code, "validate", "--data", str(self.data), "--media",
+            str(self.work / "media" / "i" / "kumquat_jx"), cwd=self.work,
+        )  # fmt: skip
+        self.assertNoPieceOfTheTokens(result.stdout, result.stderr)
 
     def test_successful_runs_with_short_tokens_stay_clean(self):
         self.write_short_tokens()
