@@ -175,8 +175,9 @@ class MotionStylesTest(unittest.TestCase):
 
     def test_reveal_uses_the_entrance_duration(self):
         rule = re.search(r"\.is-revealed:not\(\.is-settled\) \{([^}]*)\}", self.section).group(1)
-        self.assertIn("opacity var(--duration-slow)", rule)
-        self.assertIn("transform var(--duration-slow)", rule)
+        # opacity starts gently (a steep start reads as a flash), the offset decelerates
+        self.assertIn("opacity var(--duration-slow) var(--ease-in-out),", rule)
+        self.assertIn("transform var(--duration-slow) var(--ease-out);", rule)
         self.assertNotRegex(rule, r"--duration-(?:fast|base)")
 
     def test_cover_animation_does_not_hold_final_values(self):
@@ -212,12 +213,21 @@ class RevealInvariantsTest(unittest.TestCase):
         # an event from a nested element, the transform transition or an extra
         # transitionend with elapsedTime 0 (sent while scrolling) is not the end
         end = self.module[self.module.index("function isRevealEnd("):self.module.index("function settleLater(")]
-        for check in ("event.target !== element", "event.type === 'transitioncancel'",
-                      "event.propertyName === 'opacity'", "event.elapsedTime > 0"):
-            self.assertIn(check, end)
+        self.assertRegex(end, r"if \(event\.target !== element\) \{\s*return false;\s*\}")
+        self.assertRegex(end, r"if \(event\.type === 'transitioncancel'\) \{\s*return true;\s*\}")
+        self.assertIn("return event.propertyName === 'opacity' && event.elapsedTime > 0;", end)
         later = self.module[self.module.index("function settleLater("):self.module.index("function show(")]
         self.assertIn("if (event && !isRevealEnd(event, element))", later)
+        for event in ("transitionend", "transitioncancel"):
+            self.assertIn("element.addEventListener('%s', done);" % event, later)
+            self.assertIn("element.removeEventListener('%s', done);" % event, later)
         self.assertIn("setTimeout(done, REVEAL_SETTLE_MS)", later)
+
+    def test_reveals_from_the_first_visible_pixel(self):
+        # a non-zero inset leaves a band at the bottom edge where a block is on
+        # screen but still empty
+        self.assertRegex(self.code, r"\bvar REVEAL_INSET = 0;")
+        self.assertIn("rootMargin: REVEAL_MARGIN", self.module)
 
     def test_revealed_blocks_are_never_hidden_again(self):
         self.assertNotRegex(self.module, r"classList\.remove\('is-(?:revealed|settled)'\)")
