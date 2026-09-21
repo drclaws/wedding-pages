@@ -416,14 +416,19 @@
       <div class="sg-demo">
         <p class="sg-demo__label">Одиночная плитка: .gallery--single (вертикальный кадр 9 / 16)</p>
         <p class="sg-note">
-          Одна плитка по центру колонки в пропорции своего кадра: разметка
-          ставит на элемент <code>--media-ratio</code> из размеров ролика в
-          данных, без них действует <code>--ratio-video</code>. Плитка не выше
-          <code>--media-max-height</code> и не шире колонки, поэтому
-          вертикальный ролик на десктопе остаётся узкой плиткой по центру.
+          Одна плитка по центру колонки в пропорции своего кадра. Размер задаёт
+          невидимый размерник перед плиткой: <code>&lt;svg
+          class="gallery__sizer"&gt;</code> с размерами ролика из данных в
+          <code>width</code>/<code>height</code>/<code>viewBox</code>, а без
+          них — <code>.gallery__sizer--default</code> с пропорцией
+          <code>--ratio-video</code>. Атрибута <code>style</code> в разметке
+          нет. Плитка не выше <code>--media-max-height</code> и не шире
+          колонки, поэтому вертикальный ролик на десктопе остаётся узкой
+          плиткой по центру.
         </p>
         <ul class="gallery gallery--single">
-          <li class="gallery__item" style="--media-ratio: 9 / 16">
+          <li class="gallery__item">
+            <svg class="gallery__sizer" width="720" height="1280" viewBox="0 0 720 1280" aria-hidden="true" focusable="false"></svg>
             <button type="button" class="gallery__link media-tile media-tile--video">
               <span class="visually-hidden">Видео</span>
               <span class="sg-plate sg-plate--fill"></span>

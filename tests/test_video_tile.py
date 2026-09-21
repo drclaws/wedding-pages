@@ -117,11 +117,23 @@ class TemplateTests(unittest.TestCase):
         unsized = block[block.index("<!-- if:!video.width -->"):]
         ratio = "{{video.width}} / {{video.height}}"
         self.assertIn(f'data-media-ratio="{ratio}"', sized)
-        self.assertIn(f'<li class="gallery__item" style="--media-ratio: {ratio}">', sized)
-        self.assertIn('width="{{video.width}}" height="{{video.height}}"', sized)
-        for text in ("data-media-ratio", "style=", "width="):
+        # the size comes from an invisible sizer, not from a style attribute
+        self.assertIn(
+            '<li class="gallery__item"><svg class="gallery__sizer" width="{{video.width}}" '
+            'height="{{video.height}}" viewBox="0 0 {{video.width}} {{video.height}}" '
+            'aria-hidden="true" focusable="false"></svg><a ',
+            sized,
+        )
+        self.assertIn('alt="" width="{{video.width}}" height="{{video.height}}"', sized)
+        self.assertIn(
+            '<li class="gallery__item"><span class="gallery__sizer gallery__sizer--default" '
+            'aria-hidden="true"></span><a ',
+            unsized,
+        )
+        for text in ("data-media-ratio", "width=", "{{video.width}}"):
             with self.subTest(text=text):
                 self.assertNotIn(text, unsized)
+        self.assertNotIn("style", block)
 
     def test_venue_photos_are_media_tiles(self):
         self.assertIn(
@@ -177,9 +189,20 @@ class StylesTests(unittest.TestCase):
     def test_a_single_tile_takes_the_ratio_of_its_frame(self):
         section = css_section(5)
         rule = re.search(r"\.gallery--single > \.gallery__item \{([^}]*)\}", section).group(1)
-        self.assertIn("--media-ratio-used: var(--media-ratio, var(--ratio-video));", rule)
-        self.assertIn("aspect-ratio: var(--media-ratio-used);", rule)
-        self.assertIn("var(--media-max-height) * var(--media-ratio-used)", rule)
+        for declaration in ("inline-size: fit-content;", "max-inline-size: 100%;", "aspect-ratio: auto;"):
+            with self.subTest(declaration=declaration):
+                self.assertIn(declaration, rule)
+        self.assertRegex(section, r"\.gallery--single > \.gallery__item > \.gallery__link \{\s*"
+                                  r"position: absolute;\s*inset: 0;")
+        sizer = re.search(r"\.gallery__sizer \{([^}]*)\}", section).group(1)
+        for declaration in ("max-inline-size: 100%;", "max-block-size: var(--media-max-height);",
+                            "visibility: hidden;"):
+            with self.subTest(declaration=declaration):
+                self.assertIn(declaration, sizer)
+        # without a size in the data the ratio of the token
+        default = re.search(r"\.gallery__sizer--default \{([^}]*)\}", section).group(1)
+        self.assertIn("calc(var(--media-max-height) * var(--ratio-video))", default)
+        self.assertIn("aspect-ratio: var(--ratio-video);", default)
 
     def test_the_viewer_video(self):
         section = css_section(8)
@@ -251,8 +274,22 @@ class BuiltPageTests(TempDirTestCase):
         self.assertGreater(height, width, "the example clip is a portrait one")
         for page in self.pages(self.build("data")):
             self.assertIn(f'data-media-ratio="{width} / {height}"', page)
-            self.assertIn(f'style="--media-ratio: {width} / {height}"', page)
+            self.assertIn(
+                f'<svg class="gallery__sizer" width="{width}" height="{height}" '
+                f'viewBox="0 0 {width} {height}"', page)
             self.assertIn(f'alt="" width="{width}" height="{height}"', page)
+
+    def test_pages_have_no_inline_styles(self):
+        """Without style attributes and <style> elements the pages would work
+        with a style-src that has no 'unsafe-inline'."""
+        style_attribute = re.compile(r"<[a-zA-Z][^>]*\sstyle\s*=", re.S)
+        for data_name in ("data", "data-venue-pending"):
+            out = self.build(data_name)
+            for path in sorted(out.rglob("*.html")):
+                with self.subTest(data=data_name, page=str(path.relative_to(out))):
+                    page = path.read_text(encoding="utf-8")
+                    self.assertNotRegex(page, style_attribute)
+                    self.assertNotRegex(page, r"(?i)<style[\s>]")
 
     def test_without_a_size_the_tile_falls_back_to_the_css_ratio(self):
         data = self.tmp / "data-no-size"
@@ -269,10 +306,11 @@ class BuiltPageTests(TempDirTestCase):
             page = path.read_text(encoding="utf-8")
             self.assertEqual(page.count('data-media="video"'), 1)
             self.assertNotIn("data-media-ratio", page)
-            self.assertNotIn("--media-ratio", page)
+            self.assertNotIn('<svg class="gallery__sizer"', page)
+            self.assertIn('<span class="gallery__sizer gallery__sizer--default" aria-hidden="true">', page)
             self.assertNotIn("<video", page)
         # the tile then takes the ratio of the token
-        self.assertIn("var(--media-ratio, var(--ratio-video))", APP_CSS)
+        self.assertRegex(APP_CSS, r"\.gallery__sizer--default \{[^}]*aspect-ratio: var\(--ratio-video\);")
 
     def test_a_page_without_a_video_has_no_tile(self):
         for page in self.pages(self.build("data-venue-pending")):

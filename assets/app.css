@@ -1278,19 +1278,50 @@ a.btn[aria-disabled="true"] {
 }
 
 /* --- Одиночный элемент галереи ----------------------------------------------
-   .gallery--single — одна плитка по центру колонки в пропорции своего кадра:
-   --media-ratio («w / h» из размеров в данных) разметка ставит на элемент,
-   без него действует --ratio-video. Плитка не выше --media-max-height и не
-   шире колонки: как у .media, ограничивается ширина (высота × пропорция). */
+   .gallery--single — одна плитка по центру колонки в пропорции своего кадра,
+   не выше --media-max-height и не шире колонки.
+
+   Размер элемента задаёт невидимый размерник .gallery__sizer перед плиткой,
+   а плитка лежит поверх него (атрибут style в разметке не нужен):
+     - <svg class="gallery__sizer" width height viewBox> с размерами ролика
+       из данных — замещаемый элемент: браузер вписывает его в max-inline-size
+       и max-block-size с сохранением пропорции, по нему сжимается элемент
+       (fit-content). Размеры берутся из атрибутов, поэтому это работает и до
+       загрузки постера, и без скрипта. Размерник не больше своих атрибутов:
+       ролик меньше места под него останется в своём размере;
+     - <span class="gallery__sizer gallery__sizer--default"> — размеров в
+       данных нет: ширина — высота × --ratio-video, пропорция — тот же токен.
+   Собственная пропорция inline-<svg> проверена в Chrome; на реальном iOS
+   Safari её нужно подтвердить руками. */
 .gallery--single {
   grid-template-columns: minmax(0, 1fr);
 }
 
 .gallery--single > .gallery__item {
-  --media-ratio-used: var(--media-ratio, var(--ratio-video));
+  position: relative;
   justify-self: center;
-  inline-size: min(100%, var(--media-max-height) * var(--media-ratio-used));
-  aspect-ratio: var(--media-ratio-used);
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  aspect-ratio: auto;
+}
+
+.gallery--single > .gallery__item > .gallery__link {
+  position: absolute;
+  inset: 0;
+}
+
+.gallery__sizer {
+  display: block;
+  inline-size: auto;
+  block-size: auto;
+  max-inline-size: 100%;
+  max-block-size: var(--media-max-height);
+  visibility: hidden;
+}
+
+.gallery__sizer--default {
+  inline-size: calc(var(--media-max-height) * var(--ratio-video));
+  aspect-ratio: var(--ratio-video);
 }
 
 /* --- Таймер обратного отсчёта ---------------------------------------------
