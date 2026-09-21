@@ -41,7 +41,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Repository hygiene (no tracked media outside assets/vendor, no tracked build output)
+      - name: Repository hygiene (no tracked media, no tracked build output)
         run: |
           set -euo pipefail
           # Names are read NUL-separated and unquoted, so non-ASCII names are matched as is.
@@ -55,17 +55,11 @@ jobs:
             echo "Tracked file names must not contain line breaks or carriage returns" >&2
             exit 1
           fi
-          # Vendored library files under assets/vendor/ are the only exception.
-          media="$(tracked | grep -av '^assets/vendor/' | grep -aEi '\.(png|jpe?g|webp|gif|avif|mp4|mov|webm|ico|svg)$' || true)"
+          # Every tracked file is checked: the repository carries no media at all.
+          media="$(tracked | grep -aEi '\.(png|jpe?g|webp|gif|avif|mp4|mov|webm|ico|svg)$' || true)"
           if [ -n "$media" ]; then
             echo "Media files must not be tracked:" >&2
             echo "$media" >&2
-            exit 1
-          fi
-          vendor="$(tracked assets/vendor | grep -aEv '(\.(js|css|svg|txt|woff2)|/\.gitkeep)$' || true)"
-          if [ -n "$vendor" ]; then
-            echo "Only .js, .css, .svg, .txt and .woff2 files (and a .gitkeep placeholder) may be tracked under assets/vendor/:" >&2
-            echo "$vendor" >&2
             exit 1
           fi
           output="$(tracked dist examples/media)"
