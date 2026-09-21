@@ -107,7 +107,11 @@ class LightboxSourceTest(unittest.TestCase):
         code = strip_comments(APP_JS.read_text(encoding="utf-8"))
         cls.code = code
         cls.module = code[code.index("register('gallery'"):]
-        cls.template = TEMPLATE.read_text(encoding="utf-8")
+        # the markup of a page: the frame and the fragments of its sections
+        fragments = sorted((ROOT / "fragments").rglob("*.html"))
+        cls.fragments = {path.relative_to(ROOT / "fragments").as_posix(): path.read_text(encoding="utf-8")
+                         for path in fragments}
+        cls.template = TEMPLATE.read_text(encoding="utf-8") + "".join(cls.fragments.values())
 
     def test_requires_native_modal_dialog(self):
         guard = self.module[:self.module.index("var ui = null")]
@@ -222,19 +226,23 @@ class LightboxSourceTest(unittest.TestCase):
         self.assertIn("var onZoom = guarded(", self.module)
 
     def test_template_hooks(self):
-        self.assertRegex(self.template, r'<ul class="[^"]*\bgallery--ribbon\b[^"]*"[^>]* data-gallery\b')
-        self.assertRegex(self.template, r'<a class="gallery__link media-tile" href="\{\{\.src\}\}" data-lightbox>')
-        self.assertRegex(self.template,
-                         r'<a class="media media--scheme" href="\{\{venue\.directionsSrc\}\}" data-lightbox>')
-        self.assertRegex(self.template,
-                         r'<a class="gallery__link media-tile media-tile--video" href="\{\{video\.src\}\}" '
+        self.assertRegex(self.fragments["partials/location-card.html"],
+                         r'<ul class="[^"]*\bgallery--ribbon\b[^"]*"[^>]* data-gallery\b')
+        self.assertRegex(self.fragments["widgets/media.html"],
+                         r'<ul class="gallery gallery--\{\{\.layout\}\}"[^>]* data-gallery\b')
+        self.assertRegex(self.fragments["media/image.html"],
+                         r'<a class="gallery__link media-tile" href="\{\{\.src\}\}" data-lightbox>')
+        self.assertRegex(self.fragments["partials/location-card.html"],
+                         r'<a class="media media--scheme" href="\{\{\.src\}\}" data-lightbox>')
+        self.assertRegex(self.fragments["media/video.html"],
+                         r'<a class="gallery__link media-tile media-tile--video" href="\{\{\.src\}\}" '
                          r'type="video/mp4" data-lightbox data-media="video" '
-                         r'data-media-poster="\{\{video\.posterSrc\}\}" '
-                         r'data-media-ratio="\{\{video\.width\}\} / \{\{video\.height\}\}"')
+                         r'data-media-poster="\{\{\.posterSrc\}\}" '
+                         r'data-media-ratio="\{\{\.ratio\}\}"')
         self.assertNotIn("<dialog", self.template)
         self.assertNotIn("<video", self.template)
-        maps = self.template[self.template.index("<!-- if:venue.hasMapLinks -->"):]
-        maps = maps[:maps.index("<!-- if:venue.directionsSrc -->")]
+        maps = self.fragments["partials/map-links.html"]
+        maps = maps[maps.index("<!-- if:.hasMapLinks -->"):]
         self.assertIn('<ul class="venue__maps"', maps)
         # the whole list is inside the condition; indentation is not the point
         self.assertTrue(" ".join(maps.split()).endswith("</ul> <!-- endif -->"))

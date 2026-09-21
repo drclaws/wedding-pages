@@ -579,8 +579,6 @@ def invitation_label(index: int, token: Any = None) -> str:
 #: Media files the data may refer to, by role.
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".avif", ".gif", ".svg"})
 VIDEO_EXTENSIONS = frozenset({".mp4", ".webm"})
-#: The calendar file that the build writes into the media directory.
-_RESERVED_MEDIA_NAME = "event.ics"
 
 
 def _extension_list(extensions: Iterable[str]) -> str:
@@ -611,11 +609,6 @@ def check_media_name(
         return "contains control characters"
     if ":" in name:
         return "must not contain ':' (not a valid file name on every system)"
-    if name.lower() == _RESERVED_MEDIA_NAME:
-        return (
-            f"must not be '{_RESERVED_MEDIA_NAME}' "
-            "(the name is reserved for the calendar file)"
-        )
     if os.path.splitext(name)[1].lower() not in extensions:
         return f"has an unsupported file type (allowed: {_extension_list(extensions)})"
     return None

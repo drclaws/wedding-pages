@@ -117,52 +117,124 @@ class PngWriterTest(unittest.TestCase):
             self.assertEqual(read_png(path.read_bytes())[3], [b"\x10\x20\x30"])
 
 
+def image(name, **fields):
+    return {"type": "image", "file": name, **fields}
+
+
+def video(name, poster, **fields):
+    return {"type": "video", "file": name, "poster": poster, **fields}
+
+
 class PlanMediaTest(unittest.TestCase):
     def test_example_data_plan(self):
         site = gen.load_site(EXAMPLES_DATA)
-        kinds = [item.kind for item in gen.plan_media(site)]
-        self.assertEqual(kinds, ["photo"] * 4 + ["directions", "poster", "video"])
+        plan = gen.plan_media(site)
+        self.assertEqual(
+            [(item.kind, item.name) for item in plan],
+            [
+                ("photo", "registry-1.png"),
+                ("photo", "venue-1.png"),
+                ("photo", "venue-2.png"),
+                ("photo", "venue-3.png"),
+                ("photo", "venue-4.png"),
+                ("directions", "directions.png"),
+                ("photo", "story-1.png"),
+                ("photo", "story-2.png"),
+                ("poster", "proposal-poster.png"),
+                ("video", "proposal.mp4"),
+                ("poster", "walk-poster.png"),
+                ("video", "walk.mp4"),
+            ],
+        )
+        sizes = {item.name: item.size for item in plan}
+        # every clip has its own size, the poster that of its clip
+        self.assertEqual(sizes["proposal.mp4"], (720, 1280))
+        self.assertEqual(sizes["proposal-poster.png"], (720, 1280))
+        self.assertEqual(sizes["walk.mp4"], (1280, 720))
+        self.assertEqual(sizes["walk-poster.png"], (1280, 720))
+        self.assertEqual(sizes["directions.png"], gen.DIRECTIONS_SIZE)
+        self.assertEqual(sizes["registry-1.png"], gen.PHOTO_SIZE)
+        self.assertEqual(sizes["venue-1.png"], gen.PHOTO_PORTRAIT_SIZE)
+        self.assertEqual(len([item for item in plan if item.kind == "video"]), 2)
 
     def test_pending_example_data_has_no_media(self):
         site = gen.load_site(EXAMPLES_DATA_PENDING)
         self.assertEqual(gen.plan_media(site), [])
 
-    def test_empty_and_missing_fields_mean_no_file(self):
-        site = {"venue": {"ready": False, "directionsImage": ""}, "video": None}
-        self.assertEqual(gen.plan_media(site), [])
+    def test_no_registry_means_no_files(self):
+        self.assertEqual(gen.plan_media({}), [])
+        self.assertEqual(gen.plan_media({"media": {}}), [])
+
+    def test_sizes_of_the_items_and_the_defaults(self):
+        site = {
+            "media": {
+                "a": image("a.png", width=300, height=200),
+                "b": video("b.mp4", "b.png"),
+                "c": video("c.mp4", "c.png", width=640, height=360, thumb="c-thumb.png"),
+            }
+        }
+        plan = {item.name: item for item in gen.plan_media(site)}
+        self.assertEqual(plan["a.png"].size, (300, 200))
+        self.assertEqual(plan["b.mp4"].size, gen.VIDEO_SIZE)
+        self.assertEqual(plan["b.png"].size, gen.POSTER_SIZE)
+        self.assertEqual(plan["c.mp4"].size, (640, 360))
+        self.assertEqual((plan["c-thumb.png"].kind, plan["c-thumb.png"].size), ("thumb", (640, 360)))
+
+    def test_bad_sizes_are_rejected(self):
+        for fields in ({"width": 640}, {"width": 0, "height": 2}, {"width": 3, "height": 4},
+                       {"width": True, "height": 2}):  # fmt: skip
+            with self.subTest(fields=fields), self.assertRaises(gen.GenerationError):
+                gen.plan_media({"media": {"v": video("v.mp4", "v.png", **fields)}})
+        # an odd size is fine for a picture
+        plan = gen.plan_media({"media": {"a": image("a.png", width=3, height=5)}})
+        self.assertEqual(plan[0].size, (3, 5))
 
     def test_unsafe_names_are_rejected(self):
         """The same rules as in the build: a plain, visible, clean file name."""
         names = (
             "../escape.png", "sub/dir.png", "sub\\dir.png", "..", "a..b.png",
             ".hidden.png", " padded.png", "padded.png ", "tab\there.png", "c:drive.png",
-            "event.ics", 7,
+            "", 7, None,
         )  # fmt: skip
         for name in names:
             with self.subTest(name=name):
                 with self.assertRaises(gen.GenerationError):
-                    gen.plan_media({"venue": {"photos": [name]}})
+                    gen.plan_media({"media": {"a": image(name)}})
+                with self.assertRaises(gen.GenerationError):
+                    gen.plan_media({"media": {"v": video("v.mp4", name)}})
 
     def test_unsupported_extensions_are_rejected(self):
-        for name in ("photo.gif", "photo.webp", "photo.svg"):
+        for name in ("photo.gif", "photo.webp", "photo.svg", "clip.mp4"):
             with self.subTest(name=name), self.assertRaises(gen.GenerationError):
-                gen.plan_media({"venue": {"photos": [name]}})
-        with self.assertRaises(gen.GenerationError):
-            gen.plan_media({"video": {"file": "clip.mkv"}})
+                gen.plan_media({"media": {"a": image(name)}})
+        for name in ("clip.mkv", "clip.webm", "clip.png"):
+            with self.subTest(name=name), self.assertRaises(gen.GenerationError):
+                gen.plan_media({"media": {"v": video(name, "v.png")}})
 
     def test_duplicate_names_are_generated_once(self):
-        site = {"venue": {"photos": ["a.png", "a.png"], "directionsImage": "a.png"}}
-        self.assertEqual([item.name for item in gen.plan_media(site)], ["a.png"])
+        site = {"media": {"a": image("a.png"), "b": image("a.png"), "c": video("c.mp4", "a.png")}}
+        self.assertEqual([item.name for item in gen.plan_media(site)], ["a.png", "c.mp4"])
 
     def test_bad_types_are_rejected(self):
-        with self.assertRaises(gen.GenerationError):
-            gen.plan_media({"venue": {"photos": "a.png"}})
-        with self.assertRaises(gen.GenerationError):
-            gen.plan_media({"video": "clip.mp4"})
+        for site in (
+            {"media": []},
+            {"media": {"a": "a.png"}},
+            {"media": {"a": {"type": "audio", "file": "a.mp3"}}},
+            {"media": {"a": {"file": "a.png"}}},
+            {"media": {"a": image("a.png")}, "locations": []},
+        ):
+            with self.subTest(site=site), self.assertRaises(gen.GenerationError):
+                gen.plan_media(site)
 
-    def test_blank_photo_entries_are_skipped(self):
-        site = {"venue": {"photos": ["a.png", "", "  ", "b.png"]}}
-        self.assertEqual([item.name for item in gen.plan_media(site)], ["a.png", "b.png"])
+    def test_directions_are_the_items_a_place_points_at(self):
+        site = {
+            "locations": {"manor": {"directions": "map"}, "hall": {"ready": False}},
+            "media": {"photo": image("photo.png"), "map": image("map.png")},
+        }
+        self.assertEqual(
+            [(item.kind, item.name) for item in gen.plan_media(site)],
+            [("photo", "photo.png"), ("directions", "map.png")],
+        )
 
     def test_load_site_reports_bad_encoding(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -198,12 +270,14 @@ class GenerateTest(unittest.TestCase):
         names = [path.name for path, _ in created]
         self.assertEqual(
             names,
-            ["venue-1.png", "venue-2.png", "venue-3.png", "venue-4.png",
-             "directions.png", "proposal-poster.png"],
-        )
+            ["registry-1.png", "venue-1.png", "venue-2.png", "venue-3.png", "venue-4.png",
+             "directions.png", "story-1.png", "story-2.png", "proposal-poster.png",
+             "walk-poster.png"],
+        )  # fmt: skip
         self.assertIn("ffmpeg", stderr)
-        self.assertIn(site["video"]["file"], stderr)
-        self.assertFalse((self.out / site["video"]["file"]).exists())
+        for clip in ("proposal.mp4", "walk.mp4"):
+            self.assertIn(clip, stderr)
+            self.assertFalse((self.out / clip).exists())
 
         sizes = {}
         for path, size in created:
@@ -212,19 +286,17 @@ class GenerateTest(unittest.TestCase):
             self.assertEqual(color_type, 2)
             self.assertEqual(len(rows), height)
             sizes[path.name] = (width, height)
-        self.assertEqual(sizes["venue-1.png"], gen.PHOTO_SIZE)
-        self.assertEqual(sizes["venue-2.png"], gen.PHOTO_PORTRAIT_SIZE)
-        self.assertEqual(sizes["proposal-poster.png"], gen.POSTER_SIZE)
-        # a portrait clip, and a poster of the same proportions
-        self.assertEqual(gen.POSTER_SIZE, gen.VIDEO_SIZE)
-        self.assertEqual(gen.video_size(site), (720, 1280))
-        self.assertLess(gen.VIDEO_SIZE[0], gen.VIDEO_SIZE[1])
+        self.assertEqual(sizes["venue-2.png"], gen.PHOTO_SIZE)
+        self.assertEqual(sizes["venue-1.png"], gen.PHOTO_PORTRAIT_SIZE)
         self.assertEqual(sizes["directions.png"], gen.DIRECTIONS_SIZE)
-        self.assertGreater(sizes["venue-1.png"][0], sizes["venue-1.png"][1])
-        self.assertLess(sizes["venue-2.png"][0], sizes["venue-2.png"][1])
+        # the posters have the proportions of their clips: portrait and landscape
+        self.assertEqual(sizes["proposal-poster.png"], (720, 1280))
+        self.assertEqual(sizes["walk-poster.png"], (1280, 720))
+        self.assertEqual(gen.POSTER_SIZE, gen.VIDEO_SIZE)
+        self.assertLess(gen.VIDEO_SIZE[0], gen.VIDEO_SIZE[1])
 
     def test_colours_come_from_the_tokens(self):
-        site = {"venue": {"photos": ["venue-1.png"]}, "video": {"poster": "poster.png"}}
+        site = {"media": {"a": image("venue-1.png"), "v": video("v.mp4", "poster.png")}}
         default, _ = self.generate(site)
         before = [path.read_bytes() for path, _size in default]
         frame = (1, 2, 3)
@@ -235,18 +307,18 @@ class GenerateTest(unittest.TestCase):
             rows = read_png(path.read_bytes())[3]
             self.assertEqual(bytes(rows[0][:3]), bytes(frame))  # the frame
 
-    def test_poster_follows_the_video_size(self):
-        site = {"video": {"poster": "poster.png", "width": 640, "height": 360}}
+    def test_poster_and_thumb_follow_the_video_size(self):
+        site = {"media": {"v": video("v.mp4", "poster.png", width=640, height=360, thumb="t.png")}}
         created, _ = self.generate(site)
-        self.assertEqual(read_png(created[0][0].read_bytes())[:2], (640, 360))
-        for video in ({"width": 640}, {"width": 0, "height": 2}, {"width": 3, "height": 4}):
-            with self.subTest(video=video), self.assertRaises(gen.GenerationError):
-                self.generate({"video": {"poster": "poster.png", **video}})
+        self.assertEqual([path.name for path, _ in created], ["poster.png", "t.png"])
+        for path, _size in created:
+            self.assertEqual(read_png(path.read_bytes())[:2], (640, 360))
 
     def test_the_poster_has_no_play_mark(self):
         """The page draws the play badge over the poster; a second one would show."""
-        site = {"video": {"poster": "poster.png", "width": 360, "height": 640}}
-        created, _ = self.generate(site)
+        created, _ = self.generate(
+            {"media": {"v": video("v.mp4", "poster.png", width=360, height=640)}}
+        )
         width, height, _type, rows = read_png(created[0][0].read_bytes())
         palette = gen.load_tokens(gen.DEFAULT_CSS)
         light = bytes(palette.bg)
@@ -269,7 +341,7 @@ class GenerateTest(unittest.TestCase):
         self.assertFalse(self.out.exists())
 
     def test_rerun_overwrites_with_identical_content(self):
-        site = {"venue": {"photos": ["venue-1.png"]}}
+        site = {"media": {"a": image("venue-1.png")}}
         first, _ = self.generate(site)
         content = first[0][0].read_bytes()
         second, _ = self.generate(site)
@@ -278,7 +350,7 @@ class GenerateTest(unittest.TestCase):
 
     def test_non_png_image_without_ffmpeg_is_an_error(self):
         with self.assertRaises(gen.GenerationError):
-            self.generate({"venue": {"photos": ["venue-1.jpg"]}})
+            self.generate({"media": {"a": image("venue-1.jpg")}})
         self.assertFalse(self.out.exists())
 
     def test_oversized_file_is_refused(self):
@@ -286,28 +358,40 @@ class GenerateTest(unittest.TestCase):
         gen.MAX_FILE_BYTES = 1024
         self.addCleanup(setattr, gen, "MAX_FILE_BYTES", original)
         with self.assertRaises(gen.GenerationError):
-            self.generate({"venue": {"photos": ["venue-1.png"]}})
+            self.generate({"media": {"a": image("venue-1.png")}})
         self.assertFalse((self.out / "venue-1.png").exists())
 
     @unittest.skipUnless(FFMPEG, "ffmpeg is not installed")
-    def test_video_with_ffmpeg(self):
-        created, stderr = self.generate({"video": {"file": "clip.mp4"}}, ffmpeg=FFMPEG)
+    def test_two_videos_of_their_own_sizes_with_ffmpeg(self):
+        site = {
+            "media": {
+                "a": video("portrait.mp4", "portrait.png"),
+                "b": video("landscape.mp4", "landscape.png", width=640, height=360),
+            }
+        }
+        created, stderr = self.generate(site, ffmpeg=FFMPEG)
         self.assertEqual(stderr, "")
-        self.assertEqual(len(created), 1)
-        path, size = created[0]
-        self.assertEqual(path.name, "clip.mp4")
-        probe = subprocess.run([FFMPEG, "-hide_banner", "-i", str(path)], capture_output=True, text=True)
-        self.assertIn("720x1280", probe.stderr)
-        self.assertLess(size, gen.MAX_FILE_BYTES)
-        self.assertGreater(size, 10 * 1024)
-        data = path.read_bytes()
-        self.assertEqual(data[4:8], b"ftyp")
-        # -movflags +faststart puts the index in front of the media data
-        self.assertLess(data.find(b"moov"), data.find(b"mdat"))
+        self.assertEqual(
+            [path.name for path, _ in created],
+            ["portrait.png", "portrait.mp4", "landscape.png", "landscape.mp4"],
+        )
+        for name, size in (("portrait.mp4", "720x1280"), ("landscape.mp4", "640x360")):
+            path = self.out / name
+            probe = subprocess.run(
+                [FFMPEG, "-hide_banner", "-i", str(path)], capture_output=True, text=True
+            )
+            self.assertIn(size, probe.stderr)
+            self.assertIn("Duration: 00:00:05", probe.stderr)
+            self.assertLess(path.stat().st_size, gen.MAX_FILE_BYTES)
+            self.assertGreater(path.stat().st_size, 10 * 1024)
+            data = path.read_bytes()
+            self.assertEqual(data[4:8], b"ftyp")
+            # -movflags +faststart puts the index in front of the media data
+            self.assertLess(data.find(b"moov"), data.find(b"mdat"))
 
     @unittest.skipUnless(FFMPEG, "ffmpeg is not installed")
     def test_jpeg_conversion_with_ffmpeg(self):
-        created, _ = self.generate({"venue": {"photos": ["venue-1.jpg"]}}, ffmpeg=FFMPEG)
+        created, _ = self.generate({"media": {"a": image("venue-1.jpg")}}, ffmpeg=FFMPEG)
         self.assertEqual(len(created), 1)
         self.assertEqual(created[0][0].read_bytes()[:3], b"\xff\xd8\xff")
 
@@ -320,7 +404,9 @@ class CommandLineTest(unittest.TestCase):
             (workdir / "data").mkdir()
             shutil.copyfile(EXAMPLES_DATA / "site.json", workdir / "data" / "site.json")
             (workdir / "empty-path").mkdir()
-            env = dict(os.environ, PATH=str(workdir / "empty-path"))
+            env = dict(
+                os.environ, PATH=str(workdir / "empty-path"), PYTHONDONTWRITEBYTECODE="1"
+            )
             result = subprocess.run(
                 [sys.executable, str(SCRIPT_PATH), "--data", "data", "--out", "media"],
                 cwd=str(workdir),
@@ -331,13 +417,14 @@ class CommandLineTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("ffmpeg not found", result.stderr)
             lines = result.stdout.splitlines()
-            self.assertEqual(len(lines), 6)
+            self.assertEqual(len(lines), 10)
             for line in lines:
                 self.assertTrue(line.startswith("media/"), line)
             site = load_json(workdir / "data" / "site.json")
-            for name in site["venue"]["photos"] + [site["venue"]["directionsImage"]]:
-                self.assertTrue((workdir / "media" / name).is_file(), name)
-            self.assertFalse((workdir / "media" / site["video"]["file"]).exists())
+            for item in site["media"].values():
+                self.assertTrue((workdir / "media" / item.get("poster", item["file"])).is_file())
+                if item["type"] == "video":
+                    self.assertFalse((workdir / "media" / item["file"]).exists())
 
     def test_cli_reports_missing_data(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -345,6 +432,7 @@ class CommandLineTest(unittest.TestCase):
                 [sys.executable, str(SCRIPT_PATH), "--data", tmp, "--out", tmp],
                 capture_output=True,
                 text=True,
+                env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
             )
             self.assertEqual(result.returncode, 1)
             self.assertIn("error:", result.stderr)

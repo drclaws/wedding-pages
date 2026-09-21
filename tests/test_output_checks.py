@@ -523,11 +523,12 @@ class OutputContentsCheckTests(FailingBuildTestCase):
             os.symlink(target, self.media / "route.png")
         except (OSError, NotImplementedError) as exc:
             self.skipTest(f"symbolic links are not available: {exc}")
-        self.assertBuildFails("route.png is a symbolic link")
+        self.assertBuildFails("field 'media.route.file': the file is a symbolic link")
         # `validate` reports it as well
         result = self.run_validate()
         self.assertEqual(result.returncode, 1)
-        self.assertIn("route.png is a symbolic link", result.stderr)
+        self.assertIn("field 'media.route.file': the file is a symbolic link", result.stderr)
+        self.assertNotIn("route.png", result.stderr)
 
     def test_media_dir_collides_with_an_asset(self):
         collision = "Vendor-Bundle-Directory"
@@ -546,19 +547,23 @@ class OutputContentsCheckTests(FailingBuildTestCase):
 
     def test_unsupported_media_type(self):
         site = site_data()
-        site["venue"]["photos"] = ["venue-1.webp", "photo.heic"]
-        site["video"]["file"] = "clip.mov"
+        site["media"]["venue-2"]["file"] = "photo.heic"
+        site["media"]["clip"]["file"] = "clip.mov"
         write_data(self.data, site=site)
         self.assertBuildFails(
-            "field 'venue.photos[1]' has an unsupported file type",
-            "field 'video.file' has an unsupported file type (allowed: .mp4, .webm)",
+            "field 'media.venue-2.file' has an unsupported file type (allowed: .avif, ",
+            "field 'media.clip.file' has an unsupported file type (allowed: .mp4)",
         )
 
-    def test_media_name_reserved_for_the_calendar(self):
-        site = site_data()
-        site["venue"]["directionsImage"] = "Event.ics"
-        write_data(self.data, site=site)
-        self.assertBuildFails("field 'venue.directionsImage' must not be 'event.ics'")
+    def test_a_media_file_that_is_not_what_its_name_says(self):
+        (self.media / "poster.png").write_bytes(b"GIF89a not a picture of this type")
+        (self.media / "clip.mp4").write_bytes(b"not a video at all")
+        self.assertBuildFails(
+            "field 'media.clip.poster' names a file that is not a valid file of the type "
+            "its name gives",
+            "field 'media.clip.file' names a file that is not a valid file of the type "
+            "its name gives",
+        )
 
 
 class FileSizeLimitTests(FailingBuildTestCase):
@@ -577,9 +582,11 @@ class FileSizeLimitTests(FailingBuildTestCase):
     def test_oversized_media_file_is_reported_by_validation(self):
         (self.media / "clip.mp4").write_bytes(b"\x00" * (self.LIMIT + 1))
         with mock.patch.object(build, "MAX_FILE_BYTES", self.LIMIT):
-            self.assertBuildFails(
-                "field 'video.file'", "clip.mp4 is 64.0 KiB", "the limit for a single file"
+            result = self.assertBuildFails(
+                "field 'media.clip.file': the file is 64.0 KiB, the limit for a single file "
+                "is 64.0 KiB"
             )
+        self.assertNotIn("clip.mp4", result.stderr)
 
     def test_file_at_the_limit_passes(self):
         (self.code / "assets" / "vendor" / "big.js").write_bytes(b"/" * self.LIMIT)
@@ -614,20 +621,19 @@ class CheckOutputTreeTests(TempDirTestCase):
             (out / name).write_text("<p>stub</p>", encoding="utf-8")
         (out / "_headers").write_text("/*\n", encoding="utf-8")
         (out / "robots.txt").write_text("User-agent: *\n", encoding="utf-8")
-        media = out / "assets" / support.MEDIA_DIR
-        media.mkdir(parents=True)
-        (media / "event.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
+        (page.parent / "dinner.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
+        (out / "assets").mkdir()
         return out
 
     def problems(self, out: Path) -> list[str]:
         with self.assertRaises(build.OutputError) as caught:
-            build.check_output(out, [self.TOKEN], support.MEDIA_DIR)
+            build.check_output(out, {self.TOKEN: ["dinner"]})
         for message in caught.exception.errors:
             self.assertNotIn(self.TOKEN, message)
         return caught.exception.errors
 
     def test_clean_tree_passes(self):
-        stats = build.check_output(self.make_tree(), [self.TOKEN], support.MEDIA_DIR)
+        stats = build.check_output(self.make_tree(), {self.TOKEN: ["dinner"]})
         self.assertEqual(stats.files, 6)
 
     def test_dot_files(self):
@@ -655,6 +661,9 @@ class CheckOutputTreeTests(TempDirTestCase):
         (stranger / "index.html").write_text("<p>x</p>", encoding="utf-8")
         (out / "i" / "index.html").write_text("<p>list</p>", encoding="utf-8")
         (out / "i" / self.TOKEN / "extra.html").write_text("<p>x</p>", encoding="utf-8")
+        # a calendar file of an event the invitation does not see
+        (out / "i" / self.TOKEN / "brunch.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
+        (out / "i" / "event.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
         problems = self.problems(out)
         self.assertIn(
             "i/Stra…: unexpected directory (only one directory per invitation is "
@@ -662,22 +671,40 @@ class CheckOutputTreeTests(TempDirTestCase):
             problems,
         )
         self.assertIn(
-            "i/index.html: unexpected file (only <token>/index.html is allowed in i/)",
+            "i/index.html: unexpected file (only <token>/index.html and the calendar "
+            "files of the events of the invitation are allowed in i/)",
             problems,
         )
-        self.assertTrue(any(p.startswith("i/EveT…/extra.html: unexpected file") for p in problems))
+        for name in ("extra.html", "brunch.ics"):
+            self.assertTrue(
+                any(p.startswith(f"i/EveT…/{name}: unexpected file") for p in problems), name
+            )
+        self.assertTrue(any(p.startswith("i/event.ics: unexpected file") for p in problems))
+
+    def test_no_calendar_file_among_the_assets(self):
+        out = self.make_tree()
+        media = out / "assets" / support.MEDIA_DIR
+        media.mkdir(parents=True)
+        (media / "event.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
+        problems = self.problems(out)
+        self.assertTrue(
+            any(
+                p.startswith(f"assets/{support.MEDIA_DIR}/event.ics: file type '.ics' is not "
+                             "allowed in assets/")
+                for p in problems
+            ),
+            problems,
+        )
 
     def test_missing_pieces(self):
         out = self.make_tree()
         os.remove(out / "404.html")
         os.remove(out / "i" / self.TOKEN / "index.html")
-        os.remove(out / "assets" / support.MEDIA_DIR / "event.ics")
+        os.remove(out / "i" / self.TOKEN / "dinner.ics")
         problems = self.problems(out)
         self.assertIn("404.html: missing from the output", problems)
         self.assertIn("i/EveT…/index.html: missing from the output", problems)
-        self.assertIn(
-            f"assets/{support.MEDIA_DIR}/event.ics: missing from the output", problems
-        )
+        self.assertIn("i/EveT…/dinner.ics: missing from the output", problems)
 
     def test_data_files_anywhere(self):
         out = self.make_tree()
@@ -724,7 +751,7 @@ class CheckOutputTreeTests(TempDirTestCase):
             build.ASSET_EXTENSIONS,
             {
                 ".css", ".js", ".woff2", ".svg", ".png", ".jpg", ".jpeg", ".webp",
-                ".avif", ".gif", ".mp4", ".webm", ".ics", ".ico", ".txt",
+                ".avif", ".gif", ".mp4", ".ico", ".txt",
             },
         )
 

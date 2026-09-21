@@ -1,30 +1,33 @@
 """Generate placeholder media files for an example data set.
 
-Reads ``site.json`` from the data directory and creates in the output
-directory exactly the media files it references:
+Reads ``site.json`` (the data format 2) from the data directory and creates
+in the output directory exactly the files of its media registry
+(``media.<id>``), in the order of the registry:
 
-* venue photos      -- ``venue.photos``
-* directions image  -- ``venue.directionsImage``
-* video poster      -- ``video.poster``
-* video             -- ``video.file``
+* a picture (``"type": "image"``)  -- ``file``: a photo, or a map when a
+  place uses the item as its ``directions``;
+* a video (``"type": "video"``)    -- ``file``: a short test-pattern clip, and
+  ``poster``: its first-frame picture;
+* ``thumb`` of either type         -- the picture of the tile.
+
+Every item has its own size: ``width`` / ``height`` of the item when both are
+given, otherwise the default of its role (a video is a portrait clip,
+720x1280).  The poster and the tile picture of a video have the size of the
+clip, and the poster has no play mark: the page puts its own over it.
 
 File names are taken from the data and follow the rules of the build (plain
 names inside the media directory); the extension selects the format.
 ``.png`` images are written with the standard library only; ``.jpg`` and
-``.jpeg`` images are converted from a generated PNG with ``ffmpeg``.  The
-video (``.mp4``) is a short portrait test-pattern clip with a sine tone and
-also needs ``ffmpeg``; if ``ffmpeg`` is not in ``PATH`` the video is skipped
-with a warning and the exit code stays 0.  The poster has the proportions of
-the video and no play mark: the page puts its own over it.
+``.jpeg`` images are converted from a generated PNG with ``ffmpeg``.  A video
+(``.mp4``) also needs ``ffmpeg``; if ``ffmpeg`` is not in ``PATH`` the videos
+are skipped with a warning and the exit code stays 0.
 
 Images are neutral gradient cards with a simple geometric pattern (frame,
 grid, centre cross, off-centre focal mark, index number), so cropping and
 ``object-position`` are easy to see on the page.  Their colours come from the
-design tokens of ``assets/app.css``.  Files are overwritten on
-every run; files not referenced by the data are left untouched.  Empty
-strings, ``null`` and missing fields mean "no file"; a data set without
-media (for example ``venue.ready`` is false and there is no ``video``)
-creates nothing.
+design tokens of ``assets/app.css``.  Files are overwritten on every run;
+files the registry does not name are left untouched.  A data set without a
+media registry creates nothing.
 
 Usage::
 
@@ -48,10 +51,10 @@ from pathlib import Path
 from typing import Callable, List, NamedTuple, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:  # run as a script: `build` and `tools` live there
+if str(REPO_ROOT) not in sys.path:  # run as a script: `tools` lives there
     sys.path.insert(0, str(REPO_ROOT))
 
-from build import check_media_name, video_dimension  # noqa: E402
+from tools._data import check_media_name  # noqa: E402
 from tools._png import PNG_SIGNATURE, Canvas, encode_png, write_png  # noqa: E402,F401
 from tools._tokens import Palette, TokenError, load_palette  # noqa: E402
 
@@ -62,15 +65,15 @@ DEFAULT_CSS = REPO_ROOT / "assets" / "app.css"
 # Hosting limit for a single file (25 MiB); nothing larger is ever written.
 MAX_FILE_BYTES = 25 * 1024 * 1024
 
-# Image sizes (width, height) by role.
+# Default image sizes (width, height) by role; `width` / `height` of an item
+# override them.
 PHOTO_SIZE = (1600, 1067)  # 3:2 landscape
 PHOTO_PORTRAIT_SIZE = (1067, 1600)  # 2:3 portrait
-PORTRAIT_PHOTO_INDEX = 1  # the second venue photo is portrait
+PORTRAIT_PHOTO_INDEX = 1  # the second photo of the registry is portrait
 DIRECTIONS_SIZE = (1200, 900)  # 4:3
 
-# Video parameters: a portrait clip, as filmed on a phone.  The poster is
-# generated separately with the same proportions.  `video.width` /
-# `video.height` of the data override the size.
+# Video parameters: by default a portrait clip, as filmed on a phone.  The
+# poster is generated separately with the size of the clip.
 VIDEO_SIZE = (720, 1280)  # 9:16
 POSTER_SIZE = VIDEO_SIZE
 VIDEO_SECONDS = 5
@@ -143,7 +146,7 @@ def draw_digits(canvas: Canvas, value: str, x: float, y: float, scale: int, colo
 
 
 def draw_photo(width: int, height: int, index: int, palette: Palette) -> Canvas:
-    """Venue photo placeholder: gradient, grid, centre cross, focal mark, number."""
+    """Photo placeholder: gradient, grid, centre cross, focal mark, number."""
     canvas = Canvas(width, height, palette.surface)
     gradients = photo_gradients(palette)
     canvas.vertical_gradient(*gradients[index % len(gradients)])
@@ -216,10 +219,11 @@ def draw_poster(width: int, height: int, palette: Palette) -> Canvas:
 
 
 class MediaItem(NamedTuple):
-    kind: str  # "photo" | "directions" | "poster" | "video"
+    kind: str  # "photo" | "directions" | "thumb" | "poster" | "video"
     name: str
     field: str  # data field the name comes from, for messages
-    index: int = 0  # photo position
+    size: Tuple[int, int]  # (width, height) in pixels
+    index: int = 0  # photo position (the number drawn on it)
 
 
 def load_site(data_dir: Path) -> dict:
@@ -250,49 +254,75 @@ def _check_name(value: object, field: str, extensions: frozenset) -> str:
     return str(value)
 
 
-def _optional_object(parent: dict, key: str, field: str) -> dict:
-    value = parent.get(key)
-    if value is None:
-        return {}
+def _object(parent: dict, key: str, field: str) -> dict:
+    """An object of the data; a missing one is empty."""
+    value = parent.get(key, {})
     if not isinstance(value, dict):
-        raise GenerationError(f"{field}: expected an object or null")
+        raise GenerationError(f"{field}: expected an object")
     return value
 
 
-def _optional_name(parent: dict, key: str, field: str, extensions: frozenset) -> str:
-    value = parent.get(key)
-    if value is None or (isinstance(value, str) and not value.strip()):
-        return ""
-    return _check_name(value, field, extensions)
+def _item_size(item: dict, field: str, default: Tuple[int, int], even: bool) -> Tuple[int, int]:
+    """``width`` x ``height`` of a media item, else ``default``.
+
+    ffmpeg needs even numbers for the pixel format of a clip.
+    """
+    width, height = item.get("width"), item.get("height")
+    if width is None and height is None:
+        return default
+    for key, value in (("width", width), ("height", height)):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise GenerationError(f"{field}.{key}: expected a positive whole number of pixels")
+        if even and value % 2:
+            raise GenerationError(f"{field}.{key}: expected an even number for the example clip")
+    return width, height
+
+
+def _directions_ids(site: dict) -> set:
+    """Ids of the media items that a place shows as its directions."""
+    ids = set()
+    for place in _object(site, "locations", "locations").values():
+        if isinstance(place, dict) and isinstance(place.get("directions"), str):
+            ids.add(place["directions"])
+    return ids
 
 
 def plan_media(site: dict) -> List[MediaItem]:
-    """List the media files referenced by ``site`` (data order, no duplicates)."""
+    """List the files of the media registry of ``site`` (registry order, no
+    duplicates), each with its role and size."""
     image_extensions = PNG_EXTENSIONS | FFMPEG_IMAGE_EXTENSIONS
+    directions = _directions_ids(site)
     items: List[MediaItem] = []
+    photos = 0
 
-    venue = _optional_object(site, "venue", "venue")
-    photos = venue.get("photos")
-    if photos is None:
-        photos = []
-    if not isinstance(photos, list):
-        raise GenerationError("venue.photos: expected a list of file names")
-    for index, name in enumerate(photos):
-        if isinstance(name, str) and not name.strip():
-            continue  # an empty entry means "not set", as in the build
-        field = f"venue.photos[{index}]"
-        items.append(MediaItem("photo", _check_name(name, field, image_extensions), field, index))
-    name = _optional_name(venue, "directionsImage", "venue.directionsImage", image_extensions)
-    if name:
-        items.append(MediaItem("directions", name, "venue.directionsImage"))
-
-    video = _optional_object(site, "video", "video")
-    name = _optional_name(video, "poster", "video.poster", image_extensions)
-    if name:
-        items.append(MediaItem("poster", name, "video.poster"))
-    name = _optional_name(video, "file", "video.file", VIDEO_EXTENSIONS)
-    if name:
-        items.append(MediaItem("video", name, "video.file"))
+    for media_id, item in _object(site, "media", "media").items():
+        field = f"media.{media_id}"
+        if not isinstance(item, dict):
+            raise GenerationError(f"{field}: expected an object")
+        kind = item.get("type")
+        if kind == "image":
+            if media_id in directions:
+                size = _item_size(item, field, DIRECTIONS_SIZE, even=False)
+                role, index = "directions", 0
+            else:
+                default = PHOTO_PORTRAIT_SIZE if photos == PORTRAIT_PHOTO_INDEX else PHOTO_SIZE
+                size = _item_size(item, field, default, even=False)
+                role, index = "photo", photos
+                photos += 1
+            name = _check_name(item.get("file"), f"{field}.file", image_extensions)
+            items.append(MediaItem(role, name, f"{field}.file", size, index))
+        elif kind == "video":
+            size = _item_size(item, field, VIDEO_SIZE, even=True)
+            poster = _check_name(item.get("poster"), f"{field}.poster", image_extensions)
+            items.append(MediaItem("poster", poster, f"{field}.poster", size))
+            name = _check_name(item.get("file"), f"{field}.file", VIDEO_EXTENSIONS)
+            items.append(MediaItem("video", name, f"{field}.file", size))
+            index = photos
+        else:
+            raise GenerationError(f"{field}.type: expected 'image' or 'video'")
+        if item.get("thumb") is not None:
+            thumb = _check_name(item["thumb"], f"{field}.thumb", image_extensions)
+            items.append(MediaItem("thumb", thumb, f"{field}.thumb", size, index))
 
     unique: List[MediaItem] = []
     seen = set()
@@ -319,33 +349,13 @@ def _run_ffmpeg(ffmpeg: str, args: List[str], name: str) -> None:
         raise GenerationError(f"{name}: ffmpeg failed: {details}")
 
 
-def video_size(site: dict) -> Tuple[int, int]:
-    """``video.width`` x ``video.height`` of the data, else ``VIDEO_SIZE``.
-
-    ffmpeg needs even numbers for the pixel format of the clip.
-    """
-    video = site.get("video")
-    video = video if isinstance(video, dict) else {}
-    width, height = video.get("width"), video.get("height")
-    if width is None and height is None:
-        return VIDEO_SIZE
-    for key, value in (("width", width), ("height", height)):
-        if video_dimension(value) is None:
-            raise GenerationError(f"video.{key}: expected a positive whole number of pixels")
-        if value % 2:
-            raise GenerationError(f"video.{key}: expected an even number for the example clip")
-    return width, height
-
-
-def _draw_image(item: MediaItem, palette: Palette, poster_size: Tuple[int, int]) -> Canvas:
-    if item.kind == "photo":
-        portrait = item.index == PORTRAIT_PHOTO_INDEX
-        width, height = PHOTO_PORTRAIT_SIZE if portrait else PHOTO_SIZE
-        return draw_photo(width, height, item.index, palette)
+def _draw_image(item: MediaItem, palette: Palette) -> Canvas:
+    if item.kind in ("photo", "thumb"):
+        return draw_photo(*item.size, item.index, palette)
     if item.kind == "poster":
-        return draw_poster(*poster_size, palette)
+        return draw_poster(*item.size, palette)
     if item.kind == "directions":
-        return draw_directions(*DIRECTIONS_SIZE, palette)
+        return draw_directions(*item.size, palette)
     raise ValueError(f"not an image: {item.kind}")
 
 
@@ -364,8 +374,8 @@ def _render_image(
     source.unlink()
 
 
-def _render_video(item: MediaItem, dest: Path, ffmpeg: str, size: Tuple[int, int]) -> None:
-    width, height = size
+def _render_video(item: MediaItem, dest: Path, ffmpeg: str) -> None:
+    width, height = item.size
     seconds = VIDEO_SECONDS
     args = [
         "-f", "lavfi",
@@ -429,7 +439,6 @@ def generate(
     of them.
     """
     items = plan_media(site)
-    size = video_size(site)
     if not ffmpeg:
         for item in items:
             if item.kind != "video" and os.path.splitext(item.name)[1].lower() not in PNG_EXTENSIONS:
@@ -454,9 +463,9 @@ def generate(
         for item in items:
             staged = work_dir / item.name
             if item.kind == "video":
-                _render_video(item, staged, ffmpeg, size)
+                _render_video(item, staged, ffmpeg)
             else:
-                canvas = _draw_image(item, palette, size)
+                canvas = _draw_image(item, palette)
                 _render_image(canvas, item, staged, work_dir, ffmpeg)
             written = staged.stat().st_size
             if written > MAX_FILE_BYTES:
@@ -474,9 +483,9 @@ def generate(
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Generate placeholder media files referenced by site.json.",
-        epilog="The video and non-PNG images need ffmpeg in PATH; "
-        "without ffmpeg the video is skipped with a warning.",
+        description="Generate placeholder files for the media registry of site.json.",
+        epilog="Videos and non-PNG images need ffmpeg in PATH; "
+        "without ffmpeg the videos are skipped with a warning.",
     )
     parser.add_argument(
         "--data",

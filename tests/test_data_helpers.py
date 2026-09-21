@@ -569,10 +569,10 @@ class SubstitutionTests(unittest.TestCase):
             data_tools.resolve_text(value, "you", self.values, KNOWN)
 
 
-def with_repeated_venue_name(site: dict) -> str:
-    """`site.json` text whose `venue` object has the key `name` twice."""
+def with_repeated_place_name(site: dict) -> str:
+    """`site.json` text whose place `manor` has the key `name` twice."""
     text = json.dumps(site, ensure_ascii=False, indent=2)
-    marker = '"venue": {'
+    marker = '"manor": {'
     assert marker in text
     return text.replace(marker, marker + f'\n    "name": "{SECRET}",', 1)
 
@@ -623,7 +623,7 @@ class ReadJsonTests(TempDirTestCase):
     def test_load_data_stops_at_repeated_keys(self):
         data_dir = support.write_data(self.tmp / "data")
         (data_dir / "site.json").write_text(
-            with_repeated_venue_name(site_data()), encoding="utf-8"
+            with_repeated_place_name(site_data()), encoding="utf-8"
         )
         (data_dir / "invitations.json").write_text(
             with_repeated_greeting(invitations_data()), encoding="utf-8"
@@ -634,7 +634,9 @@ class ReadJsonTests(TempDirTestCase):
         # the files are not checked any further: no other messages
         self.assertEqual(len(errors), 2, errors)
         self.assertTrue(
-            errors[0].endswith(f"site.json: duplicate key 'name' in 'venue' {DUPLICATE_TAIL}")
+            errors[0].endswith(
+                f"site.json: duplicate key 'name' in 'locations.manor' {DUPLICATE_TAIL}"
+            )
         )
         self.assertTrue(
             errors[1].endswith(
@@ -650,7 +652,7 @@ class ReadJsonTests(TempDirTestCase):
 class RepeatedKeyCommandTests(CliTestCase):
     def write_repeats(self):
         (self.data / "site.json").write_text(
-            with_repeated_venue_name(site_data()), encoding="utf-8"
+            with_repeated_place_name(site_data()), encoding="utf-8"
         )
         (self.data / "invitations.json").write_text(
             with_repeated_greeting(invitations_data()), encoding="utf-8"
@@ -661,7 +663,8 @@ class RepeatedKeyCommandTests(CliTestCase):
         result = self.run_validate()
         self.assertEqual(result.returncode, 1)
         self.assertIn(
-            f"site.json: duplicate key 'name' in 'venue' {DUPLICATE_TAIL}", result.stderr
+            f"site.json: duplicate key 'name' in 'locations.manor' {DUPLICATE_TAIL}",
+            result.stderr,
         )
         self.assertIn(
             f"invitations.json: duplicate key 'greeting' in '[1]' {DUPLICATE_TAIL}", result.stderr
@@ -674,10 +677,43 @@ class RepeatedKeyCommandTests(CliTestCase):
         self.write_repeats()
         result = self.run_build()
         self.assertEqual(result.returncode, 1)
-        self.assertIn("duplicate key 'name' in 'venue'", result.stderr)
+        self.assertIn("duplicate key 'name' in 'locations.manor'", result.stderr)
         self.assertFalse(self.out.exists())
         self.assertNotIn(SECRET, result.stdout + result.stderr)
         self.assertNoPrivateData(result.stdout, result.stderr)
+
+    def test_keys_of_an_invitation_are_named_only_when_they_are_known(self):
+        # the keys of an invitation may be names: only the field names of the
+        # format and the ids declared in site.json are shown
+        text = json.dumps(invitations_data(), ensure_ascii=False)
+        text = text.replace(
+            '"events": {"brunch": {"visible": true}}',
+            '"events": {"IvanPetrov": {"note": "a"}, "IvanPetrov": {"note": "b"}, '
+            '"brunch": {"visible": true}, "brunch": {"visible": true}}',
+            1,
+        ).replace(
+            '"sections": {"personal"',
+            '"sections": {"ivan": {}, "ivan": {}, "personal"',
+            1,
+        )
+        (self.data / "invitations.json").write_text(text, encoding="utf-8")
+        result = self.run_validate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            f"invitations.json: duplicate key <unknown key> in '[0].events' {DUPLICATE_TAIL}",
+            result.stderr,
+        )
+        self.assertIn(
+            f"invitations.json: duplicate key 'brunch' in '[0].events' {DUPLICATE_TAIL}",
+            result.stderr,
+        )
+        self.assertIn(
+            f"invitations.json: duplicate key <unknown key> in '[0].sections' {DUPLICATE_TAIL}",
+            result.stderr,
+        )
+        self.assertIn("failed with 3 error(s)", result.stderr)
+        for name in ("IvanPetrov", "ivan", "Ivan"):
+            self.assertNotIn(name, result.stdout + result.stderr)
 
     def test_equal_keys_in_different_objects_pass(self):
         # every invitation has the same keys as the others: not a repeat

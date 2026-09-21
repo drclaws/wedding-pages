@@ -1,27 +1,35 @@
-"""The video block: a tile that links to the clip, and what a built page carries.
+"""The video tile: a link to the clip, and what a built page carries.
 
-Unlike the other build tests these use the real `assets/` and the real
-`template.html`. On the page the clip is a tile - a link to the file with the
-poster and a play badge; without the script the browser opens the file with
-its own player, with the script the same link opens the viewer, where one
-`<video controls>` with the browser's panel plays it. No third-party player
-ships with the site, and nothing takes the native controls away.
+Unlike the other build tests these use the real `assets/`, the real
+`template.html` and its fragments. On the page a clip is a tile - a link to
+the file with the poster and a play badge; without the script the browser
+opens the file with its own player, with the script the same link opens the
+viewer, where one `<video controls>` with the browser's panel plays it. No
+third-party player ships with the site, and nothing takes the native controls
+away.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
 
+from tests import fixtures_v2 as F
 from tests import support
 from tests.support import TempDirTestCase, build
+from tools import _page
 
 ROOT = support.ROOT
 
 APP_JS = (ROOT / "assets" / "app.js").read_text(encoding="utf-8")
 APP_CSS = (ROOT / "assets" / "app.css").read_text(encoding="utf-8")
 TEMPLATE = (ROOT / "template.html").read_text(encoding="utf-8")
+FRAGMENTS = ROOT / "fragments"
+VIDEO_TILE = (FRAGMENTS / "media" / "video.html").read_text(encoding="utf-8")
+IMAGE_TILE = (FRAGMENTS / "media" / "image.html").read_text(encoding="utf-8")
+MEDIA_WIDGET = (FRAGMENTS / "widgets" / "media.html").read_text(encoding="utf-8")
 
 #: The page sources first, then everything else that describes them.
 SOURCES = (
@@ -39,8 +47,8 @@ SOURCES = (
 
 TILE_CLASS = 'class="gallery__link media-tile media-tile--video"'
 TILE_HOOKS = (
-    'href="{{video.src}}" type="video/mp4" data-lightbox data-media="video" '
-    'data-media-poster="{{video.posterSrc}}"'
+    'href="{{.src}}" type="video/mp4" data-lightbox data-media="video" '
+    'data-media-poster="{{.posterSrc}}"'
 )
 BADGE = (
     '<span class="media-tile__badge" aria-hidden="true">'
@@ -60,9 +68,14 @@ def css_section(number: int) -> str:
     return strip_css_comments("/*" + (APP_CSS[start:] if end == -1 else APP_CSS[start:end] + "*/"))
 
 
-def video_block(template: str = TEMPLATE) -> str:
-    block = template[template.index("<!-- 8. "):]
-    return block[: block.index("</section>")]
+def media_names(*data_names: str) -> list[str]:
+    """Every file of the media registry of the example data sets."""
+    names = set()
+    for data_name in data_names:
+        site = json.loads((ROOT / "examples" / data_name / "site.json").read_text(encoding="utf-8"))
+        for item in site.get("media", {}).values():
+            names.update(item[key] for key in ("file", "poster", "thumb") if key in item)
+    return sorted(names)
 
 
 class NativeControlsTests(unittest.TestCase):
@@ -91,53 +104,50 @@ class NativeControlsTests(unittest.TestCase):
         self.assertEqual(APP_JS.count("createElement('video'"), 1, "one <video> per viewer")
 
 
-class TemplateTests(unittest.TestCase):
-    """The video block of the real `template.html`."""
+class FragmentTests(unittest.TestCase):
+    """The tiles of the real fragments and the page frame of `template.html`."""
 
-    def test_the_video_block_is_a_tile_that_links_to_the_file(self):
-        block = video_block()
-        self.assertNotIn("<video", block)
-        self.assertNotIn("player", block)
-        tiles = re.findall(r"<a [^>]*>", block)
+    def test_the_video_tile_links_to_the_file(self):
+        self.assertNotIn("<video", VIDEO_TILE)
+        self.assertNotIn("player", VIDEO_TILE)
+        tiles = re.findall(r"<a [^>]*>", VIDEO_TILE)
         self.assertEqual(len(tiles), 2)  # with and without a size
         for tile in tiles:
             with self.subTest(tile=tile):
                 self.assertTrue(tile.startswith(f"<a {TILE_CLASS} {TILE_HOOKS}"))
-                self.assertIn('aria-label="Видео"', tile)
+                self.assertIn('aria-label="{{.label}}"', tile)
                 self.assertNotIn("aria-haspopup", tile)  # the script adds it
-        self.assertEqual(block.count('<img src="{{video.posterSrc}}" alt=""'), 2)
-        self.assertEqual(block.count(BADGE), 2)
-        self.assertNotIn("data-reveal", block[block.index("<ul"):])
-        self.assertRegex(block, r'<ul class="gallery gallery--single" role="list">')
-        self.assertNotIn("data-gallery", block)
+        self.assertEqual(VIDEO_TILE.count('<img src="{{.thumbSrc}}" alt=""'), 2)
+        self.assertEqual(VIDEO_TILE.count(BADGE), 2)
+        for fragment in (VIDEO_TILE, IMAGE_TILE, MEDIA_WIDGET):
+            self.assertNotIn("data-reveal", fragment)
+        self.assertIn('<ul class="gallery gallery--{{.layout}}" role="list" data-gallery>', MEDIA_WIDGET)
 
     def test_the_frame_ratio_comes_from_the_size_in_the_data(self):
-        block = video_block()
-        sized = block[block.index("<!-- if:video.width -->"):block.index("<!-- if:!video.width -->")]
-        unsized = block[block.index("<!-- if:!video.width -->"):]
-        ratio = "{{video.width}} / {{video.height}}"
-        self.assertIn(f'data-media-ratio="{ratio}"', sized)
+        sized = VIDEO_TILE[VIDEO_TILE.index("<!-- if:.width -->"):VIDEO_TILE.index("<!-- if:!.width -->")]
+        unsized = VIDEO_TILE[VIDEO_TILE.index("<!-- if:!.width -->"):]
+        self.assertIn('data-media-ratio="{{.ratio}}"', sized)
         # the size comes from an invisible sizer, not from a style attribute
         self.assertIn(
-            '<li class="gallery__item"><svg class="gallery__sizer" width="{{video.width}}" '
-            'height="{{video.height}}" viewBox="0 0 {{video.width}} {{video.height}}" '
+            '<li class="gallery__item"><svg class="gallery__sizer" width="{{.width}}" '
+            'height="{{.height}}" viewBox="0 0 {{.width}} {{.height}}" '
             'aria-hidden="true" focusable="false"></svg><a ',
             sized,
         )
-        self.assertIn('alt="" width="{{video.width}}" height="{{video.height}}"', sized)
+        self.assertIn('alt="" width="{{.width}}" height="{{.height}}"', sized)
         self.assertIn(
             '<li class="gallery__item"><span class="gallery__sizer gallery__sizer--default" '
             'aria-hidden="true"></span><a ',
             unsized,
         )
-        for text in ("data-media-ratio", "width=", "{{video.width}}"):
+        for text in ("data-media-ratio", "width=", "{{.width}}"):
             with self.subTest(text=text):
                 self.assertNotIn(text, unsized)
-        self.assertNotIn("style", block)
+        self.assertNotRegex(VIDEO_TILE, r"\sstyle\s*=")
 
-    def test_venue_photos_are_media_tiles(self):
-        self.assertIn(
-            '<a class="gallery__link media-tile" href="{{.src}}" data-lightbox>', TEMPLATE
+    def test_photos_are_media_tiles(self):
+        self.assertEqual(
+            IMAGE_TILE.count('<a class="gallery__link media-tile" href="{{.src}}" data-lightbox>'), 2
         )
 
     def test_the_head_loads_only_the_own_style_sheet_and_script(self):
@@ -216,19 +226,14 @@ class StylesTests(unittest.TestCase):
 
 
 class BuiltPageTests(TempDirTestCase):
-    """A build of the real template and the real assets."""
+    """A build of the real template, its fragments and the real assets."""
+
+    #: Clips of the main example: the portrait one and the landscape one.
+    CLIPS = {"proposal": (720, 1280), "walk": (1280, 720)}
 
     @classmethod
     def setUpClass(cls):
-        cls.media_names = sorted(
-            {
-                name
-                for directory in ("data", "data-venue-pending")
-                for _field, name in build.media_references(
-                    build.load_data(ROOT / "examples" / directory)[0]
-                )
-            }
-        )
+        cls.media_names = media_names("data", "data-venue-pending")
 
     def build(self, data_name: str) -> Path:
         data = ROOT / "examples" / data_name
@@ -252,32 +257,35 @@ class BuiltPageTests(TempDirTestCase):
                     self.assertNotRegex(page, r"(?i)plyr")
 
     def test_without_the_script_the_tile_is_a_link_to_the_file_with_the_poster(self):
-        site = build.load_data(ROOT / "examples" / "data")[0]
-        video, poster = site["video"]["file"], site["video"]["poster"]
         out = self.build("data")
         for page in self.pages(out):
-            tile = re.search(r'<a class="gallery__link media-tile media-tile--video" [^>]*>', page)
-            self.assertIsNotNone(tile)
-            href = re.search(r'href="([^"]+)"', tile.group(0)).group(1)
-            self.assertTrue(href.endswith("/" + video))
-            self.assertTrue((out / href.lstrip("/")).is_file())
-            self.assertIn(f'data-media-poster="{href[: -len(video)]}{poster}"', tile.group(0))
-            self.assertIn(f'<img src="{href[: -len(video)]}{poster}" alt=""', page)
+            tiles = re.findall(r'<a class="gallery__link media-tile media-tile--video" [^>]*>', page)
+            # the story and the photos of the manor in the card of the dinner
+            self.assertEqual(len(tiles), 2)
+            for tile in tiles:
+                href = re.search(r'href="([^"]+)"', tile).group(1)
+                poster = re.search(r'data-media-poster="([^"]+)"', tile).group(1)
+                self.assertRegex(href, r"\A/assets/[\w-]+/[0-9a-f]{16}\.mp4\Z")
+                self.assertRegex(poster, r"\A/assets/[\w-]+/[0-9a-f]{16}\.png\Z")
+                for url in (href, poster):
+                    self.assertTrue((out / url.lstrip("/")).is_file(), url)
+                self.assertIn(f'<img src="{poster}" alt=""', page)
             # no <video> on the page: nothing is fetched before the tap
             self.assertNotIn("<video", page)
             self.assertNotIn("aria-haspopup", page)
-            self.assertEqual(page.count('data-media="video"'), 1)
+            self.assertEqual(page.count('data-media="video"'), 2)
 
     def test_the_frame_ratio_comes_from_the_size_in_the_data(self):
-        site, _invitations = build.load_data(ROOT / "examples" / "data")
-        width, height = site["video"]["width"], site["video"]["height"]
-        self.assertGreater(height, width, "the example clip is a portrait one")
+        site = json.loads((ROOT / "examples" / "data" / "site.json").read_text(encoding="utf-8"))
+        for media_id, size in self.CLIPS.items():
+            self.assertEqual((site["media"][media_id]["width"], site["media"][media_id]["height"]), size)
         for page in self.pages(self.build("data")):
-            self.assertIn(f'data-media-ratio="{width} / {height}"', page)
-            self.assertIn(
-                f'<svg class="gallery__sizer" width="{width}" height="{height}" '
-                f'viewBox="0 0 {width} {height}"', page)
-            self.assertIn(f'alt="" width="{width}" height="{height}"', page)
+            for width, height in self.CLIPS.values():
+                self.assertIn(f'data-media-ratio="{width} / {height}"', page)
+                self.assertIn(
+                    f'<svg class="gallery__sizer" width="{width}" height="{height}" '
+                    f'viewBox="0 0 {width} {height}"', page)
+                self.assertIn(f'alt="" width="{width}" height="{height}"', page)
 
     def test_pages_have_no_inline_styles(self):
         """The pages work under a style-src without 'unsafe-inline': they
@@ -294,19 +302,16 @@ class BuiltPageTests(TempDirTestCase):
                     self.assertNotRegex(page, r"(?i)<style[\s>]")
 
     def test_without_a_size_the_tile_falls_back_to_the_css_ratio(self):
-        data = self.tmp / "data-no-size"
-        site = build.load_data(ROOT / "examples" / "data")[0]
-        site["video"].pop("width")
-        site["video"].pop("height")
-        support.write_data(
-            data, site=site, invitations=build.load_data(ROOT / "examples" / "data")[1]
-        )
-        media = support.write_media(self.tmp / "media-no-size", self.media_names)
-        out = self.tmp / "dist-no-size"
-        build.build_site(data, media, out, code_dir=ROOT, log=lambda _message: None)
-        for path in sorted((out / "i").rglob("index.html")):
-            page = path.read_text(encoding="utf-8")
-            self.assertEqual(page.count('data-media="video"'), 1)
+        site = F.site()
+        for item in site["media"].values():
+            item.pop("width", None)
+            item.pop("height", None)
+        # nothing is known about the files either
+        trees, _usage = _page.build_pages(site, F.invitations(), F.settings(media_info={}))
+        template = build.load_template(ROOT / build.TEMPLATE_FILE)
+        for tree in trees:
+            page = template.render(tree)
+            self.assertEqual(page.count('data-media="video"'), 2)
             self.assertNotIn("data-media-ratio", page)
             self.assertNotIn('<svg class="gallery__sizer"', page)
             self.assertIn('<span class="gallery__sizer gallery__sizer--default" aria-hidden="true">', page)

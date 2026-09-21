@@ -2,76 +2,124 @@
   {
     "token": "0R-pnCqGFgrPOR5e-NluZw",
     "greeting": "Дорогая Кэрол!",
-    "ty": true,
-    "vy": false,
-    "plusOne": true,
-    "outOfTown": false,
-    "note": "Спасибо, что столько лет рядом. Очень ждём! <3"
+    "form": "ty",
+    "events": {
+      "brunch": {
+        "visible": true
+      }
+    },
+    "sections": {
+      "personal": {
+        "note": "Спасибо, что столько лет рядом. Очень ждём! <3"
+      },
+      "plus-one": {
+        "visible": true
+      }
+    }
   },
   {
     "token": "oWaEF01q51e11fwVhCZQqQ",
     "greeting": "Дорогой Дэйв!",
-    "ty": true,
-    "vy": false,
-    "plusOne": false,
-    "outOfTown": false
+    "form": "ty",
+    "events": {
+      "dinner": {
+        "note": "Напиши нам, пожалуйста, про аллергию — подберём блюда из меню."
+      }
+    }
   },
   {
     "token": "48lh3whME-jqDOw3yzzWpQ",
     "greeting": "Дорогая Ева!",
-    "ty": true,
-    "vy": false,
-    "plusOne": false,
-    "outOfTown": true,
-    "note": "Помнишь, как мы познакомились в поезде?\nТеперь ты знаешь, чем всё закончилось.\n\nОбнимаем и ждём!",
-    "travelNote": "Встретим тебя на вокзале — просто скажи, каким поездом приедешь."
+    "form": "ty",
+    "primaryEvent": "ceremony",
+    "events": {
+      "brunch": {
+        "visible": true
+      }
+    },
+    "sections": {
+      "personal": {
+        "note": "Помнишь, как мы познакомились в поезде?\nТеперь ты знаешь, чем всё закончилось.\n\nОбнимаем и ждём!"
+      },
+      "travel": {
+        "visible": true,
+        "note": "Встретим тебя на вокзале — просто скажи, каким поездом приедешь."
+      }
+    }
   },
   {
     "token": "lXG6kSgXRvYCN6GGk5IcBA",
     "greeting": "Дорогой Трент!",
-    "ty": true,
-    "vy": false,
-    "plusOne": true,
-    "outOfTown": true,
-    "note": null,
-    "travelNote": ""
+    "form": "ty",
+    "sections": {
+      "plus-one": {
+        "visible": true
+      },
+      "travel": {
+        "visible": true
+      }
+    }
   },
   {
     "token": "uGeJJ1NFz9Q2YYhekmwPtw",
     "greeting": "Дорогие Пегги и Виктор!",
-    "ty": false,
-    "vy": true,
-    "plusOne": false,
-    "outOfTown": false,
-    "note": "Вы — пример для нас во всём.\n\nОчень надеемся, что вы разделите с нами этот день.",
-    "travelNote": null
+    "form": "vy",
+    "primaryEvent": "ceremony",
+    "sections": {
+      "personal": {
+        "note": "Вы — пример для нас во всём.\n\nОчень надеемся, что вы разделите с нами этот день."
+      }
+    }
   },
   {
     "token": "IBAhKaLEOj1DHuOUdUMzQA",
     "greeting": "Дорогие Грейс и Фрэнк!",
-    "ty": false,
-    "vy": true,
-    "plusOne": false,
-    "outOfTown": true,
-    "note": "",
-    "travelNote": "Для вас забронирован номер в гостинице рядом с усадьбой.\nЗаезд — накануне, после 14:00."
+    "form": "vy",
+    "sections": {
+      "travel": {
+        "visible": true,
+        "note": "Заезд в гостиницу — накануне, после 14:00.",
+        "widgets": {
+          "hotel-booked": {
+            "visible": true
+          }
+        }
+      }
+    }
   },
   {
     "token": "hoC853fn9btumFjSJTlzpQ",
     "greeting": "Уважаемый Оскар Петрович!",
-    "ty": false,
-    "vy": true,
-    "plusOne": true,
-    "outOfTown": false,
-    "note": "Для нас большая честь пригласить вас на наш праздник."
+    "form": "vy",
+    "events": {
+      "ceremony": {
+        "visible": false
+      }
+    },
+    "sections": {
+      "personal": {
+        "note": "Для нас большая честь пригласить вас на наш праздник."
+      },
+      "plus-one": {
+        "visible": true
+      }
+    }
   },
   {
     "token": "04e2efb6-33cd-423f-acff-3c14562a3113",
     "greeting": "Уважаемая Хайди Андреевна!",
-    "ty": false,
-    "vy": true,
-    "plusOne": false,
-    "outOfTown": true,
-    "travelNote": "Трансфер от вокзала будет ждать вас у главного входа."
+    "form": "vy",
+    "sections": {
+      "plus-one": {
+        "visible": true
+      },
+      "travel": {
+        "visible": true,
+        "note": "Трансфер от вокзала будет ждать вас у главного входа."
+      },
+      "where": {
+        "note": "Если понадобится помощь с дорогой до усадьбы — напишите нам, пришлём машину."
+      }
+    }
   }
 ]
