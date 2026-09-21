@@ -36,7 +36,6 @@ import bisect
 import hashlib
 import html
 import json
-import math
 import os
 import posixpath
 import re
@@ -46,11 +45,10 @@ import stat
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable, Iterable, NamedTuple, Sequence
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
 
 # `tools/` lives next to this file; the directory of the script is on the path
 # when it is run as `python path/to/build.py`, this covers every other import.
@@ -60,6 +58,37 @@ if str(Path(__file__).resolve().parent) not in sys.path:  # pragma: no cover
 from tools import _data as data_tools  # noqa: E402
 from tools import _png as png_tools  # noqa: E402
 from tools import gen_assets  # noqa: E402
+from tools._data import (  # noqa: E402,F401
+    IMAGE_EXTENSIONS,
+    MAX_NAME_LENGTH,
+    MIN_MEDIA_DIR_LENGTH,
+    MIN_TOKEN_LENGTH,
+    MIN_UUID_HEX_DIGITS,
+    VIDEO_EXTENSIONS,
+    _HEX_DASH_RE,
+    _MEDIA_DIR_RE,
+    _TOKEN_ALPHABET,
+    _TOKEN_CHARS_RE,
+    _extension_list,
+    _is_finite,
+    check_media_name,
+    check_token,
+    format_size,
+    generate_token,
+    invitation_label,
+    json_type,
+)
+from tools._dates import _DATE_ISO_RE, parse_date_iso  # noqa: E402,F401
+from tools._maps import (  # noqa: E402,F401
+    YANDEX_MAPS_ZOOM,
+    _optional_text,
+    _url_component,
+    format_coordinate,
+    has_map_links,
+    map_links,
+    media_url,
+    venue_coordinates,
+)
 
 # --------------------------------------------------------------------------
 # Layout constants
@@ -109,15 +138,6 @@ DEFAULT_MEDIA_DIR = Path("examples") / "media"
 #: Default relative to the current working directory.
 DEFAULT_OUT_DIR = Path("dist")
 
-#: Token rules (>= 120 bits of entropy).
-MIN_TOKEN_LENGTH = 20
-MIN_UUID_HEX_DIGITS = 30
-#: Random media directory name (`site.json` -> `mediaDir`).
-MIN_MEDIA_DIR_LENGTH = 16
-#: Tokens and `mediaDir` become directory names, so their length is capped well
-#: below the file name limit of common file systems (255 bytes).
-MAX_NAME_LENGTH = 200
-
 #: Everything a build may put at the top level of the output directory.  It is
 #: used to recognise a previous build before replacing `--out`, and it is the
 #: allow-list that the finished output is checked against.
@@ -131,9 +151,6 @@ OS_JUNK_FILES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 
 #: Hosting limit for a single file.
 MAX_FILE_BYTES = 25 * 1024 * 1024
-#: Media files the data may refer to, by role.
-IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".avif", ".gif", ".svg"})
-VIDEO_EXTENSIONS = frozenset({".mp4", ".webm"})
 #: Everything that may live below `assets/` in the output (`.txt` is meant for
 #: the licences of vendored libraries).
 ASSET_EXTENSIONS = frozenset(
@@ -173,7 +190,6 @@ MAP_LINK_TARGETS = (
     ("yandex.ru", "/maps/"),
     ("maps.apple.com", "/"),
 )
-YANDEX_MAPS_ZOOM = 16
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -924,72 +940,8 @@ class _Renderer:
 
 
 # --------------------------------------------------------------------------
-# Tokens
-# --------------------------------------------------------------------------
-
-_TOKEN_CHARS_RE = re.compile(r"[A-Za-z0-9_-]+\Z")
-_HEX_DASH_RE = re.compile(r"[0-9A-Fa-f-]+\Z")
-_TOKEN_ALPHABET = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
-)
-
-
-def check_token(token: Any) -> str | None:
-    """Return a problem description for `token`, or None when it is valid."""
-    if not isinstance(token, str):
-        return f"'token' must be a string, got {json_type(token)}"
-    if not token:
-        return "'token' is empty"
-    if not _TOKEN_CHARS_RE.match(token):
-        return "'token' may only contain A-Z, a-z, 0-9, '_' and '-'"
-    if len(token) > MAX_NAME_LENGTH:
-        return (
-            f"'token' is too long: at most {MAX_NAME_LENGTH} characters allowed "
-            f"(it becomes a directory name), got {len(token)}"
-        )
-    if _HEX_DASH_RE.match(token):
-        # UUID-like token: only hex digits carry entropy.
-        digits = len(token) - token.count("-")
-        if digits < MIN_UUID_HEX_DIGITS:
-            return (
-                "'token' is too weak: a token built from hex digits and dashes needs "
-                f"at least {MIN_UUID_HEX_DIGITS} hex digits, got {digits}"
-            )
-    elif len(token) < MIN_TOKEN_LENGTH:
-        return (
-            f"'token' is too short: at least {MIN_TOKEN_LENGTH} characters required, "
-            f"got {len(token)}"
-        )
-    return None
-
-
-def generate_token() -> str:
-    """A fresh URL-safe token that passes `check_token`."""
-    while True:
-        token = secrets.token_urlsafe(16)
-        if check_token(token) is None:
-            return token
-
-
-def invitation_label(index: int, token: Any = None) -> str:
-    """Log-safe identification of an invitation: number + first 4 token chars."""
-    if isinstance(token, str) and token:
-        head = "".join(ch if ch in _TOKEN_ALPHABET else "?" for ch in token[:4])
-        return f"invitation #{index} ({head}…)"
-    return f"invitation #{index} (no token)"
-
-
-# --------------------------------------------------------------------------
 # Data loading and validation
 # --------------------------------------------------------------------------
-
-_MEDIA_DIR_RE = re.compile(
-    rf"[A-Za-z0-9_-]{{{MIN_MEDIA_DIR_LENGTH},{MAX_NAME_LENGTH}}}\Z"
-)
-_DATE_ISO_RE = re.compile(
-    r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}(?::\d{2}(?:\.\d{3}|\.\d{6})?)?)"
-    r"(Z|z|[+-]\d{2}:\d{2})?\Z"
-)
 
 INVITATION_FIELDS = (
     "token",
@@ -1040,105 +992,6 @@ _KINDS: dict[str, tuple[str, Callable[[Any], bool]]] = {
     "array": ("an array", lambda v: isinstance(v, list)),
     "object": ("an object", lambda v: isinstance(v, dict)),
 }
-
-
-def _is_finite(value: int | float) -> bool:
-    """False for infinities, NaN and integers too large to fit into a float."""
-    try:
-        return math.isfinite(value)
-    except OverflowError:
-        return False
-
-
-def json_type(value: Any) -> str:
-    """Name of a value's JSON type, for error messages (never the value)."""
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "a boolean"
-    if isinstance(value, (int, float)):
-        return "a number"
-    if isinstance(value, str):
-        return "a string"
-    if isinstance(value, list):
-        return "an array"
-    if isinstance(value, dict):
-        return "an object"
-    return type(value).__name__
-
-
-def parse_date_iso(value: str) -> datetime:
-    """Parse `site.json` -> `dateISO`; a UTC offset is required.
-
-    Accepts a strict subset of ISO 8601 so that the result does not depend on
-    the Python version (3.10's `fromisoformat` is stricter than 3.11's), and
-    normalises the `Z` suffix, which `fromisoformat` rejects before 3.11.
-    """
-    match = _DATE_ISO_RE.match(value) if isinstance(value, str) else None
-    if not match:
-        raise ValueError(
-            "must be an ISO 8601 date and time with a UTC offset, "
-            "e.g. 2030-01-02T18:30:00+03:00"
-        )
-    if not match.group(3):
-        raise ValueError(
-            "has no UTC offset; append the offset, e.g. +03:00 (or Z for UTC)"
-        )
-    offset = match.group(3)
-    text = f"{match.group(1)}T{match.group(2)}" + (
-        "+00:00" if offset in ("Z", "z") else offset
-    )
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        raise ValueError("is not a valid date and time") from None
-    if parsed.utcoffset() is None:  # pragma: no cover - guarded by the regex
-        raise ValueError("has no UTC offset")
-    return parsed
-
-
-def format_size(size: int) -> str:
-    """A byte count for the log: `512 B`, `1.5 KiB`, `25.0 MiB`."""
-    if size < 1024:
-        return f"{size} B"
-    if size < 1024 * 1024:
-        return f"{size / 1024:.1f} KiB"
-    return f"{size / (1024 * 1024):.1f} MiB"
-
-
-def _extension_list(extensions: Iterable[str]) -> str:
-    return ", ".join(sorted(extensions))
-
-
-def check_media_name(
-    name: Any, extensions: Iterable[str] = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
-) -> str | None:
-    """Problem description for a media file reference, or None when it is fine.
-
-    `extensions` are the file types accepted for the field (compared without
-    regard to letter case); only types that may be published are accepted.
-    """
-    if not isinstance(name, str):
-        return f"must be a string, got {json_type(name)}"
-    if not name.strip():
-        return "is empty"
-    if name != name.strip():
-        return "has leading or trailing whitespace"
-    if "/" in name or "\\" in name:
-        return "must be a plain file name inside the media directory (no '/' or '\\')"
-    if ".." in name:
-        return "must not contain '..'"
-    if name.startswith("."):
-        return "must not start with a dot"
-    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
-        return "contains control characters"
-    if ":" in name:
-        return "must not contain ':' (not a valid file name on every system)"
-    if name.lower() == ICS_FILE:
-        return f"must not be '{ICS_FILE}' (the name is reserved for the calendar file)"
-    if os.path.splitext(name)[1].lower() not in extensions:
-        return f"has an unsupported file type (allowed: {_extension_list(extensions)})"
-    return None
 
 
 def _media_extensions(field: str) -> frozenset[str]:
@@ -1839,97 +1692,6 @@ def load_data(
 # --------------------------------------------------------------------------
 # Template context
 # --------------------------------------------------------------------------
-
-
-def _optional_text(value: Any) -> str:
-    """Optional text field -> "" when it is absent, null or blank."""
-    return value if isinstance(value, str) and value.strip() else ""
-
-
-def format_coordinate(value: int | float) -> str:
-    """Decimal notation without an exponent: 1e-05 -> '0.00001', 10.0 -> '10'."""
-    text = format(Decimal(repr(float(value))), "f")
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return "0" if text in ("-0", "") else text
-
-
-def venue_coordinates(geo: Any) -> tuple[str, str] | None:
-    """(`lat`, `lng`) as text, or None when the coordinates are not set.
-
-    `lat = 0, lng = 0` is the placeholder of the data schema, not a location.
-    """
-    if not isinstance(geo, dict):
-        return None
-    lat, lng = geo.get("lat"), geo.get("lng")
-    for value, limit in ((lat, 90.0), (lng, 180.0)):
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
-        if not _is_finite(value) or abs(value) > limit:
-            return None
-    if lat == 0 and lng == 0:
-        return None
-    return format_coordinate(lat), format_coordinate(lng)
-
-
-def _url_component(text: str) -> str:
-    """Percent-encode text for a URL (UTF-8; a space becomes %20)."""
-    return quote(text, safe="")
-
-
-def map_links(name: str, address: str, geo: Any, maps: Any) -> dict[str, str]:
-    """Ready-made map URLs; "" when there is no data for a service.
-
-    * Google: the place id when it is set (`query` is required by the URL
-      format and only used as a fallback: the name, else the coordinates, else
-      the address), otherwise the coordinates;
-    * Yandex: the organisation id when it is set, otherwise the coordinates
-      (longitude first);
-    * Apple: the coordinates, labelled with the name.
-    """
-    maps = maps if isinstance(maps, dict) else {}
-    name = name.strip()
-    place_id = _optional_text(maps.get("googlePlaceId")).strip()
-    org_id = _optional_text(maps.get("yandexOrgId")).strip()
-    coordinates = venue_coordinates(geo)
-    lat, lng = coordinates if coordinates else ("", "")
-
-    google = yandex = apple = ""
-    if place_id:
-        query = (
-            _url_component(name)
-            if name
-            else f"{lat},{lng}"
-            if coordinates
-            else _url_component(address.strip())
-        )
-        if query:
-            google = (
-                "https://www.google.com/maps/search/?api=1"
-                f"&query={query}&query_place_id={_url_component(place_id)}"
-            )
-    elif coordinates:
-        google = f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
-
-    if org_id:
-        yandex = f"https://yandex.ru/maps/org/{_url_component(org_id)}"
-    elif coordinates:
-        yandex = f"https://yandex.ru/maps/?pt={lng},{lat}&z={YANDEX_MAPS_ZOOM}"
-
-    if coordinates:
-        apple = f"https://maps.apple.com/?ll={lat},{lng}"
-        if name:
-            apple += f"&q={_url_component(name)}"
-    return {"google": google, "yandex": yandex, "apple": apple}
-
-
-def has_map_links(links: dict[str, str]) -> bool:
-    return any(links.values())
-
-
-def media_url(media_path: str, name: str) -> str:
-    """Root-absolute URL of a media file; "" when the file is not set."""
-    return f"{media_path}/{_url_component(name)}" if name else ""
 
 
 def site_context(site: dict, images: dict | None = None) -> dict:

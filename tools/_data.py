@@ -9,22 +9,30 @@
 - Texts: a string, or an object with exactly the keys `ty` and `vy` (the
   informal and the formal form of address).  `{name}` inserts a value, `{{`
   and `}}` are literal braces; see `check_text` and `resolve_text`.
+- Tokens and names: `check_token`, `generate_token`, `invitation_label`,
+  `json_type`, `format_size` and `check_media_name`.
 
 Messages never quote the data.  A key is shown only when it looks like a
-field name or an id (`is_plain_key`), an id only when it follows the id rule,
+field name or an id (`is_plain_key`); in strict mode (`known`), where a key
+may be somebody's name, only when it is one of the known names.  An id is
+shown only when it follows the id rule,
 and the name of an unknown placeholder never, because it is a part of the
 text.  Messages have the form `field '<path>' <problem>`; the caller puts the
 name of the file or the invitation in front.
 
-Pure functions: no input/output and no printing.  Problems are returned as
-messages or raised as `TextError`.  Standard library only.
+Pure functions: no input/output and no printing (`generate_token` alone reads
+the random source).  Problems are returned as messages or raised as
+`TextError`.  Standard library only.
 """
 
 from __future__ import annotations
 
 import difflib
 import json
+import math
+import os
 import re
+import secrets
 from typing import Any, Callable, Collection, Iterable, Mapping, NamedTuple, Sequence, Union
 
 #: One step of a field path: the key of an object or an index in an array.
@@ -50,19 +58,40 @@ def is_plain_key(key: Any) -> bool:
     )
 
 
-def show_key(key: Any) -> str:
-    """A key for a message: `'hotel'`, or `HIDDEN_KEY` for any other key."""
-    return f"'{key}'" if is_plain_key(key) else HIDDEN_KEY
+#: Shown in strict mode instead of a key that is not one of the known names.
+UNKNOWN_KEY = "<unknown key>"
 
 
-def format_path(parts: Iterable[PathPart]) -> str:
-    """`("sections", 3, "id")` -> `sections[3].id`; no parts -> `top level`."""
+def _key_text(key: Any, known: Collection[str] | None) -> str:
+    """The key itself, or the neutral label that stands for it."""
+    if known is None:
+        return key if is_plain_key(key) else HIDDEN_KEY
+    # strict mode: in data where a key may be somebody's name, only the names
+    # that the caller knows to be safe are ever shown
+    return key if is_plain_key(key) and key in known else UNKNOWN_KEY
+
+
+def show_key(key: Any, known: Collection[str] | None = None) -> str:
+    """A key for a message: `'hotel'`, or a neutral label for any other key.
+
+    With `known` (strict mode) a key is shown only when it is one of `known`,
+    whatever it looks like: `UNKNOWN_KEY` stands for every other key.
+    """
+    text = _key_text(key, known)
+    return f"'{text}'" if text == key else text
+
+
+def format_path(parts: Iterable[PathPart], known: Collection[str] | None = None) -> str:
+    """`("sections", 3, "id")` -> `sections[3].id`; no parts -> `top level`.
+
+    `known` switches on the strict mode of `show_key` for the keys.
+    """
     text = ""
     for part in parts:
         if isinstance(part, int) and not isinstance(part, bool):
             text += f"[{part}]"
         else:
-            name = part if is_plain_key(part) else HIDDEN_KEY
+            name = _key_text(part, known)
             text += f".{name}" if text else name
     return text or "top level"
 
@@ -433,3 +462,159 @@ def resolve_text(
 ) -> str:
     """The finished text for a form of address: `pick_form`, then `substitute`."""
     return substitute(pick_form(value, form), values, known)
+
+
+# --------------------------------------------------------------------------
+# JSON types and sizes
+# --------------------------------------------------------------------------
+
+
+def _is_finite(value: int | float) -> bool:
+    """False for infinities, NaN and integers too large to fit into a float."""
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def json_type(value: Any) -> str:
+    """Name of a value's JSON type, for error messages (never the value)."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, (int, float)):
+        return "a number"
+    if isinstance(value, str):
+        return "a string"
+    if isinstance(value, list):
+        return "an array"
+    if isinstance(value, dict):
+        return "an object"
+    return type(value).__name__
+
+
+def format_size(size: int) -> str:
+    """A byte count for the log: `512 B`, `1.5 KiB`, `25.0 MiB`."""
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KiB"
+    return f"{size / (1024 * 1024):.1f} MiB"
+
+
+# --------------------------------------------------------------------------
+# Tokens and the media directory
+# --------------------------------------------------------------------------
+
+#: Token rules (>= 120 bits of entropy).
+MIN_TOKEN_LENGTH = 20
+MIN_UUID_HEX_DIGITS = 30
+#: Random media directory name (`site.json` -> `mediaDir`).
+MIN_MEDIA_DIR_LENGTH = 16
+#: Tokens and `mediaDir` become directory names, so their length is capped well
+#: below the file name limit of common file systems (255 bytes).
+MAX_NAME_LENGTH = 200
+
+_TOKEN_CHARS_RE = re.compile(r"[A-Za-z0-9_-]+\Z")
+_HEX_DASH_RE = re.compile(r"[0-9A-Fa-f-]+\Z")
+_TOKEN_ALPHABET = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+)
+_MEDIA_DIR_RE = re.compile(
+    rf"[A-Za-z0-9_-]{{{MIN_MEDIA_DIR_LENGTH},{MAX_NAME_LENGTH}}}\Z"
+)
+
+
+def check_token(token: Any) -> str | None:
+    """Return a problem description for `token`, or None when it is valid."""
+    if not isinstance(token, str):
+        return f"'token' must be a string, got {json_type(token)}"
+    if not token:
+        return "'token' is empty"
+    if not _TOKEN_CHARS_RE.match(token):
+        return "'token' may only contain A-Z, a-z, 0-9, '_' and '-'"
+    if len(token) > MAX_NAME_LENGTH:
+        return (
+            f"'token' is too long: at most {MAX_NAME_LENGTH} characters allowed "
+            f"(it becomes a directory name), got {len(token)}"
+        )
+    if _HEX_DASH_RE.match(token):
+        # UUID-like token: only hex digits carry entropy.
+        digits = len(token) - token.count("-")
+        if digits < MIN_UUID_HEX_DIGITS:
+            return (
+                "'token' is too weak: a token built from hex digits and dashes needs "
+                f"at least {MIN_UUID_HEX_DIGITS} hex digits, got {digits}"
+            )
+    elif len(token) < MIN_TOKEN_LENGTH:
+        return (
+            f"'token' is too short: at least {MIN_TOKEN_LENGTH} characters required, "
+            f"got {len(token)}"
+        )
+    return None
+
+
+def generate_token() -> str:
+    """A fresh URL-safe token that passes `check_token`."""
+    while True:
+        token = secrets.token_urlsafe(16)
+        if check_token(token) is None:
+            return token
+
+
+def invitation_label(index: int, token: Any = None) -> str:
+    """Log-safe identification of an invitation: number + first 4 token chars."""
+    if isinstance(token, str) and token:
+        head = "".join(ch if ch in _TOKEN_ALPHABET else "?" for ch in token[:4])
+        return f"invitation #{index} ({head}…)"
+    return f"invitation #{index} (no token)"
+
+
+# --------------------------------------------------------------------------
+# Media file names
+# --------------------------------------------------------------------------
+
+#: Media files the data may refer to, by role.
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".avif", ".gif", ".svg"})
+VIDEO_EXTENSIONS = frozenset({".mp4", ".webm"})
+#: The calendar file that the build writes into the media directory.
+_RESERVED_MEDIA_NAME = "event.ics"
+
+
+def _extension_list(extensions: Iterable[str]) -> str:
+    return ", ".join(sorted(extensions))
+
+
+def check_media_name(
+    name: Any, extensions: Iterable[str] = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+) -> str | None:
+    """Problem description for a media file reference, or None when it is fine.
+
+    `extensions` are the file types accepted for the field (compared without
+    regard to letter case); only types that may be published are accepted.
+    """
+    if not isinstance(name, str):
+        return f"must be a string, got {json_type(name)}"
+    if not name.strip():
+        return "is empty"
+    if name != name.strip():
+        return "has leading or trailing whitespace"
+    if "/" in name or "\\" in name:
+        return "must be a plain file name inside the media directory (no '/' or '\\')"
+    if ".." in name:
+        return "must not contain '..'"
+    if name.startswith("."):
+        return "must not start with a dot"
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        return "contains control characters"
+    if ":" in name:
+        return "must not contain ':' (not a valid file name on every system)"
+    if name.lower() == _RESERVED_MEDIA_NAME:
+        return (
+            f"must not be '{_RESERVED_MEDIA_NAME}' "
+            "(the name is reserved for the calendar file)"
+        )
+    if os.path.splitext(name)[1].lower() not in extensions:
+        return f"has an unsupported file type (allowed: {_extension_list(extensions)})"
+    return None
