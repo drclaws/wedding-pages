@@ -86,9 +86,10 @@ class AppJsSourceTest(unittest.TestCase):
 
     def test_size_stays_small(self):
         # Our own code, not a library, so the budget is ours: without comments
-        # the viewer window (module gallery) takes about 16.6 KB and the event
-        # tabs (module events) about 7.1 KB; with them the file is about 35 KB
-        # (15.5 KB gzipped, comments included).  Raise the limits deliberately,
+        # the viewer window (module gallery) takes about 16.6 KB, the event
+        # tabs (module events) about 7.1 KB and the cover bar (module coverBar)
+        # about 2.3 KB; with them the file is about 37 KB (16.7 KB gzipped,
+        # comments included).  Raise the limits deliberately,
         # when a module needs it, not to make room in advance.
         self.assertLess(len(self.code.encode("utf-8")), 40 * 1024)
         self.assertLess(len(gzip.compress(self.raw.encode("utf-8"), 9)), 20 * 1024)
@@ -442,7 +443,7 @@ class MotionStylesTest(unittest.TestCase):
         rules = re.findall(r"([^{}]+)\{[^{}]*\bopacity:\s*0\b[^{}]*\}", self.section)
         self.assertTrue(rules)
         for selector in rules:
-            if selector.strip() == "from":
+            if selector.strip() in ("from", "to"):  # a keyframe runs only under a marker rule
                 continue
             for part in selector.split(","):
                 self.assertRegex(part.strip(), r"^html\.js\.[a-z-]+ ")
@@ -481,7 +482,179 @@ class MotionStylesTest(unittest.TestCase):
         self.assertNotRegex(cover, r"var\(--reveal-stagger\)\s*\*\s*\d")
 
     def test_only_opacity_and_vertical_transform_are_animated(self):
-        self.assertNotRegex(self.section, r"translateX|translate\(|translate3d|scale|margin|inset|width|height")
+        # keyframes change the opacity or a vertical offset
+        keyframes = re.findall(r"@keyframes [\w-]+\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}", self.section)
+        self.assertEqual(len(keyframes), 4)  # cover-in; the veil, the cover content, the bar
+        for body in keyframes:
+            for prop, value in re.findall(r"([\w-]+):\s*([^;]+);", body):
+                with self.subTest(prop=prop):
+                    self.assertIn(prop, ("opacity", "transform"))
+                    if prop == "transform":
+                        self.assertRegex(value, r"^translateY\(")
+        # transitions run on the same two properties
+        transitions = re.findall(r"\btransition:\s*([^;]+);", self.section)
+        self.assertTrue(transitions)
+        for value in transitions:
+            if value.strip() != "none":
+                for part in value.split(","):
+                    self.assertIn(part.split()[0], ("opacity", "transform"))
+        # what the progress of the cover drives is only the opacity
+        driven = re.findall(r"\{([^{}]*var\(--cover-progress\)[^{}]*)\}", self.section)
+        self.assertEqual(len(driven), 3)  # the veil, the cover content, the bar
+        for body in driven:
+            self.assertEqual(re.findall(r"([\w-]+):", body), ["opacity"])
+        # no layout property is set here at all (a timeline inset is not one)
+        self.assertNotRegex(self.section, r"translateX|translate\(|translate3d|scale\(")
+        self.assertNotRegex(self.section, r"(?<![\w-])(?:margin|inset|width|height|top|bottom)[\w-]*\s*:")
+
+
+class CoverBarTest(unittest.TestCase):
+    """The cover folds into the top bar: CSS and the module coverBar."""
+
+    @classmethod
+    def setUpClass(cls):
+        code = strip_comments(APP_JS.read_text(encoding="utf-8"))
+        cls.code = code
+        cls.module = code[code.index("var COVER_BAR_TIMELINES"):code.index("var EVENTS_RECHECK_MS")]
+        raw = APP_CSS.read_text(encoding="utf-8")
+        motion = raw[raw.index("@property --cover-progress"):raw.index("\n   8. Gallery & lightbox")]
+        css = strip_comments(raw)
+        cls.css = css
+        cls.layout = css[css.index(".cover-bar {"):css.index(".invite__greeting")]
+        cls.motion = strip_comments(motion + "*/")
+
+    def function(self, name):
+        body = self.module[self.module.index("function %s(" % name):]
+        following = re.search(r"\n    function \w+\(", body[1:])
+        return body[:following.start() + 1] if following else body
+
+    def test_the_driver_is_chosen_by_one_condition_in_css_and_in_the_module(self):
+        conditions = re.findall(r"@supports ([^{]*timeline[^{]*?)\s*\{", self.css)
+        self.assertEqual(conditions, ["(animation-timeline: --a) and (timeline-scope: --a)"])
+        self.assertIn("var COVER_BAR_TIMELINES = '%s';" % conditions[0], self.module)
+        self.assertIn("css.supports(COVER_BAR_TIMELINES)", self.module)
+        # with the timelines the module only sets the marker
+        self.assertRegex(self.module, r"css\.supports\(COVER_BAR_TIMELINES\)\) \{\s*"
+                                      r"root\.classList\.add\('cover-bar-on'\);\s*return;")
+
+    def test_the_bar_is_hidden_without_the_marker(self):
+        self.assertRegex(self.layout, r"\n\.cover-bar\[data-cover-bar\] \{\s*display: none;\s*\}")
+        rules = re.findall(r"([^{}]+)\{([^{}]*)\}", self.css)
+        for selector, body in rules:
+            if re.search(r"position:\s*sticky|display:\s*block", body) and "cover-bar" in selector:
+                with self.subTest(selector=selector.strip()):
+                    self.assertRegex(selector.strip(), r"^html\.js\.cover-bar-on \.cover-bar\[data-cover-bar\]$")
+        printed = self.layout[self.layout.index("@media print"):]
+        self.assertRegex(printed, r"\.cover-bar,\s*html\.js\.cover-bar-on \.cover-bar\[data-cover-bar\]\s*\{"
+                                  r"\s*display: none;")
+
+    def test_the_bar_takes_no_room_and_anchors_clear_it(self):
+        # one token: the height, the negative offset and the scroll padding
+        bar = re.search(r"\n\.cover-bar \{([^}]*)\}", self.css).group(1)
+        self.assertIn("block-size: var(--cover-bar-block-size);", bar)
+        sticky = re.search(r"html\.js\.cover-bar-on \.cover-bar\[data-cover-bar\] \{([^}]*)\}",
+                           self.layout).group(1)
+        for line in ("position: sticky;", "inset-block-start: 0;", "z-index: var(--z-sticky);",
+                     "margin-block-start: calc(var(--cover-bar-block-size) * -1);"):
+            self.assertIn(line, sticky)
+        self.assertRegex(self.layout, r"html\.js\.cover-bar-on \{\s*"
+                                      r"scroll-padding-block-start: var\(--cover-bar-block-size\);\s*\}")
+        # the names give way first, the bar stays one line
+        self.assertIn("white-space: nowrap;", self.layout)
+        self.assertIn("text-overflow: ellipsis;", self.layout)
+
+    def test_the_timeline_covers_the_cover_itself(self):
+        self.assertIn("view-timeline-inset: 0;", self.motion)
+        self.assertIn("view-timeline-name: --cover;", self.motion)
+        self.assertIn("timeline-scope: --cover;", self.motion)
+        self.assertIn("--cover-span: calc(100% - var(--cover-bar-block-size));", self.motion)
+
+    def test_the_css_driver_animates_the_opacity_of_three_elements(self):
+        # no inherited property animated on the whole subtree of the cover:
+        # each element fades by the timeline on its own part of the course
+        driver = self.motion[self.motion.index("@supports"):self.motion.index("@media")]
+        self.assertNotIn("--cover-progress", driver)
+        self.assertNotRegex(self.motion, r"@keyframes [\w-]+\s*\{[^@]*--cover-progress:")
+        span = "exit-crossing 0% exit-crossing var(--cover-span)"
+        expected = {
+            r"\.cover__backdrop::after": ("cover-veil", span),
+            r"\.cover__inner": ("cover-fade",
+                                "exit-crossing 0% exit-crossing calc(var(--cover-span) * var(--cover-fade-end))"),
+            r"\.cover-bar\[data-cover-bar\]": ("cover-bar-in",
+                                            "exit-crossing calc(var(--cover-span) * var(--cover-bar-fade-start)) "
+                                            "exit-crossing var(--cover-span)"),
+        }
+        for selector, (name, animation_range) in expected.items():
+            with self.subTest(animation=name):
+                rule = re.search(r"html\.js\.cover-bar-on %s \{([^}]*)\}" % selector, driver).group(1)
+                self.assertIn("animation: %s linear both;" % name, rule)
+                self.assertIn("animation-timeline: --cover;", rule)
+                found = re.search(r"animation-range:\s*([^;]+);", rule).group(1)
+                self.assertEqual(" ".join(found.split()), animation_range)
+        keyframes = dict(re.findall(r"@keyframes ([\w-]+) \{\s*(from \{[^}]*\}\s*to \{[^}]*\})", self.motion))
+        self.assertEqual(" ".join(keyframes["cover-veil"].split()),
+                         "from { opacity: var(--cover-veil-opacity); } to { opacity: 1; }")
+        self.assertEqual(" ".join(keyframes["cover-fade"].split()), "from { opacity: 1; } to { opacity: 0; }")
+        self.assertEqual(" ".join(keyframes["cover-bar-in"].split()), "from { opacity: 0; } to { opacity: 1; }")
+        self.assertRegex(self.motion, r'@property --cover-progress \{\s*syntax: "<number>";\s*'
+                                      r"inherits: true;\s*initial-value: 0;\s*\}")
+
+    def test_reduced_motion_steps_and_print_unfolds(self):
+        reduced = re.findall(r"@media \(prefers-reduced-motion: reduce\)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}",
+                             self.motion)
+        three = (r"html\.js\.cover-bar-on \.cover__backdrop::after,\s*html\.js\.cover-bar-on \.cover__inner,\s*"
+                 r"html\.js\.cover-bar-on \.cover-bar\[data-cover-bar\] \{")
+        # with reduced motion all three run over the whole course and step at its end
+        self.assertTrue(any(re.search(three + r"\s*animation-timing-function: steps\(1, jump-end\);\s*"
+                                      r"animation-range: exit-crossing 0% exit-crossing var\(--cover-span\);",
+                                      block) for block in reduced))
+        printed = re.findall(r"@media print\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}", self.motion)
+        self.assertEqual(len(printed), 1)
+        self.assertRegex(printed[0], three + r"\s*animation: none;")
+        self.assertRegex(printed[0], r"html\.js\.cover-bar-on \.cover__inner \{\s*opacity: 1;")
+        # the module counts in steps too
+        self.assertIn("value = value >= 1 ? 1 : 0;", self.function("progress"))
+
+    def test_the_module_writes_only_the_progress_on_the_cover_and_the_bar(self):
+        styles = re.findall(r"(\w+)\.style\.(\w+)\(([^)]*)\)", self.module)
+        self.assertEqual(sorted({method for _node, method, _args in styles}),
+                         ["removeProperty", "setProperty"])
+        for node, _method, args in styles:
+            self.assertEqual(node, "node")
+            self.assertTrue(args.startswith("'--cover-progress'"), args)
+        self.assertIn("var nodes = [cover, bar];", self.module)
+        self.assertNotRegex(self.module, r"setAttribute\('style'|\.style\.cssText|\.style\s*=|"
+                                         r"\.style\.[a-zA-Z]+\s*=|root\.style|documentElement\.style")
+        self.assertNotRegex(self.module, r"[А-Яа-яЁё]")  # no text of its own
+        # frames, not every scroll event
+        self.assertIn("frame = window.requestAnimationFrame(update);", self.function("onChange"))
+        self.assertIn("{ passive: true }", self.module)
+
+    def test_stop_returns_the_view_without_the_module(self):
+        stop = self.function("stop")
+        self.assertIn("root.classList.remove('cover-bar-on');", stop)
+        self.assertIn("node.style.removeProperty('--cover-progress');", stop)
+        for listener in re.findall(r"window\.addEventListener\('(\w+)', onChange", self.module):
+            with self.subTest(listener=listener):
+                self.assertIn("window.removeEventListener('%s', onChange);" % listener, stop)
+        self.assertRegex(self.function("update"), r"catch \(error\) \{\s*stop\(\);\s*report\('coverBar', error\);")
+        # the listeners are in place before the first count, so a failure removes them
+        init = self.module[self.module.index("root.classList.add('cover-bar-on');\n    window"):]
+        self.assertLess(init.index("addEventListener('scroll'"), init.index("update();"))
+
+    def test_registered_after_the_cover(self):
+        self.assertLess(self.code.index("register('cover',"), self.code.index("register('coverBar',"))
+        self.assertIn("root.classList.add('cover-animate');",
+                      self.code[self.code.index("register('cover',"):self.code.index("register('coverBar',")])
+
+    def test_the_tokens(self):
+        for token, value in (("--cover-fade-end", "0.6"), ("--cover-bar-fade-start", "0.55"),
+                             ("--z-sticky", "50"), ("--cover-bar-padding-block", "var(--space-2xs)")):
+            with self.subTest(token=token):
+                self.assertRegex(self.css, r"\n\s*%s: %s;" % (re.escape(token), re.escape(value)))
+        self.assertRegex(self.css, r"--cover-bar-size: max\(var\(--tap-min\),\s*calc\(var\(--text-base\) \* "
+                                   r"var\(--line-height-tight\) \+ var\(--cover-bar-padding-block\) \* 2\)\);")
+        self.assertIn("--cover-bar-block-size: calc(var(--cover-bar-size) + var(--safe-inset-top));", self.css)
 
 
 def css_ms(css, token):

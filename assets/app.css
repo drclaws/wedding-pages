@@ -424,6 +424,21 @@
   --color-cover-text: var(--color-text);     /* TEMP  текст обложки на фото */
   --cover-veil-opacity: 0.6;                 /* TEMP  см. расчёт выше, не ниже 0.55 */
 
+  /* Верхняя панель — свёрнутая обложка: одна строка «имена · дата». Высота —
+     строка текста с полями, но не меньше цели нажатия; растёт вместе с
+     системным размером шрифта. Сверху к ней добавляется безопасная зона выреза
+     экрана: --cover-bar-block-size — полная высота панели, на неё же отступает
+     цель перехода по якорю. */
+  --cover-bar-padding-block: var(--space-2xs);  /* TEMP */
+  --cover-bar-size: max(var(--tap-min),
+    calc(var(--text-base) * var(--line-height-tight) + var(--cover-bar-padding-block) * 2));
+  --cover-bar-block-size: calc(var(--cover-bar-size) + var(--safe-inset-top));
+  /* Хореография сворачивания — доли прогресса прокрутки обложки 0…1 (1 — от
+     обложки осталась полоса высотой панели): содержимое обложки гаснет к
+     --cover-fade-end, панель проявляется начиная с --cover-bar-fade-start. */
+  --cover-fade-end: 0.6;         /* TEMP */
+  --cover-bar-fade-start: 0.55;  /* TEMP */
+
   /* Медиа и плитка видео не выше этой доли экрана — чтобы в ландшафтной
      ориентации телефона кадр помещался целиком. */
   --media-max-height-ratio: 0.8;  /* TEMP */
@@ -458,6 +473,7 @@
 
   --z-base: 0;
   --z-raised: 1;
+  --z-sticky: 50;  /* верхняя панель: над содержимым, под окнами */
   --z-overlay: 100;
   --z-lightbox: 110;
 
@@ -1541,6 +1557,93 @@ a.btn[aria-disabled="true"] {
   }
 }
 
+/* --- Верхняя панель — свёрнутая обложка ------------------------------------
+   Стоит в разметке сразу за обложкой. Отрицательным отступом на свою высоту
+   ложится на нижнюю полосу обложки и места в потоке не занимает: ни её
+   появление, ни скрытие раскладку не сдвигают. position: sticky — панель
+   прилипает к верху окна ровно тогда, когда от обложки остаётся полоса её
+   высоты, и дальше едет с окном до конца страницы. Прозрачность панели и
+   гашение обложки — секция 7.
+   Панель на странице ([data-cover-bar]) видна только под маркером
+   cover-bar-on, который ставит скрипт: без скрипта её нет. Вид самой панели
+   (.cover-bar) от маркера не зависит — так она показана в витрине.
+   Фон — цвет вуали: к моменту, когда панель проявилась, вуаль над фото уже
+   сплошная, и панель продолжает свёрнутую обложку тем же цветом. */
+.cover-bar {
+  block-size: var(--cover-bar-block-size);
+  padding-block-start: var(--safe-inset-top);
+  background-color: var(--color-cover-veil);
+  box-shadow: var(--shadow-sm);
+}
+
+.cover-bar[data-cover-bar] {
+  display: none;
+}
+
+html.js.cover-bar-on .cover-bar[data-cover-bar] {
+  display: block;
+  position: sticky;
+  inset-block-start: 0;
+  z-index: var(--z-sticky);
+  margin-block-start: calc(var(--cover-bar-block-size) * -1);
+}
+
+/* Одна строка: высота панели постоянна, на ней держатся отступ и
+   scroll-padding. Не помещается — имена обрезаются многоточием, дата и
+   разделитель не сжимаются. */
+.cover-bar__inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2xs);
+  block-size: 100%;
+  white-space: nowrap;
+}
+
+.cover-bar__title,
+.cover-bar__sep,
+.cover-bar__date {
+  line-height: var(--line-height-tight);
+}
+
+.cover-bar__title,
+.cover-bar__date {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cover-bar__title {
+  font-family: var(--font-heading);
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-heading);
+  letter-spacing: var(--tracking-heading);
+}
+
+.cover-bar__sep,
+.cover-bar__date {
+  flex-shrink: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* Дату обрезает только крайний случай: строка шире колонки сама по себе. */
+.cover-bar__date {
+  max-inline-size: 100%;
+}
+
+/* Переход по якорю и фокус с клавиатуры не прячут цель под панелью. */
+html.js.cover-bar-on {
+  scroll-padding-block-start: var(--cover-bar-block-size);
+}
+
+@media print {
+  .cover-bar,
+  html.js.cover-bar-on .cover-bar[data-cover-bar] {
+    display: none;
+  }
+}
+
 /* --- 2. Официальное приглашение --------------------------------------------- */
 .invite__greeting {
   font-size: var(--text-2xl);
@@ -2028,6 +2131,102 @@ html.js.cover-animate .cover__inner > :nth-child(2) { --cover-index: 1; }
 html.js.cover-animate .cover__inner > :nth-child(3) { --cover-index: 2; }
 html.js.cover-animate .cover__inner > :nth-child(4) { --cover-index: 3; }
 
+/* --- Сворачивание обложки в верхнюю панель ---------------------------------
+   Прогресс сворачивания: 0 — обложка на месте, 1 — от неё осталась полоса
+   высотой панели. По нему вуаль фото на обложке сгущается до полной,
+   содержимое обложки гаснет к доле --cover-fade-end, панель проявляется
+   начиная с доли --cover-bar-fade-start. Меняется только opacity, раскладка
+   стоит на месте.
+   Прогресс задаёт один из двух «приводов» с одинаковым результатом:
+     - CSS — там, где есть временные шкалы прокрутки: три анимации opacity
+       прямо по шкале обложки (view-timeline; панели, соседке обложки, шкала
+       видна через timeline-scope). Каждая идёт на своём отрезке шкалы, а не
+       через общее наследуемое свойство — так браузеру не нужно каждый кадр
+       пересчитывать стили всего поддерева обложки;
+     - скрипт (модуль coverBar) — там, где таких шкал нет: считает прогресс по
+       положению обложки раз в кадр и пишет --cover-progress через CSSOM на
+       обложку и панель (не на <html>: иначе каждый кадр пересчитывались бы
+       стили всей страницы); его читают три правила ниже.
+   Всё — под маркером cover-bar-on: его ставит модуль coverBar, без скрипта
+   обложка неподвижна, панели нет. Анимация cover-in (дети .cover__inner) и
+   гашение самого .cover__inner перемножаются и не спорят. */
+@property --cover-progress {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+/* Привод «скрипт»: прозрачность из --cover-progress. На пути CSS свойство
+   остаётся 0, а значения задают анимации ниже (анимация сильнее правила). */
+html.js.cover-bar-on .cover__backdrop::after {
+  opacity: calc(var(--cover-veil-opacity) + (1 - var(--cover-veil-opacity)) * var(--cover-progress));
+}
+
+html.js.cover-bar-on .cover__inner {
+  opacity: clamp(0, 1 - var(--cover-progress) / var(--cover-fade-end), 1);
+}
+
+html.js.cover-bar-on .cover-bar[data-cover-bar] {
+  opacity: clamp(0, (var(--cover-progress) - var(--cover-bar-fade-start)) / (1 - var(--cover-bar-fade-start)), 1);
+}
+
+@keyframes cover-veil {
+  from { opacity: var(--cover-veil-opacity); }
+  to { opacity: 1; }
+}
+
+@keyframes cover-fade {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes cover-bar-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Привод CSS. Весь ход — от «верх обложки у верха окна» до «от обложки
+   осталась полоса высотой панели» (--cover-span): exit-crossing меряет высоту
+   самой обложки, а не окна, поэтому верен и для обложки выше окна (ландшафт,
+   крупный шрифт). Доли хореографии — отрезки этого хода.
+   То же условие @supports повторено в модуле coverBar: он выбирает привод. */
+@supports (animation-timeline: --a) and (timeline-scope: --a) {
+  html.js.cover-bar-on .page {
+    timeline-scope: --cover;
+  }
+
+  /* Вставка 0 обязательна: по умолчанию шкала сужает окно на scroll-padding,
+     то есть на высоту панели, и прогресс сдвигался бы на неё. */
+  html.js.cover-bar-on .cover {
+    view-timeline-name: --cover;
+    view-timeline-inset: 0;
+  }
+
+  html.js.cover-bar-on .page {
+    --cover-span: calc(100% - var(--cover-bar-block-size));
+  }
+
+  html.js.cover-bar-on .cover__backdrop::after {
+    animation: cover-veil linear both;
+    animation-timeline: --cover;
+    animation-range: exit-crossing 0% exit-crossing var(--cover-span);
+  }
+
+  html.js.cover-bar-on .cover__inner {
+    animation: cover-fade linear both;
+    animation-timeline: --cover;
+    animation-range: exit-crossing 0% exit-crossing calc(var(--cover-span) * var(--cover-fade-end));
+  }
+
+  html.js.cover-bar-on .cover-bar[data-cover-bar] {
+    animation: cover-bar-in linear both;
+    animation-timeline: --cover;
+    animation-range:
+      exit-crossing calc(var(--cover-span) * var(--cover-bar-fade-start))
+      exit-crossing var(--cover-span);
+  }
+}
+
 /* --- Страховки: сокращённое движение и печать — всё видно сразу ----------- */
 @media (prefers-reduced-motion: reduce) {
   html.js.reveal-on [data-reveal],
@@ -2039,6 +2238,16 @@ html.js.cover-animate .cover__inner > :nth-child(4) { --cover-index: 3; }
 
   html.js.cover-animate .cover__inner > * {
     animation: none;
+  }
+
+  /* Сворачивание — ступенькой: фото и текст обложки от прокрутки не меняются,
+     панель появляется сразу, когда обложка ушла. Все три анимации — на весь
+     ход, со ступенькой в конце (в скрипте — прогресс 0 или 1). */
+  html.js.cover-bar-on .cover__backdrop::after,
+  html.js.cover-bar-on .cover__inner,
+  html.js.cover-bar-on .cover-bar[data-cover-bar] {
+    animation-timing-function: steps(1, jump-end);
+    animation-range: exit-crossing 0% exit-crossing var(--cover-span);
   }
 }
 
@@ -2052,6 +2261,17 @@ html.js.cover-animate .cover__inner > :nth-child(4) { --cover-index: 3; }
 
   html.js.cover-animate .cover__inner > * {
     animation: none;
+  }
+
+  /* Печать с середины страницы: обложка — как без скрипта, не свёрнутая. */
+  html.js.cover-bar-on .cover__backdrop::after,
+  html.js.cover-bar-on .cover__inner,
+  html.js.cover-bar-on .cover-bar[data-cover-bar] {
+    animation: none;
+  }
+
+  html.js.cover-bar-on .cover__inner {
+    opacity: 1;
   }
 }
 

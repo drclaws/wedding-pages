@@ -99,6 +99,103 @@
 
 
   /* ==========================================================================
+     Модуль coverBar — сворачивание обложки [data-cover] в панель [data-cover-bar]
+     --------------------------------------------------------------------------
+     Панель и все правила сворачивания — в CSS под маркером cover-bar-on на
+     <html>; без маркера панели нет, обложка неподвижна. Прогресс
+     --cover-progress (0…1) там, где есть временные шкалы прокрутки, считает
+     сам CSS, и модуль только ставит маркер. Условие выбора — то же, что у
+     @supports в app.css. Иначе модуль считает прогресс по положению обложки
+     не чаще раза в кадр и пишет его через CSSOM на обложку и панель. При
+     сокращённом движении прогресс ступенчатый: 0 или 1. Любая ошибка снимает
+     маркер и записанные значения — страница возвращается к виду без модуля.
+     Своих строк у модуля нет; модуль cover он не трогает.
+     ========================================================================== */
+
+  var COVER_BAR_TIMELINES = '(animation-timeline: --a) and (timeline-scope: --a)';
+
+  register('coverBar', function (doc) {
+    var cover = doc.querySelector('[data-cover]');
+    var bar = doc.querySelector('[data-cover-bar]');
+    if (!cover || !bar) {
+      return;
+    }
+    var css = window.CSS;
+    if (css && typeof css.supports === 'function' && css.supports(COVER_BAR_TIMELINES)) {
+      root.classList.add('cover-bar-on');
+      return;
+    }
+    if (typeof window.requestAnimationFrame !== 'function') {
+      return;
+    }
+
+    var reduced = typeof window.matchMedia === 'function' ?
+      window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+    var nodes = [cover, bar];
+    var frame = 0;
+    var last = '';
+
+    /* 0 — верх обложки у верха окна, 1 — от обложки осталась полоса панели. */
+    function progress() {
+      var box = cover.getBoundingClientRect();
+      var span = box.height - bar.offsetHeight;
+      var value = span > 0 ? Math.min(1, Math.max(0, -box.top / span)) : 1;
+      if (reduced && reduced.matches) {
+        value = value >= 1 ? 1 : 0;
+      }
+      return String(Math.round(value * 1000) / 1000);
+    }
+
+    function stop() {
+      window.removeEventListener('scroll', onChange);
+      window.removeEventListener('resize', onChange);
+      window.removeEventListener('load', onChange);
+      if (frame) {
+        window.cancelAnimationFrame(frame);
+        frame = 0;
+      }
+      root.classList.remove('cover-bar-on');
+      nodes.forEach(function (node) {
+        node.style.removeProperty('--cover-progress');
+        if (!node.getAttribute('style')) {
+          node.removeAttribute('style');
+        }
+      });
+    }
+
+    function update() {
+      frame = 0;
+      try {
+        var value = progress();
+        if (value !== last) {
+          last = value;
+          nodes.forEach(function (node) {
+            node.style.setProperty('--cover-progress', value);
+          });
+        }
+      } catch (error) {
+        stop();
+        report('coverBar', error);
+      }
+    }
+
+    function onChange() {
+      if (!frame) {
+        frame = window.requestAnimationFrame(update);
+      }
+    }
+
+    /* Сначала маркер: без него панель скрыта и её высоту не измерить.
+       Подписка до первого расчёта: при ошибке stop() её же и снимет. */
+    root.classList.add('cover-bar-on');
+    window.addEventListener('scroll', onChange, { passive: true });
+    window.addEventListener('resize', onChange);
+    window.addEventListener('load', onChange);
+    update();
+  });
+
+
+  /* ==========================================================================
      Модуль events — переключатель событий [data-events]
      --------------------------------------------------------------------------
      Без скрипта карточки событий идут подряд по времени начала, список

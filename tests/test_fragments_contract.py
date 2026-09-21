@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import html
 import re
 import unittest
 from html.parser import HTMLParser
@@ -538,6 +539,22 @@ class Outline(HTMLParser):
                 break
 
 
+#: The top bar of the folded cover, right after the cover.
+COVER_BAR = re.compile(
+    r'<div class="cover-bar"(?P<attributes>[^>]*)>\s*'
+    r'<div class="container cover-bar__inner">(?P<inner>.*?)</div>\s*</div>', re.S)
+FOCUSABLE = re.compile(r"<(?:a|button|input|select|textarea|video|audio|iframe|summary)\b|"
+                       r"\stabindex=|\scontenteditable")
+
+
+def cover_bar(document: str) -> re.Match:
+    """The only cover bar of a page; nothing in it can take the focus."""
+    found = list(COVER_BAR.finditer(document))
+    assert len(found) == 1, len(found)
+    assert not FOCUSABLE.search(found[0].group(0)), found[0].group(0)
+    return found[0]
+
+
 def html_problems(document: str, files: set[str] | None = None) -> list[tuple[int, str]]:
     exists = (lambda _path: True) if files is None else files.__contains__
     return build.check_html(document, exists)
@@ -923,6 +940,26 @@ class FragmentContractTests(unittest.TestCase):
                       'alt="" fetchpriority="high">', page)
         self.assertIn(cover["background"]["src"].lstrip("/"), published_files(tree))
 
+    def test_the_cover_bar(self):
+        # a copy of the names and the date for the folded cover: hidden from
+        # the screen reader, nothing to focus, one h1 on the page
+        for cover in section_variants()[:2]:
+            with self.subTest(eyebrow=cover["eyebrow"]):
+                document = self.assertRendersCleanly("sections", cover)
+                self.assertRegex(document, r'<section class="cover" id="s-cover" '
+                                           r'aria-labelledby="s-cover--title" data-cover>')
+                bar = cover_bar(document)
+                self.assertEqual(bar.group("attributes"), ' aria-hidden="true" data-cover-bar')
+                self.assertEqual(
+                    bar.group("inner"),
+                    f'<span class="cover-bar__title">{COUPLE_NAMES}</span>'
+                    '<span class="cover-bar__sep">·</span>'
+                    '<span class="cover-bar__date">15 июня 2030</span>')
+                self.assertEqual(Outline(document).headings, [1])
+                # the bar follows the cover, the eyebrow stays on the cover
+                self.assertLess(document.index("</section>"), bar.start())
+                self.assertNotIn("Приглашение", bar.group(0))
+
     def test_the_video_tile(self):
         document = self.render("media", [bare_media("video")])
         tile = re.search(r"<a [^>]*>", document).group(0)
@@ -1033,6 +1070,10 @@ class FullPageTests(unittest.TestCase):
                 self.assertEqual("data-events-tablist" in page, len(builder.visible) > 1)
                 cover_date = EVENTS[builder.primary]["dateText"]
                 self.assertRegex(page, rf'<p class="cover__date"><time [^>]*>{cover_date}</time>')
+                # the bar of the folded cover shows the same date, in one bar per page
+                bar = cover_bar(page)
+                self.assertIn(f'<span class="cover-bar__date">{cover_date}</span>', bar.group("inner"))
+                self.assertIn(' aria-hidden="true" data-cover-bar', bar.group("attributes"))
 
     def test_values_are_escaped(self):
         guest = dict(GUESTS[1], greeting="Ева <b>& Боб</b> {{coupleNames}}")
@@ -1207,6 +1248,15 @@ class DataLayerPageTests(unittest.TestCase):
                     self.assertEqual(tag, "div")
                     for hook in NO_REVEAL_HOOKS:
                         self.assertNotIn(hook, attributes)
+
+    def test_the_cover_is_followed_by_its_bar(self):
+        for label, tree, page in self.pages:
+            with self.subTest(page=label):
+                bar = cover_bar(page)
+                self.assertEqual(page.count(" data-cover>"), 1)
+                self.assertLess(page.index(" data-cover>"), bar.start())
+                self.assertTrue(bar.group("inner").startswith(
+                    '<span class="cover-bar__title">%s</span>' % html.escape(tree["coupleNames"], False)))
 
     def test_the_tiles_without_a_size(self):
         pages = [page for label, _tree, page in self.pages if label.startswith("no sizes")]
