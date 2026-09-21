@@ -55,7 +55,7 @@ EVENT_FIELDS = (
     "startISO", "endISO", "dateText", "timeText", "whenText", "tabText", "icsPath",
     "location", "program",
 )
-#: `primaryEvent` in the root (and the event of the cover) has no DOM id.
+#: `primaryEvent` in the root has no DOM id (its place and program: "").
 PRIMARY_EVENT_FIELDS = tuple(field for field in EVENT_FIELDS if field != "domId")
 LOCATION_FIELDS = (
     "id", "domId", "ready", "name", "address", "description", "mapLinks", "hasMapLinks",
@@ -265,6 +265,11 @@ GUESTS = [
 
 # --- the page tree of one guest -------------------------------------------------
 
+def join_id(*parts: str) -> str:
+    """A DOM id from its parts, joined by `--` (never inside an id of the data)."""
+    return "--".join(parts) if parts and parts[0] else ""
+
+
 def media_node(media_id: str, url: Callable[[str], str] = hashed_url) -> Strict:
     item = MEDIA[media_id]
     video = item["type"] == "video"
@@ -350,9 +355,10 @@ class PageTree:
             tabText=item["timeText"] if self.same_day
             else f"{item['dayMonth']}, {item['timeText']}",
             icsPath=f"/i/{self.guest['token']}/{event_id}.ics",
-            location=location_node(item["location"], f"{dom_id or 'primary'}-location",
+            location=location_node(item["location"],
+                                   join_id(dom_id or "", f"l-{item['location']}"),
                                    compact=False, nested=True, url=self.url),
-            program=node(PROGRAM_FIELDS, domId=f"{dom_id or 'primary'}-program",
+            program=node(PROGRAM_FIELDS, domId=join_id(dom_id or "", "program"),
                          items=schedule_items(item["schedule"]), nested=True)
             if item.get("schedule") else None,
         )
@@ -368,16 +374,16 @@ class PageTree:
             return node(fields, **common, text=self.text(config["text"]),
                         variant=config.get("variant", "body"))
         if kind == "date":
-            return node(fields, **common, event=self.event(self.primary, f"{dom_id}-{self.primary}"),
+            return node(fields, **common, event=self.event(self.primary, join_id(dom_id, f"e-{self.primary}")),
                         countdown=True, calendar=True, showEventTitle=len(self.visible) > 1)
         if kind == "events":
-            items = [self.event(event_id, f"{dom_id}-{event_id}") for event_id in self.visible]
+            items = [self.event(event_id, join_id(dom_id, f"e-{event_id}")) for event_id in self.visible]
             return node(fields, **common, items=items, count=len(items),
-                        multiple=len(items) > 1, primaryDomId=f"{dom_id}-{self.primary}")
+                        multiple=len(items) > 1, primaryDomId=join_id(dom_id, f"e-{self.primary}"))
         if kind == "location":
             location_id = config["location"]
             return node(fields, **common, location=location_node(
-                location_id, f"{dom_id}-{location_id}",
+                location_id, join_id(dom_id, f"l-{location_id}"),
                 compact=config.get("variant") == "compact", nested=False, url=self.url))
         if kind == "schedule":
             return node(fields, **common, items=schedule_items(config["schedule"]), nested=False)
@@ -392,14 +398,14 @@ class PageTree:
             if config.get("type") == "cover":
                 result.append(node(
                     SECTION_FIELDS["cover"], id=section_id, type="cover", domId=dom_id,
-                    titleId=f"{dom_id}-title", eyebrow=config["eyebrow"],
-                    event=self.event(self.primary, None)))
+                    titleId=join_id(dom_id, "title"), eyebrow=config["eyebrow"],
+                    event=self.event(self.primary, join_id(dom_id, f"e-{self.primary}"))))
                 continue
             override = overrides.get(section_id, {})
             if not override.get("visible", config.get("visible", True)):
                 continue
             widgets = [
-                self.widget(widget, f"{dom_id}-w{number}", f"{dom_id}-title")
+                self.widget(widget, join_id(dom_id, f"w{number}"), join_id(dom_id, "title"))
                 for number, widget in enumerate(config["widgets"], 1)
                 if override.get("widgets", {}).get(widget.get("id"), {}).get(
                     "visible", widget.get("visible", True))
@@ -409,7 +415,7 @@ class PageTree:
                 continue
             result.append(node(
                 SECTION_FIELDS["custom"], id=section_id, type="custom", domId=dom_id,
-                titleId=f"{dom_id}-title", title=self.text(config["title"]),
+                titleId=join_id(dom_id, "title"), title=self.text(config["title"]),
                 titleHidden=config.get("titleHidden", False),
                 align=config.get("align", "start"), width=config.get("width", "narrow"),
                 note=note, widgets=widgets))
@@ -544,7 +550,7 @@ def bare_location(full: bool, ready: bool = True, compact: bool = False,
              "yandex": "https://yandex.ru/maps/?pt=2,1&z=16",
              "apple": "https://maps.apple.com/?ll=1,2"} if full else dict.fromkeys(MAP_LINK_FIELDS, "")
     return node(
-        LOCATION_FIELDS, id="l", domId="w-l", ready=ready, name="Место" if ready else "",
+        LOCATION_FIELDS, id="l", domId="w--l-l", ready=ready, name="Место" if ready else "",
         address="Энск" if full else "", description="Описание" if full else "",
         mapLinks=node(MAP_LINK_FIELDS, **links), hasMapLinks=full,
         photos=[bare_media("image"), bare_media("video", sized=False, duration="")] if full else [],
@@ -561,19 +567,19 @@ def bare_event(event_id: str, full: bool, primary: bool = False, with_dom_id: bo
         whenText="Суббота, 15 июня 2030, 16:00", tabText="16:00",
         icsPath=f"/i/t/{event_id}.ics",
         location=bare_location(full, ready=full, nested=True),
-        program=node(PROGRAM_FIELDS, domId=f"w-{event_id}-program", nested=True, items=[
+        program=node(PROGRAM_FIELDS, domId=f"w--e-{event_id}--program", nested=True, items=[
             node(SCHEDULE_ITEM_FIELDS, time="16:00", title="Пункт", text="Текст"),
             node(SCHEDULE_ITEM_FIELDS, time="", title="Пункт", text="")]) if full else None,
     )
     if with_dom_id:
-        values["domId"] = f"w-{event_id}"
+        values["domId"] = f"w--e-{event_id}"
         return node(EVENT_FIELDS, **values)
     return node(PRIMARY_EVENT_FIELDS, **values)
 
 
 def bare_widget(kind: str, **values) -> Strict:
     return node(WIDGET_COMMON_FIELDS + WIDGET_FIELDS[kind], type=kind, domId="w",
-                labelledBy="s-title", **values)
+                labelledBy="s--title", **values)
 
 
 def widget_variants() -> list[Strict]:
@@ -586,7 +592,7 @@ def widget_variants() -> list[Strict]:
     for full in (True, False):
         one = [bare_event("a", full, primary=True)]
         many = one + [bare_event("b", full), bare_event("c", full)]
-        for items, primary in ((one, "w-a"), (many, "w-a"), (many, "")):
+        for items, primary in ((one, "w--e-a"), (many, "w--e-a"), (many, "")):
             widgets.append(bare_widget("events", items=items, count=len(items),
                                        multiple=len(items) > 1, primaryDomId=primary))
         for ready in (True, False):
@@ -608,7 +614,7 @@ def widget_variants() -> list[Strict]:
 def section_variants() -> list[Strict]:
     sections = [
         node(SECTION_FIELDS["cover"], id="cover", type="cover", domId="s-cover",
-             titleId="s-cover-title", eyebrow=eyebrow, event=bare_event("e", True, True, False))
+             titleId="s-cover--title", eyebrow=eyebrow, event=bare_event("e", True, True))
         for eyebrow in ("Приглашение", "")
     ]
     widget = bare_widget("text", text="Текст", variant="body")
@@ -618,7 +624,7 @@ def section_variants() -> list[Strict]:
                                           (False, "Только приписка", [])):
                 sections.append(node(
                     SECTION_FIELDS["custom"], id="s", type="custom", domId="s",
-                    titleId="s-title", title="Заголовок", titleHidden=hidden, align=align,
+                    titleId="s--title", title="Заголовок", titleHidden=hidden, align=align,
                     width=width, note=note, widgets=widgets))
     return sections
 
@@ -752,12 +758,12 @@ class FragmentContractTests(unittest.TestCase):
     def test_the_events_widget_works_without_a_script(self):
         many = [bare_event("a", True, primary=True), bare_event("b", False)]
         document = self.render("widgets", [bare_widget(
-            "events", items=many, count=2, multiple=True, primaryDomId="w-a")])
+            "events", items=many, count=2, multiple=True, primaryDomId="w--e-a")])
         tablist = re.search(r"<div [^>]*data-events-tablist[^>]*>", document).group(0)
         self.assertIn(" hidden", tablist)
-        self.assertIn('aria-labelledby="s-title"', tablist)
+        self.assertIn('aria-labelledby="s--title"', tablist)
         self.assertIn('style="--events-count: 2"', tablist)
-        self.assertIn('data-events-primary="w-a"', document)
+        self.assertIn('data-events-primary="w--e-a"', document)
         panels = re.findall(r"<article [^>]*>", document)
         self.assertEqual(len(panels), 2)
         for panel in panels:
@@ -765,28 +771,28 @@ class FragmentContractTests(unittest.TestCase):
             self.assertIn("data-events-start=", panel)
             self.assertIn("data-events-end=", panel)
         self.assertIn("events__panel--primary", panels[0])
-        self.assertIn('aria-controls="w-a"', document)
-        self.assertIn('id="w-a-tab"', document)
+        self.assertIn('aria-controls="w--e-a"', document)
+        self.assertIn('id="w--e-a--tab"', document)
         # the marks are in the markup, hidden until the script sets them
         for mark in re.findall(r"<span [^>]*data-events-when[^>]*>", document):
             self.assertIn(" hidden", mark)
         self.assertNotIn("data-countdown", document)
         # a single event: no tab list at all
         document = self.render("widgets", [bare_widget(
-            "events", items=many[:1], count=1, multiple=False, primaryDomId="w-a")])
+            "events", items=many[:1], count=1, multiple=False, primaryDomId="w--e-a")])
         self.assertNotIn("data-events-tablist", document)
         self.assertNotIn("role=\"tab\"", document)
 
     def test_the_card_of_an_event_keeps_its_order(self):
         document = self.render("widgets", [bare_widget(
             "events", items=[bare_event("a", True, primary=True)], count=1, multiple=False,
-            primaryDomId="w-a")])
+            primaryDomId="w--e-a")])
         order = ["<h3", "events__when", "text/calendar", "events__description",
                  "events__note", "venue__name", "events__program"]
         positions = [document.index(marker) for marker in order]
         self.assertEqual(positions, sorted(positions))
         self.assertRegex(document, r"<h4 class=\"venue__name\">")
-        self.assertRegex(document, r"<h4 class=\"events__program-title\" id=\"w-a-program\">")
+        self.assertRegex(document, r"<h4 class=\"events__program-title\" id=\"w--e-a--program\">")
         self.assertRegex(document, r"<h5 class=\"schedule__name\">")
 
     def test_one_program_markup_at_two_depths(self):
@@ -796,13 +802,13 @@ class FragmentContractTests(unittest.TestCase):
         self.assertNotIn("<h5", widget)
         card = self.render("widgets", [bare_widget(
             "events", items=[bare_event("a", True, primary=True)], count=1, multiple=False,
-            primaryDomId="w-a")])
-        self.assertIn('<section class="events__program" aria-labelledby="w-a-program">', card)
+            primaryDomId="w--e-a")])
+        self.assertIn('<section class="events__program" aria-labelledby="w--e-a--program">', card)
         self.assertNotIn('<h3 class="schedule__name">', card)
         # an event without a program: no heading "Программа" at all
         bare = self.render("widgets", [bare_widget(
             "events", items=[bare_event("a", False, primary=True)], count=1, multiple=False,
-            primaryDomId="w-a")])
+            primaryDomId="w--e-a")])
         self.assertNotIn("events__program", bare)
         self.assertNotIn("schedule__list", bare)
 
@@ -940,11 +946,11 @@ class FullPageTests(unittest.TestCase):
                 panels = re.findall(r'<article class="card event events__panel '
                                     r'events__panel--(\w+)" id="([\w-]+)"', page)
                 self.assertEqual([panel_id for _kind, panel_id in panels],
-                                 [f"s-where-w1-{event_id}" for event_id in builder.visible])
+                                 [f"s-where--w1--e-{event_id}" for event_id in builder.visible])
                 self.assertEqual([kind for kind, panel_id in panels if kind == "primary"],
                                  ["primary"])
-                self.assertIn(f'id="s-where-w1-{builder.primary}"', page)
-                self.assertIn(f'data-events-primary="s-where-w1-{builder.primary}"', page)
+                self.assertIn(f'id="s-where--w1--e-{builder.primary}"', page)
+                self.assertIn(f'data-events-primary="s-where--w1--e-{builder.primary}"', page)
                 self.assertEqual("data-events-tablist" in page, len(builder.visible) > 1)
                 cover_date = EVENTS[builder.primary]["dateText"]
                 self.assertRegex(page, rf'<p class="cover__date"><time [^>]*>{cover_date}</time>')

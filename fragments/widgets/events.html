@@ -3,7 +3,7 @@
   <!-- if:.multiple -->
   <div class="events__tabs" role="tablist" aria-labelledby="{{.labelledBy}}" style="--events-count: {{.count}}" data-events-tablist hidden>
     <!-- each:.items -->
-    <button class="events__tab" type="button" role="tab" id="{{.domId}}-tab" aria-controls="{{.domId}}" aria-selected="false" tabindex="-1" data-events-tab>
+    <button class="events__tab" type="button" role="tab" id="{{.domId}}--tab" aria-controls="{{.domId}}" aria-selected="false" tabindex="-1" data-events-tab>
       <span class="events__tab-title">{{.title}}</span>
       <span class="events__tab-time"><time datetime="{{.startISO}}">{{.tabText}}</time></span>
       <span class="time-label" data-events-when="past" hidden>прошло</span>
@@ -13,9 +13,9 @@
   </div>
   <!-- endif -->
   <!-- each:.items -->
-  <article class="card event events__panel events__panel--{{.kind}}" id="{{.domId}}" aria-labelledby="{{.domId}}-title" data-events-panel data-events-start="{{.startISO}}" data-events-end="{{.endISO}}">
+  <article class="card event events__panel events__panel--{{.kind}}" id="{{.domId}}" aria-labelledby="{{.domId}}--title" data-events-panel data-events-start="{{.startISO}}" data-events-end="{{.endISO}}">
     <header class="events__head">
-      <h3 class="card__title events__title" id="{{.domId}}-title">{{.title}}</h3>
+      <h3 class="card__title events__title" id="{{.domId}}--title">{{.title}}</h3>
       <p class="events__when"><time datetime="{{.startISO}}">{{.whenText}}</time>
         <span class="time-label" data-events-when="past" hidden>событие прошло</span>
         <span class="time-label time-label--strong" data-events-when="now" hidden>идёт сейчас</span></p>
