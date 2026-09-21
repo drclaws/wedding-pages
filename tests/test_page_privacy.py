@@ -82,7 +82,7 @@ class TreePrivacyTests(unittest.TestCase):
         self.assertGreater(self.check_set(F.pending_site(), F.pending_invitations(), {}), 10)
 
     def test_widget_switched_on_for_one_invitation(self):
-        booked = F.SITE["sections"][6]["widgets"][2]["text"]
+        booked = F.SITE["sections"][5]["widgets"][2]["text"]
         pages, _usage = _page.build_pages(F.site(), F.invitations(), F.settings())
         for number, page in enumerate(pages, start=1):
             text = json.dumps(page, ensure_ascii=False)

@@ -215,7 +215,8 @@ class PrivacyTests(ExamplePagesTestCase):
         self.assertGreater(checked, 0)
         # the widget "hotel-booked" is switched on for one guest only
         site, invitations, files = self.built["data"]
-        text = site["sections"][6]["widgets"][2]["text"]
+        travel = next(section for section in site["sections"] if section["id"] == "travel")
+        text = travel["widgets"][2]["text"]
         pages = [
             path for path, content in files.items()
             if text["ty"] in content or text["vy"] in content
@@ -278,6 +279,63 @@ class PrivacyTests(ExamplePagesTestCase):
             self.assertFalse(any(name.encode() in content for content in contents), name)
         page = (out / "i" / invitations[0]["token"] / "index.html").read_text(encoding="utf-8")
         self.assertIn(f'<img src="/assets/{site["mediaDir"]}/{thumb}" alt=""', page)
+
+
+def has_companion(invitation: dict) -> bool:
+    widgets = invitation.get("sections", {}).get("invite", {}).get("widgets", {})
+    return widgets.get("plus-one", {}).get("visible", False)
+
+
+class CompanionTests(ExamplePagesTestCase):
+    """The companion text is a paragraph of the invitation, only where switched on."""
+
+    TEXT_WIDGET_RE = re.compile(r'<div class="widget text-widget[^"]*">\s*<p>(.*?)</p>\s*</div>', re.S)
+
+    @staticmethod
+    def companion_text(site: dict) -> dict:
+        invite = next(section for section in site["sections"] if section["id"] == "invite")
+        return next(widget for widget in invite["widgets"] if widget.get("id") == "plus-one")["text"]
+
+    def invite_texts(self, page: str) -> list[str]:
+        start = page.index('id="s-invite"')
+        return self.TEXT_WIDGET_RE.findall(page[start:page.index("</section>", start)])
+
+    def test_the_companion_text_is_between_the_invitation_and_the_date(self):
+        counts = collections.Counter()
+        for name, site, invitations, files in self.sets():
+            text = self.companion_text(site)
+            for invitation in invitations:
+                page = files[f"i/{invitation['token']}/index.html"]
+                texts = self.invite_texts(page)
+                with self.subTest(data=name, token=invitation["token"][:4]):
+                    self.assertTrue(texts[0].startswith("Мы, "), texts[0])
+                    self.assertTrue(texts[-1].startswith("Ждём "), texts[-1])
+                    if has_companion(invitation):
+                        self.assertEqual(texts[1:-1], [build.text_to_html(text[invitation["form"]])])
+                    else:
+                        self.assertEqual(len(texts), 2)
+                    counts[has_companion(invitation)] += 1
+        # four of eight guests in the main set, one of three in the other
+        self.assertEqual(counts, {True: 5, False: 6})
+
+    def test_without_a_companion_the_text_is_nowhere_on_the_page(self):
+        for name, site, invitations, files in self.sets():
+            text = self.companion_text(site)
+            lines = {line for form in ("ty", "vy") for line in text[form].split("\n")}
+            for invitation in invitations:
+                if has_companion(invitation):
+                    continue
+                own = self.own(invitation, files)
+                with self.subTest(data=name, token=invitation["token"][:4]):
+                    for path, content in own.items():
+                        for line in lines:
+                            self.assertNotIn(build.text_to_html(line), content, path)
+                        self.assertNotIn("спутни", content, path)
+
+    def test_there_is_no_companion_section(self):
+        for name, _site, _invitations, files in self.sets():
+            with self.subTest(data=name):
+                self.assertEqual([path for path, content in files.items() if "s-plus-one" in content], [])
 
 
 class MarkupTests(ExamplePagesTestCase):

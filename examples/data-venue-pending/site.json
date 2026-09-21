@@ -18,8 +18,26 @@
           "type": "text",
           "variant": "lead",
           "text": {
-            "ty": "Мы, {coupleNames}, приглашаем тебя на наш праздник.\n\nЖдём тебя {eventDate} в {eventTime}.",
-            "vy": "Мы, {coupleNames}, приглашаем вас на наш праздник.\n\nЖдём вас {eventDate} в {eventTime}."
+            "ty": "Мы, {coupleNames}, приглашаем тебя на наш праздник.",
+            "vy": "Мы, {coupleNames}, приглашаем вас на наш праздник."
+          }
+        },
+        {
+          "id": "plus-one",
+          "type": "text",
+          "variant": "lead",
+          "visible": false,
+          "text": {
+            "ty": "Ты можешь прийти со спутником или спутницей.",
+            "vy": "Вы можете прийти со спутником или спутницей."
+          }
+        },
+        {
+          "type": "text",
+          "variant": "lead",
+          "text": {
+            "ty": "Ждём тебя {eventDate} в {eventTime}.",
+            "vy": "Ждём вас {eventDate} в {eventTime}."
           }
         }
       ]
@@ -28,20 +46,6 @@
       "id": "personal",
       "title": "Несколько слов лично",
       "widgets": []
-    },
-    {
-      "id": "plus-one",
-      "title": "Плюс один",
-      "visible": false,
-      "widgets": [
-        {
-          "type": "text",
-          "text": {
-            "ty": "Ты можешь прийти со спутником или спутницей.",
-            "vy": "Вы можете прийти со спутником или спутницей."
-          }
-        }
-      ]
     },
     {
       "id": "when",

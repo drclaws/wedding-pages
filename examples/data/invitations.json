@@ -12,8 +12,12 @@
       "personal": {
         "note": "Спасибо, что столько лет рядом. Очень ждём! <3"
       },
-      "plus-one": {
-        "visible": true
+      "invite": {
+        "widgets": {
+          "plus-one": {
+            "visible": true
+          }
+        }
       }
     }
   },
@@ -52,8 +56,12 @@
     "greeting": "Дорогой Трент!",
     "form": "ty",
     "sections": {
-      "plus-one": {
-        "visible": true
+      "invite": {
+        "widgets": {
+          "plus-one": {
+            "visible": true
+          }
+        }
       },
       "travel": {
         "visible": true
@@ -100,8 +108,12 @@
       "personal": {
         "note": "Для нас большая честь пригласить вас на наш праздник."
       },
-      "plus-one": {
-        "visible": true
+      "invite": {
+        "widgets": {
+          "plus-one": {
+            "visible": true
+          }
+        }
       }
     }
   },
@@ -110,8 +122,12 @@
     "greeting": "Уважаемая Хайди Андреевна!",
     "form": "vy",
     "sections": {
-      "plus-one": {
-        "visible": true
+      "invite": {
+        "widgets": {
+          "plus-one": {
+            "visible": true
+          }
+        }
       },
       "travel": {
         "visible": true,

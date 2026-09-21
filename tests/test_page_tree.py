@@ -163,7 +163,7 @@ class ContractTests(unittest.TestCase):
     def test_rsvp_deadline_is_an_empty_string_when_not_set(self):
         def change(site, invitations):
             site.pop("rsvpDeadline")
-            site["sections"].pop(8)
+            site["sections"].pop(7)
 
         self.assertEqual(build(change)[0]["rsvpDeadline"], "")
 
@@ -187,8 +187,8 @@ class PrimaryEventTests(unittest.TestCase):
 
     def test_texts_use_the_primary_event(self):
         pages = build()
-        self.assertTrue(section(pages[2], "invite")["widgets"][0]["text"].endswith("Ждём тебя 15 июня 2030 в 11:00."))
-        self.assertTrue(section(pages[0], "invite")["widgets"][0]["text"].endswith("Ждём тебя 15 июня 2030 в 16:00."))
+        self.assertEqual(section(pages[2], "invite")["widgets"][-1]["text"], "Ждём тебя 15 июня 2030 в 11:00.")
+        self.assertEqual(section(pages[0], "invite")["widgets"][-1]["text"], "Ждём тебя 15 июня 2030 в 16:00.")
 
     def test_other_placeholders(self):
         def change(site, invitations):
@@ -201,7 +201,7 @@ class PrimaryEventTests(unittest.TestCase):
         )
 
     def test_primary_card_is_not_among_the_cards(self):
-        pages = build(lambda s, i: s["sections"][5]["widgets"][0].update(events=["dinner"]))
+        pages = build(lambda s, i: s["sections"][4]["widgets"][0].update(events=["dinner"]))
         self.assertEqual(events_widget(pages[2])["primaryDomId"], "")
         self.assertEqual(events_widget(pages[0])["primaryDomId"], "s-where--w1--e-dinner")
 
@@ -241,18 +241,18 @@ class HiddenEventTests(unittest.TestCase):
         self.assertEqual(brunch["whenText"], "Воскресенье, 16 июня 2030, 12:00")
 
     def test_date_widget_of_a_hidden_event_is_left_out(self):
-        pages = build(lambda s, i: s["sections"][4]["widgets"].append({"type": "date", "event": "brunch"}))
+        pages = build(lambda s, i: s["sections"][3]["widgets"].append({"type": "date", "event": "brunch"}))
         self.assertEqual(len(widgets(pages[0], "date")), 2)
         self.assertEqual(len(widgets(pages[1], "date")), 1)
 
     def test_programme_of_hidden_events_is_left_out(self):
-        pages = build(lambda s, i: s["sections"][5]["widgets"].append({"type": "schedule", "schedule": "dinner"}))
+        pages = build(lambda s, i: s["sections"][4]["widgets"].append({"type": "schedule", "schedule": "dinner"}))
         self.assertEqual(len(widgets(pages[0], "schedule")), 1)
 
         def change(site, invitations):
             site["events"]["ceremony"]["schedule"] = "dinner"
             site["events"]["dinner"].pop("schedule")
-            site["sections"][5]["widgets"].append({"type": "schedule", "schedule": "dinner"})
+            site["sections"][4]["widgets"].append({"type": "schedule", "schedule": "dinner"})
 
         pages = build(change)
         self.assertEqual(len(widgets(pages[0], "schedule")), 1)
@@ -262,13 +262,17 @@ class HiddenEventTests(unittest.TestCase):
 class OverrideTests(unittest.TestCase):
     def test_sections_switched_on_and_off(self):
         pages = build()
-        self.assertIsNotNone(section(pages[0], "plus-one"))
-        self.assertIsNone(section(pages[1], "plus-one"))
+        self.assertIsNone(section(pages[1], "travel"))
         self.assertIsNone(section(pages[1], "personal"))  # nothing to show
         self.assertIsNotNone(section(pages[2], "travel"))
 
     def test_widget_switched_on(self):
         pages = build()
+        invite_1 = [w["domId"] for w in section(pages[0], "invite")["widgets"]]
+        invite_2 = [w["domId"] for w in section(pages[1], "invite")["widgets"]]
+        self.assertEqual(invite_1, ["s-invite--w1", "s-invite--w2", "s-invite--w3"])
+        self.assertEqual(invite_2, ["s-invite--w1", "s-invite--w3"])
+        self.assertIn("со спутником", section(pages[0], "invite")["widgets"][1]["text"])
         travel_3 = [w["domId"] for w in section(pages[2], "travel")["widgets"]]
         travel_6 = [w["domId"] for w in section(pages[5], "travel")["widgets"]]
         self.assertEqual(travel_3, ["s-travel--w1", "s-travel--w2"])
@@ -277,7 +281,7 @@ class OverrideTests(unittest.TestCase):
 
     def test_widget_switched_off(self):
         def change(site, invitations):
-            site["sections"][6]["widgets"][2]["visible"] = True
+            site["sections"][5]["widgets"][2]["visible"] = True
             invitations[1]["sections"] = {
                 "travel": {"visible": True, "widgets": {"hotel-booked": {"visible": False}}}
             }
@@ -371,7 +375,9 @@ class DomIdTests(unittest.TestCase):
             site["sections"][1]["widgets"].insert(0, {"type": "text", "text": "x", "visible": False})
 
         invite = section(build(change)[0], "invite")
-        self.assertEqual([widget["domId"] for widget in invite["widgets"]], ["s-invite--w2"])
+        self.assertEqual(
+            [widget["domId"] for widget in invite["widgets"]], ["s-invite--w2", "s-invite--w3", "s-invite--w4"]
+        )
 
 
 class DomIdCollisionTests(unittest.TestCase):
@@ -496,7 +502,7 @@ class DateTextTests(unittest.TestCase):
         self.assertEqual(dinner["icsPath"], "/i/0R-pnCqGFgrPOR5e-NluZw/dinner.ics")
 
     def test_cards_ordered_by_start(self):
-        page = build(lambda s, i: s["sections"][5]["widgets"][0].update(events=["brunch", "dinner", "ceremony"]))[0]
+        page = build(lambda s, i: s["sections"][4]["widgets"][0].update(events=["brunch", "dinner", "ceremony"]))[0]
         self.assertEqual([item["id"] for item in events_widget(page)["items"]], ["ceremony", "dinner", "brunch"])
 
     def test_show_event_title(self):
