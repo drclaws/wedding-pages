@@ -448,10 +448,12 @@ class PrivacyTests(FullBuildTestCase):
             content = path.read_text(encoding="utf-8")
             for secret in (
                 support.GREETING_TY, support.GREETING_VY, support.GREETING_THIRD,
-                support.NOTE, support.TRAVEL_NOTE, support.EVENT_NOTE, support.COUPLE_NAMES,
-                *TOKENS,
+                support.NOTE, support.TRAVEL_NOTE, support.EVENT_NOTE, *TOKENS,
             ):  # fmt: skip
                 self.assertNotIn(secret, content)
+            # the names of the couple are site data, not guest data: they
+            # title the entry (see `test_names_stay_on_the_pages`)
+            self.assertIn(f"SUMMARY:{support.COUPLE_NAMES} · ", content)
         # the file of an event is the same for everybody who sees it: every
         # page links the same one
         dinner = calendar_link("dinner")
@@ -464,6 +466,11 @@ class PrivacyTests(FullBuildTestCase):
         self.assertIn(support.COUPLE_NAMES.encode(), contents[f"i/{support.TOKEN_A}/index.html"])
         for name, content in contents.items():
             if name.startswith("i/") and name.endswith(".html"):
+                continue
+            # a calendar file is linked from the pages only, under a name that
+            # takes every token to work out: it is as private as a page
+            if name.startswith(f"{MEDIA}/") and name.endswith(".ics"):
+                self.assertIn(support.COUPLE_NAMES.encode(), content, name)
                 continue
             for secret in (support.COUPLE_NAMES, "Алиса", "Боб"):
                 self.assertNotIn(secret.encode(), content, f"{secret!r} in {name}")

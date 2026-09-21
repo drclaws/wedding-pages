@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import re
 import unittest
+import unittest.mock
 from datetime import timedelta
 
 from tests import fixtures_v2 as F
@@ -220,12 +221,48 @@ class CalendarFileTests(unittest.TestCase):
     def test_default_duration_is_a_named_constant(self):
         self.assertEqual(build.ICS_DEFAULT_DURATION, timedelta(hours=6))
 
-    def test_summary_is_the_title_of_the_event(self):
-        self.assertEqual(dinner()["SUMMARY"], "Праздничный ужин")
-        for payload in calendars().values():
-            text = payload.decode("utf-8")
-            for secret in (support.COUPLE_NAMES, "Алиса", "Боб"):
-                self.assertNotIn(secret, text)
+    def test_summary_is_the_couple_and_the_title_of_the_event(self):
+        self.assertEqual(build.ICS_SUMMARY_SEPARATOR, " · ")
+        self.assertEqual(dinner()["SUMMARY"], "Алиса и Боб · Праздничный ужин")
+        self.assertEqual(
+            properties(calendars()["brunch"])["SUMMARY"],
+            f"Алиса и Боб · {support.HIDDEN_EVENT_TITLE}",
+        )
+        # the names come from the site, whoever sees the event
+        site = site_data(coupleNames="Ева и Дан")
+        self.assertEqual(dinner(site)["SUMMARY"], "Ева и Дан · Праздничный ужин")
+        # the separator is the constant, and only it
+        with unittest.mock.patch.object(build, "ICS_SUMMARY_SEPARATOR", ". "):
+            self.assertEqual(dinner()["SUMMARY"], "Алиса и Боб. Праздничный ужин")
+
+    def test_summary_names_the_couple_but_no_guest(self):
+        for invitations in (invitations_data(), invitations_data()[1:]):
+            for payload in calendars(invitations=invitations).values():
+                summary = properties(payload)["SUMMARY"]
+                self.assertTrue(summary.startswith(f"{support.COUPLE_NAMES} · "), summary)
+                text = payload.decode("utf-8")
+                for secret in (
+                    support.GREETING_TY, support.GREETING_VY, support.GREETING_THIRD,
+                    support.NOTE, support.TRAVEL_NOTE, support.EVENT_NOTE,
+                    support.TOKEN_A, support.TOKEN_B, support.TOKEN_C,
+                ):  # fmt: skip
+                    self.assertNotIn(secret, text)
+        # the file does not depend on which guests see the event
+        self.assertEqual(
+            calendars()["dinner"], calendars(invitations=invitations_data()[1:])["dinner"]
+        )
+
+    def test_new_names_rename_the_file_and_keep_the_uid(self):
+        found = support.fixture_calendars()
+        renamed = support.fixture_calendars(site_data(coupleNames="Ева и Дан"))
+        for event_id in found:
+            with self.subTest(event=event_id):
+                self.assertNotEqual(renamed[event_id].content, found[event_id].content)
+                self.assertNotEqual(renamed[event_id].name, found[event_id].name)
+                self.assertEqual(
+                    properties(renamed[event_id].content)["UID"],
+                    properties(found[event_id].content)["UID"],
+                )
 
     def test_nothing_of_the_invitations_goes_into_the_file(self):
         for payload in calendars().values():
@@ -277,7 +314,11 @@ class CalendarFileTests(unittest.TestCase):
         self.assertEqual(
             found["LOCATION"], "Зал\\; второй\\, этаж\\, Энск\\, вход со двора \\\\ арка"
         )
-        self.assertEqual(found["SUMMARY"], "Ужин\\; танцы\\, салют")
+        self.assertEqual(found["SUMMARY"], "Алиса и Боб · Ужин\\; танцы\\, салют")
+        # the names are escaped the same way
+        site = site_data(coupleNames="Алиса, Боб; и \\ друзья")
+        site["events"]["dinner"]["title"] = "Ужин"
+        self.assertEqual(dinner(site)["SUMMARY"], "Алиса\\, Боб\\; и \\\\ друзья · Ужин")
 
     def test_uid_is_stable_and_not_personal(self):
         first = dinner()["UID"]
@@ -362,6 +403,24 @@ class FoldingTests(unittest.TestCase):
             "улица Образцовая\\, 1",
         )
 
+    def test_long_summary_in_the_file(self):
+        # the names and the title together pass 75 octets: the line is folded
+        # on character boundaries, the separator included
+        site = site_data(coupleNames="Александра Вымышленная, и Бенедикт Примерный")
+        site["events"]["dinner"]["title"] = "Праздничный ужин; танцы до утра"
+        payload = calendars(site)["dinner"]
+        physical = payload.split(b"\r\n")
+        start = next(i for i, line in enumerate(physical) if line.startswith(b"SUMMARY:"))
+        self.assertTrue(physical[start + 1].startswith(b" "))
+        for chunk in physical:
+            self.assertLessEqual(len(chunk), 75, chunk)
+            chunk.decode("utf-8")
+        self.assertEqual(
+            properties(payload)["SUMMARY"],
+            "Александра Вымышленная\\, и Бенедикт Примерный · "
+            "Праздничный ужин\\; танцы до утра",
+        )
+
 
 class SingleEventCalendarTests(unittest.TestCase):
     """`build_event_ics`: the calendar file of one event."""
@@ -378,7 +437,7 @@ class SingleEventCalendarTests(unittest.TestCase):
         "DTSTART:20300601T130000Z\r\n"
         "DTEND:20300601T190000Z\r\n"
         "SEQUENCE:1\r\n"
-        "SUMMARY:Праздничный ужин\r\n"
+        "SUMMARY:Алиса и Боб · Праздничный ужин\r\n"
         "LOCATION:Усадьба в Энске\\, Энск\\, Вымышленная \r\n"
         " улица\\, 1\r\n"
         "END:VEVENT\r\n"
@@ -408,7 +467,7 @@ class SingleEventCalendarTests(unittest.TestCase):
                 uid=uid,
                 start=build.parse_date_iso("2030-06-01T16:00:00+03:00"),
                 end=build.parse_date_iso("2030-06-01T22:00:00+03:00"),
-                summary="Праздничный ужин",
+                summary=f"{support.COUPLE_NAMES} · Праздничный ужин",
                 location=f"{support.PLACE_NAME}, {support.PLACE_ADDRESS}",
             ),
             expected,
