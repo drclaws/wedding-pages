@@ -288,7 +288,11 @@ def write_assets(directory: Path) -> Path:
 def make_code_dir(
     parent: Path, template: str = TEMPLATE, assets: bool = True, stub: str = STUB
 ) -> Path:
-    """A throwaway copy of `build.py` with its own template, stub and assets."""
+    """A throwaway copy of `build.py` with its own template, stub and assets.
+
+    The fragments of the template (`fragments/`) are copied as they are, if
+    the code has any: the build reads them together with every template.
+    """
     code_dir = Path(parent) / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "build.py", code_dir / "build.py")
@@ -296,6 +300,11 @@ def make_code_dir(
     (code_dir / "tools").mkdir(exist_ok=True)
     for source in sorted((ROOT / "tools").glob("*.py")):
         shutil.copy2(source, code_dir / "tools" / source.name)
+    fragments = ROOT / build.FRAGMENTS_DIRNAME
+    if fragments.is_dir():
+        shutil.copytree(
+            fragments, code_dir / build.FRAGMENTS_DIRNAME, symlinks=True, dirs_exist_ok=True
+        )
     (code_dir / "template.html").write_text(template, encoding="utf-8")
     (code_dir / "stub.html").write_text(stub, encoding="utf-8")
     if assets:
