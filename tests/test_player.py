@@ -30,6 +30,7 @@ SOURCES = (
     "assets/styleguide.js",
     "assets/styleguide.css",
     "build.py",
+    "README.md",
     ".github/workflows/ci.yml",
 )
 
