@@ -58,7 +58,7 @@ class AppJsSourceTest(unittest.TestCase):
 
     def test_modules_go_through_the_registry(self):
         names = re.findall(r"\bregister\('([a-z-]+)',", self.code)
-        for expected in ("cover", "reveal", "countdown", "gallery"):
+        for expected in ("cover", "reveal", "countdown", "events", "gallery"):
             self.assertIn(expected, names)
         self.assertEqual(len(names), len(set(names)), "duplicate module names")
         # every init runs inside try/catch and failures are reported as warnings
@@ -85,8 +85,13 @@ class AppJsSourceTest(unittest.TestCase):
             self.assertNotRegex(self.code, pattern)
 
     def test_size_stays_small(self):
-        self.assertLess(len(self.code.encode("utf-8")), 32 * 1024)
-        self.assertLess(len(gzip.compress(self.raw.encode("utf-8"), 9)), 16 * 1024)
+        # Our own code, not a library, so the budget is ours: without comments
+        # the viewer window (module gallery) takes about 16.6 KB and the event
+        # tabs (module events) about 7.1 KB; with them the file is about 35 KB
+        # (15.5 KB gzipped, comments included).  Raise the limits deliberately,
+        # when a module needs it, not to make room in advance.
+        self.assertLess(len(self.code.encode("utf-8")), 40 * 1024)
+        self.assertLess(len(gzip.compress(self.raw.encode("utf-8"), 9)), 20 * 1024)
 
     def test_timer_and_event_entry_points_are_guarded(self):
         # countdown: the tick that timers and events call is wrapped as a whole
@@ -99,6 +104,183 @@ class AppJsSourceTest(unittest.TestCase):
             self.assertIn("window.addEventListener('%s', onViewportChange" % event, self.code)
             self.assertIn("window.removeEventListener('%s', onViewportChange)" % event, self.code)
         self.assertIn("requestAnimationFrame(onFrame)", self.code)
+
+    def test_every_countdown_starts_in_its_own_try(self):
+        # several date widgets give several timers: one failing leaves the others
+        init = self.code[self.code.index("register('countdown'"):]
+        init = init[:init.index("\n  });")]
+        self.assertRegex(init, r"forEach\.call\([^;]*function \(container\) \{\s*try \{\s*"
+                               r"startCountdown\(container\);\s*\}\s*catch \(error\) \{")
+        self.assertIn("container.hidden = true;", init)
+        self.assertIn("report('countdown', error);", init)
+
+
+class EventsSourceTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        code = strip_comments(APP_JS.read_text(encoding="utf-8"))
+        start = code.index("var EVENTS_RECHECK_MS")
+        end = code.index("\n  });", code.index("register('events'")) + len("\n  });")
+        cls.module = code[start:end]
+        css = strip_comments(APP_CSS.read_text(encoding="utf-8"))
+        cls.css = css
+        start = css.index(".events__tabs {")
+        cls.tabs_css = css[start:css.index(".stub {", start)]
+
+    def function(self, name):
+        """Source of a function of the module, up to the next declaration at its level."""
+        if name == "startEvents":
+            return self.module[self.module.index("function startEvents("):
+                               self.module.index("register('events'")].rstrip()
+        at = self.module.index("function %s(" % name)
+        indent = at - self.module.rindex("\n", 0, at) - 1
+        body = self.module[at:]
+        following = re.search(r"\n {%d}(?:function \w+\(|var \w+ = |register\()" % indent, body)
+        return body[:following.start() + 1] if following else body
+
+    def test_one_instance_per_widget_each_in_its_own_try(self):
+        init = self.module[self.module.index("register('events'"):]
+        self.assertRegex(init, r"querySelectorAll\('\[data-events\]'\), function \(widget\) \{\s*"
+                               r"try \{\s*startEvents\(widget\);\s*\}\s*catch \(error\) \{\s*"
+                               r"report\('events', error\);")
+        # every query of an instance starts from its own root
+        start = self.function("startEvents")
+        for query in re.findall(r"(\w+)\.querySelector(?:All)?\(", start):
+            self.assertIn(query, ("widget", "tablist"))
+        self.assertNotRegex(self.module, r"\bdocument\.querySelector")
+
+    def test_runs_before_reveal_measures_the_page(self):
+        # hiding the cards shortens the page; reveal must measure the final layout
+        code = strip_comments(APP_JS.read_text(encoding="utf-8"))
+        self.assertLess(code.index("register('events'"), code.index("register('reveal'"))
+
+    def test_the_module_has_no_text_of_its_own(self):
+        # the labels «past» / «now» live in the markup; the module only toggles hidden
+        self.assertNotRegex(self.module, r"[А-Яа-яЁё]")
+        self.assertNotRegex(self.module, r"\.textContent\s*=|createElement|createTextNode|appendChild")
+        self.assertIn("label.hidden = label.getAttribute('data-events-when') !== state;", self.module)
+
+    def test_handlers_are_guarded(self):
+        listeners = re.findall(r"\.addEventListener\('[a-z]+', (\w+)\);", self.module)
+        self.assertTrue(listeners)
+        for listener in listeners:
+            with self.subTest(listener=listener):
+                self.assertRegex(self.module, r"var %s = guarded\(function" % listener)
+        guarded = self.function("guarded")
+        self.assertRegex(guarded, r"catch \(error\) \{\s*restore\(\);\s*report\('events', error\);")
+        # a failure while starting also goes back to the markup as it was
+        start = self.function("startEvents")
+        self.assertRegex(start, r"\} catch \(error\) \{\s*restore\(\);\s*throw error;\s*\}\s*\}$")
+
+    def test_restore_returns_the_view_without_the_script(self):
+        restore = self.function("restore")
+        for step in ("tablist.hidden = true;", "panel.hidden = false;",
+                     "panel.removeAttribute('role');", "panel.removeAttribute('tabindex');",
+                     "panel.setAttribute('aria-labelledby', labelledBy[i]);",
+                     "markTime(tabs[i], '');", "markTime(panel, '');", "clearTimeout(timer);"):
+            self.assertIn(step, restore)
+        for listener in re.findall(r"\.addEventListener\(('[a-z]+', \w+)\);", self.module):
+            with self.subTest(listener=listener):
+                self.assertIn(".removeEventListener(%s);" % listener, restore)
+
+    def test_the_tab_list_is_shown_last_and_counted_through_cssom(self):
+        start = self.function("startEvents")
+        body = start[start.rindex("try {"):]
+        self.assertTrue(body[:body.index("} catch")].rstrip().endswith("tablist.hidden = false;"))
+        self.assertIn("tablist.style.setProperty('--events-count', String(tabs.length));", start)
+        self.assertNotRegex(self.module, r"setAttribute\('style'|\.style\.cssText|\.style\s*=")
+
+    def test_tabs_follow_the_aria_pattern(self):
+        start = self.function("startEvents")
+        for step in ("panel.setAttribute('role', 'tabpanel');", "panel.setAttribute('tabindex', '0');",
+                     "panel.setAttribute('aria-labelledby', tabs[i].id);"):
+            self.assertIn(step, start)
+        select = self.function("select")
+        for step in ("tab.setAttribute('aria-selected', on ? 'true' : 'false');",
+                     "tab.tabIndex = on ? 0 : -1;", "panels[i].hidden = !on;"):
+            self.assertIn(step, select)
+        # both axes, because the tabs stand in a row or in a column
+        for key in ("ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"):
+            self.assertIn(key + ":", self.module)
+        keys = self.module[self.module.index("var onKeyDown"):self.module.index("var onFocusOut")]
+        self.assertIn("event.preventDefault();", keys)
+        self.assertIn("chosen = true;", keys)
+        self.assertIn("select(to, true);", keys)
+        self.assertIn("'Home'", keys)
+        self.assertIn("'End'", keys)
+        self.assertIn("% tabs.length", keys)
+        # ids are read from the markup, never put together
+        self.assertIn("tab.getAttribute('aria-controls')", start)
+        self.assertNotRegex(self.module, r"'--(?:tab|panel|title)'|\+\s*'-")
+
+    def test_the_open_window_holds_the_automatic_switch(self):
+        modal = self.function("modalOpen")
+        self.assertIn("root.classList.contains('is-lightbox-open')", modal)
+        self.assertIn("getElementsByTagName('dialog')", modal)
+        self.assertIn(".open", modal)
+        refresh = self.function("refresh")
+        self.assertIn("var pending = !chosen && target !== current;", refresh)
+        self.assertIn("modalOpen()", refresh)
+        self.assertRegex(refresh, r"if \(pending && !modal && !widget\.contains\(document\.activeElement\)\) \{\s*"
+                                  r"select\(target, false\);")
+        # while the window is open the check is repeated until it is closed
+        self.assertIn("schedule(now, modal);", refresh)
+        self.assertIn("soon ? EVENTS_MODAL_RETRY_MS : EVENTS_RECHECK_MS", self.function("schedule"))
+
+    def test_rechecks_come_from_a_timeout_chain_and_page_events(self):
+        self.assertNotIn("setInterval", self.module)
+        schedule = self.function("schedule")
+        self.assertRegex(schedule, r"if \(document\.hidden\) \{\s*return;")
+        self.assertIn("timer = setTimeout(onTime, wait + EVENTS_EDGE_MS);", schedule)
+        self.assertRegex(self.module, r"\bvar EVENTS_RECHECK_MS = 3600000;")
+        for listener in ("document.addEventListener('visibilitychange', onTime);",
+                         "window.addEventListener('pageshow', onTime);"):
+            self.assertIn(listener, self.module)
+
+    def test_the_default_tab_is_chosen_in_one_place(self):
+        # a later answer about which tab to show changes this one function
+        self.assertEqual(len(re.findall(r"(?<!function )\bdefaultTab\(now\)", self.module)), 2)  # start, recheck
+        default = self.function("defaultTab")
+        self.assertIn("if (primary !== -1 && now < ends[primary]) {", default)
+        self.assertIn("return next === -1 ? panels.length - 1 : next;", default)
+        self.assertIn("return Math.max(primary, 0);", default)
+        mark = self.function("mark")
+        self.assertIn("var state = now >= ends[i] ? 'past' : now >= starts[i] ? 'now' : '';", mark)
+        self.assertIn("parseTarget(panel.getAttribute('data-events-start'))", self.module)
+        self.assertIn("parseTarget(panel.getAttribute('data-events-end'))", self.module)
+
+    def test_tab_styles(self):
+        tab = re.search(r"\.events__tab \{([^}]*)\}", self.tabs_css).group(1)
+        self.assertIn("min-block-size: var(--tap-min);", tab)
+        self.assertIn("var(--duration-fast)", tab)
+        self.assertIn("var(--events-count", self.tabs_css)
+        self.assertIn("var(--events-tab-min)", self.tabs_css)
+        self.assertNotRegex(self.tabs_css, r"@container|@media[^{]*width|:has\(|animation")
+        for state in ('[aria-selected="true"]', ".is-past", ".is-now", ":focus-visible"):
+            self.assertIn(".events__tab" + state, self.tabs_css)
+        outside = re.sub(r"@media \(hover: hover\)\s*\{(?:[^{}]*\{[^{}]*\})*\s*\}", "", self.tabs_css)
+        self.assertNotIn(":hover", outside)
+        self.assertIn(".events__tab:hover", self.tabs_css)
+
+    def test_panels_have_no_reveal_of_their_own(self):
+        fragment = (ROOT / "fragments" / "widgets" / "events.html").read_text(encoding="utf-8")
+        self.assertNotIn("data-reveal", fragment)
+        self.assertNotRegex(self.tabs_css, r"data-reveal|@keyframes")
+
+    def test_tab_width_token(self):
+        self.assertRegex(self.css, r"\n\s*--events-tab-min: 11rem;")
+
+
+class ScheduleStylesTest(unittest.TestCase):
+    def test_time_column_leaves_room_for_the_description(self):
+        # a long label takes the free width up to the minimum of the description,
+        # and never less than the old share of the list
+        css = strip_comments(APP_CSS.read_text(encoding="utf-8"))
+        formula = ("grid-template-columns: fit-content(max(var(--schedule-time-max), "
+                   "100% - var(--schedule-body-min))) minmax(0, 1fr);")
+        self.assertEqual(css.count(formula), 2)  # the item, and the list with subgrid
+        self.assertNotIn("fit-content(var(--schedule-time-max))", css)
+        self.assertRegex(css, r"\n\s*--schedule-body-min: 16rem;")
 
 
 class LightboxSourceTest(unittest.TestCase):

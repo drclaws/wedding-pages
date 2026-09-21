@@ -684,6 +684,112 @@
         </div>
       </div>
       <!-- /sg:event-card -->
+
+      <!-- sg:events -->
+      <div class="sg-demo">
+        <p class="sg-demo__label">Вкладки событий: .events__tab — состояния</p>
+        <p class="sg-note">
+          Со скриптом над карточками появляется список вкладок: название,
+          время и пометки «прошло» / «идёт сейчас» (тексты лежат в разметке,
+          скрипт только показывает их). Выбранная вкладка —
+          <code>aria-selected="true"</code>, пометки — классы
+          <code>.is-past</code> / <code>.is-now</code>. По порядку: обычная,
+          выбранная, hover, focus, нажатие, прошло, идёт сейчас.
+        </p>
+        <div class="sg-row">
+          <span class="sg-state">
+            <span class="sg-state__label">обычная</span>
+            <button type="button" class="events__tab">
+              <span class="events__tab-title">Второй день</span>
+              <span class="events__tab-time"><time datetime="2030-06-16T12:00:00+03:00">16 июня, 12:00</time></span>
+            </button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">aria-selected</span>
+            <button type="button" class="events__tab" aria-selected="true">
+              <span class="events__tab-title">Праздничный ужин</span>
+              <span class="events__tab-time"><time datetime="2030-06-15T16:00:00+03:00">15 июня, 16:00</time></span>
+            </button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:hover</span>
+            <button type="button" class="events__tab is-hover">
+              <span class="events__tab-title">Второй день</span>
+              <span class="events__tab-time"><time datetime="2030-06-16T12:00:00+03:00">16 июня, 12:00</time></span>
+            </button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:focus-visible</span>
+            <button type="button" class="events__tab is-focus">
+              <span class="events__tab-title">Второй день</span>
+              <span class="events__tab-time"><time datetime="2030-06-16T12:00:00+03:00">16 июня, 12:00</time></span>
+            </button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">:active</span>
+            <button type="button" class="events__tab is-active">
+              <span class="events__tab-title">Второй день</span>
+              <span class="events__tab-time"><time datetime="2030-06-16T12:00:00+03:00">16 июня, 12:00</time></span>
+            </button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">.is-past</span>
+            <button type="button" class="events__tab is-past">
+              <span class="events__tab-title">Регистрация</span>
+              <span class="events__tab-time"><time datetime="2030-06-15T11:00:00+03:00">15 июня, 11:00</time></span>
+              <span class="time-label">прошло</span>
+            </button>
+          </span>
+          <span class="sg-state">
+            <span class="sg-state__label">.is-now</span>
+            <button type="button" class="events__tab is-now">
+              <span class="events__tab-title">Праздничный ужин</span>
+              <span class="events__tab-time"><time datetime="2030-06-15T16:00:00+03:00">15 июня, 16:00</time></span>
+              <span class="time-label time-label--strong">идёт сейчас</span>
+            </button>
+          </span>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Виджет событий со скриптом: .events__tabs и видимая карточка</p>
+        <p class="sg-note">
+          Все вкладки стоят в ряд, пока помещаются при ширине
+          <code>--events-tab-min</code>, иначе все столбиком. Число вкладок
+          на странице скрипт передаёт в <code>--events-count</code>; здесь
+          скрипта нет, и вкладки считаются по одной — они всегда в ряд.
+          Видна одна карточка, у первостепенной рамки акцентом больше нет:
+          выбор показывает вкладка. Карточка ниже — событие, которое идёт
+          сейчас.
+        </p>
+        <div class="widget events-widget events">
+          <div class="events__tabs">
+            <button type="button" class="events__tab is-past">
+              <span class="events__tab-title">Регистрация</span>
+              <span class="events__tab-time"><time datetime="2030-06-15T11:00:00+03:00">11:00</time></span>
+              <span class="time-label">прошло</span>
+            </button>
+            <button type="button" class="events__tab is-now" aria-selected="true">
+              <span class="events__tab-title">Праздничный ужин</span>
+              <span class="events__tab-time"><time datetime="2030-06-15T16:00:00+03:00">16:00</time></span>
+              <span class="time-label time-label--strong">идёт сейчас</span>
+            </button>
+          </div>
+          <article class="card event events__panel events__panel--primary is-now" aria-labelledby="sg-event-3">
+            <header class="events__head">
+              <h3 class="card__title events__title" id="sg-event-3">Праздничный ужин</h3>
+              <p class="events__when"><time datetime="2030-06-15T16:00:00+03:00">Суббота, 15 июня 2030, 16:00–23:30</time>
+                <span class="time-label time-label--strong">идёт сейчас</span></p>
+              <p class="events__actions"><button type="button" class="btn btn--secondary">Добавить в календарь</button></p>
+            </header>
+            <div class="stack venue__info location-card">
+              <h4 class="venue__name">Усадьба «Образец»</h4>
+              <p class="venue__address">г. Энск, ул. Примерная, д. 1</p>
+            </div>
+          </article>
+        </div>
+      </div>
+      <!-- /sg:events -->
     </div>
   </section>
 
