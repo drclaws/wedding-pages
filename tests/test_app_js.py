@@ -563,6 +563,28 @@ class CoverBarTest(unittest.TestCase):
         self.assertIn("white-space: nowrap;", self.layout)
         self.assertIn("text-overflow: ellipsis;", self.layout)
 
+    def test_the_strip_above_the_bar_is_filled_by_the_bar_itself(self):
+        # a pseudo-element of the bar: it shows and fades with the bar (its
+        # opacity, the reduced-motion step), is gone with it without the marker
+        # and in print, takes no room and catches no taps
+        rules = re.findall(r"([^{}]+)\{([^{}]*)\}", self.css)
+        fills = [(selector.strip(), body) for selector, body in rules if "::before" in selector
+                 and "cover-bar" in selector]
+        self.assertEqual([selector for selector, _body in fills], [".cover-bar::before"])
+        fill = fills[0][1]
+        for line in ('content: "";', "position: absolute;", "inset-inline: 0;", "inset-block-end: 100%;",
+                     "block-size: var(--viewport-height);", "background-color: inherit;",
+                     "pointer-events: none;"):
+            with self.subTest(line=line):
+                self.assertIn(line, fill)
+        # nothing of its own that could make it visible apart from the bar
+        self.assertNotRegex(fill, r"\b(?:opacity|display|visibility|animation|z-index)\s*:")
+        # the bar is its containing block in the styleguide too (sticky on the page)
+        bar = re.search(r"\n\.cover-bar \{([^}]*)\}", self.css).group(1)
+        self.assertIn("position: relative;", bar)
+        printed = self.layout[self.layout.index("@media print"):]
+        self.assertRegex(printed, r"\.cover-bar,[^{}]*\{\s*display: none;")
+
     def test_the_timeline_covers_the_cover_itself(self):
         self.assertIn("view-timeline-inset: 0;", self.motion)
         self.assertIn("view-timeline-name: --cover;", self.motion)

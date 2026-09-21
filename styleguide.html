@@ -864,19 +864,47 @@
           скрипт; без скрипта её нет. Само сворачивание проверяют на
           собранной странице.
         </p>
-        <div class="cover-bar" aria-hidden="true">
-          <div class="container cover-bar__inner"><span class="cover-bar__title">Алиса и Боб</span><span class="cover-bar__sep">·</span><span class="cover-bar__date">15 июня 2030</span></div>
+        <div class="sg-edge">
+          <div class="cover-bar" aria-hidden="true">
+            <div class="container cover-bar__inner"><span class="cover-bar__title">Алиса и Боб</span><span class="cover-bar__sep">·</span><span class="cover-bar__date">15 июня 2030</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sg-demo">
+        <p class="sg-demo__label">Заливка над панелью: .cover-bar::before</p>
+        <p class="sg-note">
+          Safari на iOS 26 рисует страницу и над окном — под прозрачной
+          строкой состояния, а прилипшая панель стоит ниже этой полосы.
+          Панель продолжается вверх своим же цветом на высоту экрана
+          (<code>--viewport-height</code>), и прокручиваемое содержимое в
+          полосе не видно. Здесь рамка обрезает заливку: верхняя
+          штрихованная полоса — содержимое страницы над панелью, она закрыта;
+          нижняя — содержимое под панелью, оно видно. Заливка — часть панели:
+          появляется и гаснет вместе с ней, нажатий не ловит, места в потоке
+          не занимает, при печати её нет.
+        </p>
+        <div class="sg-edge">
+          <div class="sg-plate sg-edge__strip"></div>
+          <div class="cover-bar" aria-hidden="true">
+            <div class="container cover-bar__inner"><span class="cover-bar__title">Алиса и Боб</span><span class="cover-bar__sep">·</span><span class="cover-bar__date">15 июня 2030</span></div>
+          </div>
+          <div class="sg-plate sg-edge__strip"></div>
         </div>
       </div>
 
       <div class="sg-demo">
         <p class="sg-demo__label">Панель в узкой колонке: длинные имена с многоточием</p>
         <div class="sg-cols">
-          <div class="cover-bar" aria-hidden="true">
-            <div class="container cover-bar__inner"><span class="cover-bar__title">Александра Константинопольская и Максимилиан Преображенский</span><span class="cover-bar__sep">·</span><span class="cover-bar__date">15 июня 2030</span></div>
+          <div class="sg-edge">
+            <div class="cover-bar" aria-hidden="true">
+              <div class="container cover-bar__inner"><span class="cover-bar__title">Александра Константинопольская и Максимилиан Преображенский</span><span class="cover-bar__sep">·</span><span class="cover-bar__date">15 июня 2030</span></div>
+            </div>
           </div>
-          <div class="cover-bar" aria-hidden="true">
-            <div class="container cover-bar__inner"><span class="cover-bar__title">Ева и Ян</span><span class="cover-bar__sep">·</span><span class="cover-bar__date">1 мая 2031</span></div>
+          <div class="sg-edge">
+            <div class="cover-bar" aria-hidden="true">
+              <div class="container cover-bar__inner"><span class="cover-bar__title">Ева и Ян</span><span class="cover-bar__sep">·</span><span class="cover-bar__date">1 мая 2031</span></div>
+            </div>
           </div>
         </div>
       </div>
