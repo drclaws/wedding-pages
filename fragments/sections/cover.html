@@ -1,5 +1,5 @@
-<!-- Обложка; ожидает в `.` секцию-обложку: domId, titleId, eyebrow, event (первостепенное событие гостя: startISO, dateText), background (медиа-картинка или null), backgroundFocus (перечисление: какая часть фото остаётся видна); из корня — coupleNames. Имена пары — единственный h1 страницы. Метки появления нет: у обложки своя анимация. Фото — фон: alt пустой, подложка скрыта от диктора; не «ленивое» — это первый экран. Условие подложки стоит в строках разметки, а не отдельными строками: без фото обложка выводится ровно как прежде, без пустой строки. -->
-<section class="cover" id="{{.domId}}" aria-labelledby="{{.titleId}}"><!-- if:.background -->
+<!-- Обложка; ожидает в `.` секцию-обложку: domId, titleId, eyebrow, event (первостепенное событие гостя: startISO, dateText), background (медиа-картинка или null), backgroundFocus (перечисление: какая часть фото остаётся видна); из корня — coupleNames. Имена пары — единственный h1 страницы. Метки появления нет: у обложки своя анимация. Фото — фон: alt пустой, подложка скрыта от диктора; не «ленивое» — это первый экран. Условие подложки стоит в строках разметки, а не отдельными строками: без фото обложка выводится ровно как прежде, без пустой строки. За обложкой — верхняя панель, в которую обложка сворачивается при прокрутке: копия имён и даты в одну строку, скрыта от диктора, фокусируемого в ней нет; без скрипта её не видно. -->
+<section class="cover" id="{{.domId}}" aria-labelledby="{{.titleId}}" data-cover><!-- if:.background -->
   <div class="cover__backdrop" aria-hidden="true"><img class="cover__photo cover__photo--{{.backgroundFocus}}" src="{{.background.src}}" alt="" fetchpriority="high"></div><!-- endif -->
   <div class="container cover__inner">
     <!-- if:.eyebrow -->
@@ -10,3 +10,6 @@
     <p class="cover__date"><time datetime="{{.event.startISO}}">{{.event.dateText}}</time></p>
   </div>
 </section>
+<div class="cover-bar" aria-hidden="true" data-cover-bar>
+  <div class="container cover-bar__inner"><span class="cover-bar__title">{{coupleNames}}</span><span class="cover-bar__sep">·</span><span class="cover-bar__date">{{.event.dateText}}</span></div>
+</div>
