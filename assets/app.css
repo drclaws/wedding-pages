@@ -484,6 +484,9 @@
      Порог — только для чтения: повторён буквально в @container (секция 6). */
   --schedule-time-max: 45%;          /* TEMP */
   --schedule-inline-min: 18.5rem;    /* TEMP */
+  /* Описанию пункта программы остаётся не меньше этой ширины; остальное
+     может занять метка времени (но не меньше --schedule-time-max). */
+  --schedule-body-min: 16rem;        /* TEMP */
   --divider-thickness: var(--line-width-hairline);
   --card-padding: var(--space-md);
   --btn-padding-block: var(--space-xs);
@@ -1539,8 +1542,10 @@ a.btn[aria-disabled="true"] {
 /* --- 6. Программа дня --------------------------------------------------------
    На десктопе заголовок и список стоят в две колонки (.grid). Внутри пункта
    время и описание — тоже две колонки: ширину первой задаёт самая длинная
-   метка времени, но не больше --schedule-time-max — длинная метка
-   («15:30–16:45 (ориентировочно)») переносится, а не сжимает описание.
+   метка времени. Метка может занять всё, кроме --schedule-body-min для
+   описания, и в любом случае не меньше --schedule-time-max: в широком
+   списке длинная метка («15:30–16:45 (ориентировочно)») стоит в одну
+   строку, в узком — переносится, а не сжимает описание.
    В узком контейнере и при крупном шрифте время встаёт над описанием. */
 .schedule__title {
   margin-block-end: 0;
@@ -1556,7 +1561,7 @@ a.btn[aria-disabled="true"] {
 
 .schedule__item {
   display: grid;
-  grid-template-columns: fit-content(var(--schedule-time-max)) minmax(0, 1fr);
+  grid-template-columns: fit-content(max(var(--schedule-time-max), 100% - var(--schedule-body-min))) minmax(0, 1fr);
   column-gap: var(--space-sm);
   row-gap: var(--space-2xs);
   align-items: baseline;
@@ -1586,7 +1591,7 @@ a.btn[aria-disabled="true"] {
    между собой; без него каждый пункт выравнивается сам по себе. */
 @supports (grid-template-columns: subgrid) {
   .schedule__list {
-    grid-template-columns: fit-content(var(--schedule-time-max)) minmax(0, 1fr);
+    grid-template-columns: fit-content(max(var(--schedule-time-max), 100% - var(--schedule-body-min))) minmax(0, 1fr);
     column-gap: var(--space-sm);
   }
 

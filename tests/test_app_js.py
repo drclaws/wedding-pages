@@ -109,6 +109,18 @@ class AppJsSourceTest(unittest.TestCase):
         self.assertIn("container.hidden = true;", init)
         self.assertIn("report('countdown', error);", init)
 
+class ScheduleStylesTest(unittest.TestCase):
+    def test_time_column_leaves_room_for_the_description(self):
+        # a long label takes the free width up to the minimum of the description,
+        # and never less than the old share of the list
+        css = strip_comments(APP_CSS.read_text(encoding="utf-8"))
+        formula = ("grid-template-columns: fit-content(max(var(--schedule-time-max), "
+                   "100% - var(--schedule-body-min))) minmax(0, 1fr);")
+        self.assertEqual(css.count(formula), 2)  # the item, and the list with subgrid
+        self.assertNotIn("fit-content(var(--schedule-time-max))", css)
+        self.assertRegex(css, r"\n\s*--schedule-body-min: 16rem;")
+
+
 class LightboxSourceTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
