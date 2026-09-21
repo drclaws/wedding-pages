@@ -495,6 +495,285 @@
 
 
   /* ==========================================================================
+     Модуль events — переключатель событий [data-events]
+     --------------------------------------------------------------------------
+     Без скрипта карточки событий идут подряд по времени начала, список
+     вкладок скрыт атрибутом hidden в разметке. Со скриптом — вкладки по
+     шаблону ARIA Tabs: видна одна карточка; стрелки (по кругу), Home и End,
+     выбор следует за фокусом, tabindex="0" только у выбранной вкладки. Роли
+     и связи панелей ставит скрипт, id берёт из разметки (aria-controls).
+     Число вкладок уходит в стили переменной --events-count через CSSOM.
+
+     Время: у карточки data-events-start и data-events-end — ISO со
+     смещением; окончание сборка подставляет всегда. Моменты сравниваются
+     абсолютно, часовой пояс гостя не влияет. Событие прошло, когда
+     наступило окончание, и идёт между началом и окончанием. Пометки —
+     элементы [data-events-when="past|now"] в разметке: скрипт только
+     снимает и ставит hidden и классы is-past / is-now на вкладке и
+     карточке. Своих текстов у модуля нет.
+
+     Вкладка по умолчанию — функция defaultTab(): первостепенное событие
+     (id карточки в data-events-primary), пока оно не прошло; потом
+     ближайшее непрошедшее; прошли все — последнее. Без корректного
+     времени — первостепенное, иначе первое.
+
+     Пересчёт — на ближайшей границе событий, но не реже раза в час, и при
+     возврате на вкладку браузера. Выбранную вкладку пересчёт не меняет,
+     если гость выбирал её сам, пока фокус внутри виджета (переключение
+     догонит, когда фокус уйдёт) и пока открыто модальное окно (проверка
+     повторяется, пока окно не закроют). Любая ошибка возвращает разметку к
+     виду «без скрипта».
+     ========================================================================== */
+
+  var EVENTS_RECHECK_MS = 3600000;    /* пересчёт не реже раза в час */
+  var EVENTS_MODAL_RETRY_MS = 1000;   /* пока открыто окно — ждать его закрытия */
+  var EVENTS_EDGE_MS = 50;            /* пересчёт чуть позже границы, а не до неё */
+  var EVENTS_STEPS = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 };
+
+  /* Открыто окно просмотра или другой <dialog>: вкладка под ним не
+     переключается. */
+  function modalOpen() {
+    if (root.classList.contains('is-lightbox-open')) {
+      return true;
+    }
+    var dialogs = document.getElementsByTagName('dialog');
+    for (var i = 0; i < dialogs.length; i += 1) {
+      if (dialogs[i].open) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /* Пометка времени на вкладке или карточке: 'past', 'now' или ''. */
+  function markTime(node, state) {
+    node.classList.toggle('is-past', state === 'past');
+    node.classList.toggle('is-now', state === 'now');
+    Array.prototype.forEach.call(node.querySelectorAll('[data-events-when]'), function (label) {
+      label.hidden = label.getAttribute('data-events-when') !== state;
+    });
+  }
+
+  function startEvents(widget) {
+    var tablist = widget.querySelector('[data-events-tablist]');
+    var tabs = tablist ? Array.prototype.slice.call(tablist.querySelectorAll('[data-events-tab]')) : [];
+    var all = Array.prototype.slice.call(widget.querySelectorAll('[data-events-panel]'));
+    var panels = tabs.map(function (tab) {
+      var id = tab.getAttribute('aria-controls');
+      return all.filter(function (panel) {
+        return panel.id === id;
+      })[0];
+    });
+    /* Одна карточка — переключать нечего; карточка без вкладки или вкладка
+       без карточки — разметка не та, всё остаётся видимым. */
+    if (tabs.length < 2 || panels.length !== all.length || panels.indexOf(undefined) !== -1) {
+      return;
+    }
+
+    var starts = panels.map(function (panel) {
+      return parseTarget(panel.getAttribute('data-events-start'));
+    });
+    var ends = panels.map(function (panel) {
+      return parseTarget(panel.getAttribute('data-events-end'));
+    });
+    var timed = !starts.concat(ends).some(isNaN);
+    var labelledBy = panels.map(function (panel) {
+      return panel.getAttribute('aria-labelledby');
+    });
+    var primary = panels.map(function (panel) {
+      return panel.id;
+    }).indexOf(widget.getAttribute('data-events-primary'));
+
+    var current = -1;
+    var chosen = false;   /* гость выбрал вкладку сам — пересчёт её не меняет */
+    var timer = 0;
+
+    function select(index, focus) {
+      current = index;
+      tabs.forEach(function (tab, i) {
+        var on = i === index;
+        tab.setAttribute('aria-selected', on ? 'true' : 'false');
+        tab.tabIndex = on ? 0 : -1;
+        panels[i].hidden = !on;
+      });
+      if (focus) {
+        tabs[index].focus();
+      }
+    }
+
+    /* Ставит пометки на момент now и возвращает индекс непрошедшего
+       события, ближайшего по времени (-1 — прошли все). */
+    function mark(now) {
+      var next = -1;
+      panels.forEach(function (panel, i) {
+        var state = now >= ends[i] ? 'past' : now >= starts[i] ? 'now' : '';
+        markTime(tabs[i], state);
+        markTime(panel, state);
+        if (state !== 'past' && next === -1) {
+          next = i;
+        }
+      });
+      return next;
+    }
+
+    /* Выбор вкладки по умолчанию — здесь и только здесь; заодно обновляет
+       пометки. */
+    function defaultTab(now) {
+      if (!timed) {
+        return Math.max(primary, 0);
+      }
+      var next = mark(now);
+      if (primary !== -1 && now < ends[primary]) {
+        return primary;
+      }
+      return next === -1 ? panels.length - 1 : next;
+    }
+
+    /* Следующий пересчёт — на ближайшей границе; в фоновой вкладке цепочка
+       не крутится (её перезапускает visibilitychange). */
+    function schedule(now, soon) {
+      clearTimeout(timer);
+      timer = 0;
+      if (document.hidden) {
+        return;
+      }
+      var wait = soon ? EVENTS_MODAL_RETRY_MS : EVENTS_RECHECK_MS;
+      starts.concat(ends).forEach(function (moment) {
+        if (moment > now && moment - now < wait) {
+          wait = moment - now;
+        }
+      });
+      timer = setTimeout(onTime, wait + EVENTS_EDGE_MS);
+    }
+
+    function refresh() {
+      var now = Date.now();
+      var target = defaultTab(now);
+      var pending = !chosen && target !== current;
+      var modal = pending && modalOpen();
+      if (pending && !modal && !widget.contains(document.activeElement)) {
+        select(target, false);
+      }
+      schedule(now, modal);
+    }
+
+    /* Вид «без скрипта»: список вкладок скрыт, все карточки видны, роли и
+       пометки сняты, исходные связи возвращены. */
+    function restore() {
+      clearTimeout(timer);
+      timer = 0;
+      tablist.hidden = true;
+      tablist.style.removeProperty('--events-count');
+      if (!tablist.getAttribute('style')) {
+        tablist.removeAttribute('style');
+      }
+      panels.forEach(function (panel, i) {
+        panel.hidden = false;
+        panel.removeAttribute('role');
+        panel.removeAttribute('tabindex');
+        if (labelledBy[i]) {
+          panel.setAttribute('aria-labelledby', labelledBy[i]);
+        } else {
+          panel.removeAttribute('aria-labelledby');
+        }
+        markTime(tabs[i], '');
+        markTime(panel, '');
+      });
+      tablist.removeEventListener('keydown', onKeyDown);
+      tablist.removeEventListener('click', onClick);
+      widget.removeEventListener('focusout', onFocusOut);
+      document.removeEventListener('visibilitychange', onTime);
+      window.removeEventListener('pageshow', onTime);
+    }
+
+    function guarded(handler) {
+      return function (event) {
+        try {
+          handler(event);
+        } catch (error) {
+          restore();
+          report('events', error);
+        }
+      };
+    }
+
+    var onTime = guarded(function () {
+      if (timed) {
+        refresh();
+      }
+    });
+
+    var onClick = guarded(function (event) {
+      var tab = event.target && typeof event.target.closest === 'function' ?
+        event.target.closest('[data-events-tab]') : null;
+      var at = tabs.indexOf(tab);
+      if (at !== -1) {
+        chosen = true;
+        select(at, false);
+      }
+    });
+
+    var onKeyDown = guarded(function (event) {
+      var at = tabs.indexOf(event.target);
+      if (at === -1 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+      var last = tabs.length - 1;
+      var step = EVENTS_STEPS[event.key];
+      var to = event.key === 'Home' ? 0 : event.key === 'End' ? last :
+        typeof step === 'number' ? (at + step + tabs.length) % tabs.length : -1;
+      if (to === -1) {
+        return;
+      }
+      event.preventDefault();
+      chosen = true;
+      select(to, true);
+    });
+
+    /* Фокус ушёл из виджета — отложенное переключение можно сделать. */
+    var onFocusOut = guarded(function (event) {
+      if (timed && !chosen && !widget.contains(event.relatedTarget)) {
+        clearTimeout(timer);
+        timer = setTimeout(onTime, 0);
+      }
+    });
+
+    try {
+      panels.forEach(function (panel, i) {
+        panel.setAttribute('role', 'tabpanel');
+        panel.setAttribute('tabindex', '0');
+        panel.setAttribute('aria-labelledby', tabs[i].id);
+      });
+      tablist.style.setProperty('--events-count', String(tabs.length));
+      var now = Date.now();
+      select(defaultTab(now), false);
+      tablist.addEventListener('keydown', onKeyDown);
+      tablist.addEventListener('click', onClick);
+      if (timed) {
+        widget.addEventListener('focusout', onFocusOut);
+        document.addEventListener('visibilitychange', onTime);
+        window.addEventListener('pageshow', onTime);
+        schedule(now, false);
+      }
+      tablist.hidden = false;
+    } catch (error) {
+      restore();
+      throw error;
+    }
+  }
+
+  register('events', function (doc) {
+    Array.prototype.forEach.call(doc.querySelectorAll('[data-events]'), function (widget) {
+      try {
+        startEvents(widget);
+      } catch (error) {
+        report('events', error);
+      }
+    });
+  });
+
+
+  /* ==========================================================================
      Модуль gallery — окно просмотра фото и видео для ссылок a[data-lightbox]
      --------------------------------------------------------------------------
      Ссылка-плитка ведёт на файл и без скрипта открывает его как обычно:
