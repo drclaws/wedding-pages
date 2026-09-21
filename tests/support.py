@@ -196,8 +196,7 @@ INVITATIONS: list = [
 VISIBLE_EVENTS = {TOKEN_A: ("brunch", "dinner"), TOKEN_B: ("dinner",), TOKEN_C: ("dinner",)}
 
 #: Fixture template: the page frame of `template.html` (the sections come
-#: from the fragments of the repository) with its own script, so that the
-#: fixture assets are all referenced.
+#: from the fragments of the repository).
 TEMPLATE = """<!doctype html>
 <html lang="ru">
 <head>
@@ -211,7 +210,6 @@ TEMPLATE = """<!doctype html>
 <link rel="icon" href="{{faviconPath}}" type="{{faviconType}}">
 <!-- a note for whoever edits the template: never published -->
 <link rel="stylesheet" href="/assets/app.css">
-<script src="/assets/vendor/lib.js" defer></script>
 </head>
 <body>
 <main class="page">
@@ -347,10 +345,9 @@ def write_assets(directory: Path) -> Path:
     """Assets fixture: regular files, dot-files and a dot-directory."""
     directory = Path(directory)
     (directory / "fonts").mkdir(parents=True, exist_ok=True)
-    (directory / "vendor").mkdir(parents=True, exist_ok=True)
     (directory / ".hidden").mkdir(parents=True, exist_ok=True)
     (directory / "app.css").write_text(tokens_css(), encoding="utf-8")
-    (directory / "vendor" / "lib.js").write_text("// lib\n", encoding="utf-8")
+    (directory / "fonts" / "sans.woff2").write_bytes(b"wOF2 fixture")
     (directory / "fonts" / ".gitkeep").write_text("", encoding="utf-8")
     (directory / ".gitkeep").write_text("", encoding="utf-8")
     (directory / ".DS_Store").write_bytes(b"\x00")

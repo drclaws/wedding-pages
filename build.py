@@ -2348,18 +2348,38 @@ def _scan_output(root: Path) -> tuple[dict[str, int], list[str], list[str]]:
     return files, directories, problems
 
 
+#: Directories that `assets/` may hold besides the media directory.
+ASSET_DIRECTORIES = frozenset({"fonts"})
+#: The published name of a media file: `<sha256[:16]>.<ext>`.
+_PUBLISHED_MEDIA_RE = re.compile(r"[0-9a-f]{16}\.[a-z0-9]+\Z")
+
+
+def _media_path(name: str) -> str:
+    """A file of the media directory for a message: a published name as it
+    is, any other name (it may be a name from the data) cut to its type."""
+    shown = name if _PUBLISHED_MEDIA_RE.match(name) else "…" + os.path.splitext(name)[1].lower()
+    return f"{ASSETS_DIRNAME}/<mediaDir>/{shown}"
+
+
 def _check_output_tree(
     files: dict[str, int],
     directories: Sequence[str],
     pages: Mapping[str, Iterable[str]],
+    media_dir: str = "",
+    media: Collection[str] = (),
 ) -> list[str]:
     """Allow-list of the output: only what the site needs is published.
 
     `pages` maps the token of every invitation to the ids of the events it
     sees: `i/<token>/` holds the page and exactly one calendar file for each
-    of these events.
+    of these events.  `assets/<media_dir>/` holds exactly the published names
+    `media` (and does not exist without them); besides it `assets/` may only
+    hold the files of the code and the directories `ASSET_DIRECTORIES`.
     """
     problems: list[str] = []
+    media_prefix = f"{ASSETS_DIRNAME}/{media_dir}/" if media_dir else None
+    expected_media = {f"{media_prefix}{name}" for name in media} if media_prefix else set()
+    allowed_asset_dirs = {f"{ASSETS_DIRNAME}/{name}" for name in ASSET_DIRECTORIES}
     expected_pages = {f"{PAGES_DIRNAME}/{token}/{PAGE_FILE}" for token in pages}
     expected_calendars = {
         f"{PAGES_DIRNAME}/{token}/{event_id}{CALENDAR_SUFFIX}"
@@ -2382,6 +2402,22 @@ def _check_output_tree(
                 f"{relative}: unexpected directory (only one directory per invitation "
                 f"is allowed in {PAGES_DIRNAME}/)"
             )
+        elif parts[0] == ASSETS_DIRNAME:
+            media_path = media_prefix.rstrip("/") if media_prefix else None
+            if relative == media_path:
+                allowed = bool(expected_media)
+                shown = f"{ASSETS_DIRNAME}/<mediaDir>"
+            elif media_path and relative.startswith(media_prefix):
+                allowed, shown = False, f"{ASSETS_DIRNAME}/<mediaDir>/…"
+            else:
+                allowed = "/".join(parts[:2]) in allowed_asset_dirs
+                shown = relative
+            if not allowed:
+                problems.append(
+                    f"{shown}: unexpected directory (only "
+                    f"{', '.join(sorted(ASSET_DIRECTORIES))}/ and the media directory with "
+                    f"the media the pages show are allowed in {ASSETS_DIRNAME}/)"
+                )
 
     for relative, size in files.items():
         parts = relative.split("/")
@@ -2400,6 +2436,12 @@ def _check_output_tree(
                     f"{relative}: unexpected file (only <token>/{PAGE_FILE} and the "
                     f"calendar files of the events of the invitation are allowed in "
                     f"{PAGES_DIRNAME}/)"
+                )
+        elif media_prefix and relative.startswith(media_prefix):
+            if relative not in expected_media:
+                problems.append(
+                    f"{_media_path(relative[len(media_prefix):])}: unexpected file (only the "
+                    "media the pages show are published, under the hash of their contents)"
                 )
         elif parts[0] == ASSETS_DIRNAME:
             if extension not in ASSET_EXTENSIONS:
@@ -2424,6 +2466,9 @@ def _check_output_tree(
     for relative in required:
         if relative not in files:
             problems.append(f"{relative}: missing from the output")
+    for relative in sorted(expected_media):
+        if relative not in files:
+            problems.append(f"{_media_path(relative[len(media_prefix):])}: missing from the output")
     return problems
 
 
@@ -2431,6 +2476,8 @@ def check_output(
     out_dir: Path | str,
     pages: Mapping[str, Iterable[str]],
     base_url: str = "",
+    media_dir: str = "",
+    media: Collection[str] = (),
 ) -> OutputStats:
     """Check a finished output directory; raises `OutputError` with every problem.
 
@@ -2457,7 +2504,7 @@ def check_output(
         raise BuildError(
             f"cannot read the output directory {display_path(root)}: {exc.strerror}"
         ) from None
-    problems += _check_output_tree(files, directories, pages)
+    problems += _check_output_tree(files, directories, pages, media_dir, media)
     problems = [_redact_paths(problem) for problem in problems]
 
     known_dirs = set(directories)
@@ -3197,7 +3244,13 @@ def build_site(
         media = copy_media(data.media, media_dir, stage / ASSETS_DIRNAME / media_name)
         _write_file(stage / HEADERS_FILE, HEADERS_TEXT.encode("utf-8"))
         _write_file(stage / ROBOTS_FILE, ROBOTS_TEXT.encode("utf-8"))
-        stats = check_output(stage, calendars, base_url=base_url)
+        stats = check_output(
+            stage,
+            calendars,
+            base_url=base_url,
+            media_dir=media_name,
+            media={entry.published for entry in data.media.values()},
+        )
 
     out_shown = display_path(out_dir)
     log(

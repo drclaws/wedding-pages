@@ -206,7 +206,7 @@ class BuildCommandTests(CliTestCase):
         self.assertNotIn("{{", page)
 
         self.assertTrue((self.out / "assets" / "app.css").is_file())
-        self.assertTrue((self.out / "assets" / "vendor" / "lib.js").is_file())
+        self.assertTrue((self.out / "assets" / "fonts" / "sans.woff2").is_file())
         copied = [
             name
             for root, dirs, files in os.walk(self.out / "assets")

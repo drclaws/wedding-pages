@@ -220,28 +220,28 @@ class CopyAssetsTests(TempDirTestCase):
     def test_ignore_applies_to_directories(self):
         source = write_assets(self.tmp / "assets")
         copied = build.copy_assets(
-            source, self.tmp / "out" / "assets", ignore=lambda name: name == "vendor"
+            source, self.tmp / "out" / "assets", ignore=lambda name: name == "fonts"
         )
         self.assertEqual(copied, 1)
-        self.assertFalse((self.tmp / "out" / "assets" / "vendor").exists())
+        self.assertFalse((self.tmp / "out" / "assets" / "fonts").exists())
 
     def test_ignore_receives_the_relative_path(self):
         source = write_assets(self.tmp / "assets")
-        (source / "vendor" / "deep").mkdir()
-        (source / "vendor" / "deep" / "lib.js").write_text("// deep\n", encoding="utf-8")
+        (source / "fonts" / "deep").mkdir()
+        (source / "fonts" / "deep" / "lib.js").write_text("// deep\n", encoding="utf-8")
         seen: list[str] = []
 
         def ignore(relative: str) -> bool:
             seen.append(relative)
-            return relative == "vendor/lib.js"
+            return relative == "fonts/sans.woff2"
 
         copied = build.copy_assets(source, self.tmp / "out" / "assets", ignore=ignore)
         self.assertEqual(copied, 2)
         self.assertEqual(
-            sorted(seen), ["app.css", "fonts", "vendor", "vendor/deep", "vendor/deep/lib.js", "vendor/lib.js"]
+            sorted(seen), ["app.css", "fonts", "fonts/deep", "fonts/deep/lib.js", "fonts/sans.woff2"]
         )
-        self.assertFalse((self.tmp / "out" / "assets" / "vendor" / "lib.js").exists())
-        self.assertTrue((self.tmp / "out" / "assets" / "vendor" / "deep" / "lib.js").is_file())
+        self.assertFalse((self.tmp / "out" / "assets" / "fonts" / "sans.woff2").exists())
+        self.assertTrue((self.tmp / "out" / "assets" / "fonts" / "deep" / "lib.js").is_file())
 
     def test_styleguide_files_are_recognised_at_any_depth(self):
         for relative in ("styleguide.css", "styleguide.js", "vendor/Styleguide.min.js"):
@@ -256,7 +256,7 @@ class CopyAssetsTests(TempDirTestCase):
         build.copy_assets(source, destination)
         self.assertEqual(
             sorted(p.relative_to(destination).as_posix() for p in destination.rglob("*")),
-            ["app.css", "vendor", "vendor/lib.js"],
+            ["app.css", "fonts", "fonts/sans.woff2"],
         )
 
     def test_empty_assets_directory(self):
@@ -271,13 +271,13 @@ class CopyAssetsTests(TempDirTestCase):
         outside.mkdir()
         (outside / "secret.css").write_text("a{}", encoding="utf-8")
         try:
-            os.symlink(outside, source / "vendor" / "linked", target_is_directory=True)
+            os.symlink(outside, source / "fonts" / "linked", target_is_directory=True)
         except (OSError, NotImplementedError) as exc:
             self.skipTest(f"symbolic links are not available: {exc}")
         with self.assertRaises(build.BuildError) as caught:
             build.copy_assets(source, self.tmp / "out" / "assets")
         self.assertIn("symbolic links are not allowed in assets", str(caught.exception))
-        self.assertIn(os.path.join("vendor", "linked"), str(caught.exception))
+        self.assertIn(os.path.join("fonts", "linked"), str(caught.exception))
 
     def test_ignored_and_hidden_symlinks_are_skipped(self):
         source = write_assets(self.tmp / "assets")
@@ -315,12 +315,12 @@ class CopyAssetsTests(TempDirTestCase):
 
     def test_os_error_names_the_path(self):
         source = write_assets(self.tmp / "assets")
-        failure = PermissionError(13, "Permission denied", str(source / "vendor"))
+        failure = PermissionError(13, "Permission denied", str(source / "fonts"))
         with mock.patch.object(build.shutil, "copytree", side_effect=failure):
             with self.assertRaises(build.BuildError) as caught:
                 build.copy_assets(source, self.tmp / "out" / "assets")
         self.assertIn("Permission denied", str(caught.exception))
-        self.assertIn("vendor", str(caught.exception))
+        self.assertIn("fonts", str(caught.exception))
 
     def test_missing_source(self):
         with self.assertRaises(build.BuildError):

@@ -141,10 +141,10 @@ class ExternalResourceTests(FailingBuildTestCase):
         self.assertIn("failed with 2 error(s)", result.stderr)
 
     def test_css_in_a_vendor_directory_is_checked_too(self):
-        (self.code / "assets" / "vendor" / "lib.css").write_text(
+        (self.code / "assets" / "fonts" / "lib.css").write_text(
             "a { background: url( '//cdn.example.invalid/x.svg' ) }", encoding="utf-8"
         )
-        self.assertBuildFails("assets/vendor/lib.css line 1")
+        self.assertBuildFails("assets/fonts/lib.css line 1")
 
     def test_inline_style_attribute(self):
         self.add_to_template(
@@ -210,7 +210,7 @@ class ExternalResourceTests(FailingBuildTestCase):
 
     def test_markup_hidden_in_svg_content(self):
         self.add_to_template(
-            '<svg><script src="/assets/vendor/lib.js">'
+            '<svg><script src="/assets/fonts/sans.woff2">'
             '<img src="https://cdn.example.invalid/x.png"></script></svg>'
         )
         self.assertBuildFails("<script src> must be empty")
@@ -354,7 +354,7 @@ class LocalPathTests(FailingBuildTestCase):
             '@font-face { src: url("/assets/fonts/missing.woff2") format("woff2"); }\n',
         )
         self.assertBuildFails(
-            "assets/app.css line 1: CSS url(): '/assets/….woff2' does not exist"
+            "assets/app.css line 1: CSS url(): '/assets/fonts/….woff2' does not exist"
         )
 
     def test_relative_resource_path(self):
@@ -364,34 +364,34 @@ class LocalPathTests(FailingBuildTestCase):
             "must be absolute from the site root",
         )
 
-    def vendor_css(self, text: str) -> Path:
-        directory = self.code / "assets" / "vendor" / "lib"
+    def nested_css(self, text: str) -> Path:
+        directory = self.code / "assets" / "fonts" / "lib"
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "lib.css").write_text(text, encoding="utf-8")
         return directory
 
     def test_relative_url_in_a_css_file_is_relative_to_the_file(self):
-        directory = self.vendor_css(
-            "a { background: url(img/x.svg) } b { background: url('../lib.js?v=1#f') }"
+        directory = self.nested_css(
+            "a { background: url(img/x.svg) } b { background: url('../sans.woff2?v=1#f') }"
         )
         (directory / "img").mkdir()
         (directory / "img" / "x.svg").write_text("<svg/>", encoding="utf-8")
         self.assertBuildPasses()
 
     def test_relative_url_in_a_css_file_must_exist(self):
-        self.vendor_css("a { background: url(img/x.svg) }")
+        self.nested_css("a { background: url(img/x.svg) }")
         self.assertBuildFails(
-            "assets/vendor/lib/lib.css line 1: CSS url(): '….svg' (relative to the style "
+            "assets/fonts/lib/lib.css line 1: CSS url(): '….svg' (relative to the style "
             "sheet) does not exist in the output"
         )
 
     def test_relative_url_in_a_css_file_must_stay_inside_the_output(self):
-        # three levels up from assets/vendor/lib/ is still the output root
-        self.vendor_css("a { background: url(../../../x.svg) }")
+        # three levels up from assets/fonts/lib/ is still the output root
+        self.nested_css("a { background: url(../../../x.svg) }")
         self.assertBuildFails("'….svg' (relative to the style sheet) does not exist")
-        self.vendor_css("a { background: url(../../../../x.svg) }")
+        self.nested_css("a { background: url(../../../../x.svg) }")
         self.assertBuildFails("CSS url(): '….svg' points outside the output")
-        self.vendor_css("a { background: url(img/../../../../../../etc/x.svg) }")
+        self.nested_css("a { background: url(img/../../../../../../etc/x.svg) }")
         self.assertBuildFails("points outside the output")
 
     def test_relative_url_in_an_inline_style_is_refused(self):
@@ -418,13 +418,13 @@ class LocalPathTests(FailingBuildTestCase):
         support.write_app_css(
             self.code,
             '@font-face { src: url("/assets/fonts/text.woff2") format("woff2"); }\n'
-            "a { background: url(/assets/vendor/lib.js?v=1#frag); clip-path: url(#clip) }\n"
+            "a { background: url(/assets/fonts/sans.woff2?v=1#frag); clip-path: url(#clip) }\n"
             "/* url(https://cdn.example.invalid/commented-out.png) */\n"
             'b::after { content: "// not a url"; background: url("data:image/png;base64,AAAA") }\n',
         )
         self.add_to_template(
             '<a href="/">home</a> <a href="#top">top</a> <a href="/?x=1#y">q</a>\n'
-            '<img src="/assets/app.css?v=2" srcset="/assets/app.css 1x, /assets/vendor/lib.js 2x" alt="">\n'
+            '<img src="/assets/app.css?v=2" srcset="/assets/app.css 1x, /assets/fonts/sans.woff2 2x" alt="">\n'
             '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="">\n'
             '<link rel="icon" href="data:,">\n'
             '<svg><use href="#icon"></use></svg>\n'
@@ -473,8 +473,8 @@ class OutputContentsCheckTests(FailingBuildTestCase):
         self.assertBuildFails("assets/data.json: '.json' files must not be published")
 
     def test_source_map_in_assets(self):
-        (self.code / "assets" / "vendor" / "lib.js.map").write_text("{}", encoding="utf-8")
-        self.assertBuildFails("assets/vendor/lib.js.map: '.map' files must not be published")
+        (self.code / "assets" / "fonts" / "lib.js.map").write_text("{}", encoding="utf-8")
+        self.assertBuildFails("assets/fonts/lib.js.map: '.map' files must not be published")
 
     def test_other_forbidden_and_unknown_types(self):
         (self.code / "assets" / "README.md").write_text("# x", encoding="utf-8")
@@ -491,16 +491,33 @@ class OutputContentsCheckTests(FailingBuildTestCase):
         )
         self.assertIn("failed with 5 error(s)", result.stderr)
 
+    def test_a_media_file_under_the_name_of_the_data_stops_the_build(self):
+        real_copy = build.copy_media
+
+        def copy_and_plant(media, media_dir, destination):
+            count = real_copy(media, media_dir, destination)
+            (destination / "venue-1.png").write_bytes((Path(media_dir) / "venue-1.png").read_bytes())
+            return count
+
+        with mock.patch.object(build, "copy_media", side_effect=copy_and_plant):
+            result = self.assertBuildFails("assets/<mediaDir>/….png: unexpected file")
+        self.assertNotIn("venue-1", result.stderr)
+
+    def test_a_directory_of_its_own_in_assets_stops_the_build(self):
+        (self.code / "assets" / "vendor").mkdir()
+        (self.code / "assets" / "vendor" / "x.js").write_text("// x\n", encoding="utf-8")
+        self.assertBuildFails("assets/vendor: unexpected directory")
+
     def test_vendor_licence_as_text_is_fine(self):
-        (self.code / "assets" / "vendor" / "LICENSE.txt").write_text("MIT", encoding="utf-8")
+        (self.code / "assets" / "fonts" / "LICENSE.txt").write_text("MIT", encoding="utf-8")
         self.assertBuildPasses()
-        self.assertTrue((self.out / "assets" / "vendor" / "LICENSE.txt").is_file())
+        self.assertTrue((self.out / "assets" / "fonts" / "LICENSE.txt").is_file())
 
     def test_symlink_in_assets(self):
         target = self.tmp / "outside.css"
         target.write_text("a{}", encoding="utf-8")
         try:
-            os.symlink(target, self.code / "assets" / "vendor" / "linked.css")
+            os.symlink(target, self.code / "assets" / "fonts" / "linked.css")
         except (OSError, NotImplementedError) as exc:
             self.skipTest(f"symbolic links are not available: {exc}")
         self.assertBuildFails("symbolic links are not allowed in assets", "linked.css")
@@ -573,10 +590,10 @@ class FileSizeLimitTests(FailingBuildTestCase):
         self.assertEqual(build.MAX_FILE_BYTES, 25 * 1024 * 1024)
 
     def test_oversized_asset(self):
-        (self.code / "assets" / "vendor" / "big.js").write_bytes(b"/" * (self.LIMIT + 1))
+        (self.code / "assets" / "fonts" / "big.js").write_bytes(b"/" * (self.LIMIT + 1))
         with mock.patch.object(build, "MAX_FILE_BYTES", self.LIMIT):
             self.assertBuildFails(
-                "assets/vendor/big.js: 64.0 KiB is larger than the limit of 64.0 KiB"
+                "assets/fonts/big.js: 64.0 KiB is larger than the limit of 64.0 KiB"
             )
 
     def test_oversized_media_file_is_reported_by_validation(self):
@@ -589,7 +606,7 @@ class FileSizeLimitTests(FailingBuildTestCase):
         self.assertNotIn("clip.mp4", result.stderr)
 
     def test_file_at_the_limit_passes(self):
-        (self.code / "assets" / "vendor" / "big.js").write_bytes(b"/" * self.LIMIT)
+        (self.code / "assets" / "fonts" / "big.js").write_bytes(b"/" * self.LIMIT)
         with mock.patch.object(build, "MAX_FILE_BYTES", self.LIMIT):
             self.assertBuildPasses()
 
@@ -737,6 +754,75 @@ class CheckOutputTreeTests(TempDirTestCase):
             "i/EveT…/index.html line 1: template syntax left in the output: '{{'", problems
         )
         self.assertIn("i/EveT…/index.html line 2: HTML comment left in the output", problems)
+
+    HASHED = "0123456789abcdef.png"
+
+    def media_problems(self, out: Path, media=(HASHED,)) -> list[str]:
+        with self.assertRaises(build.OutputError) as caught:
+            build.check_output(
+                out, {self.TOKEN: ["dinner"]}, media_dir=support.MEDIA_DIR, media=set(media)
+            )
+        for message in caught.exception.errors:
+            self.assertNotIn(support.MEDIA_DIR, message)
+        return caught.exception.errors
+
+    def with_media(self) -> Path:
+        out = self.make_tree()
+        (out / "assets" / support.MEDIA_DIR).mkdir()
+        (out / "assets" / support.MEDIA_DIR / self.HASHED).write_bytes(b"png")
+        return out
+
+    def test_the_media_directory_holds_exactly_the_published_names(self):
+        stats = build.check_output(
+            self.with_media(), {self.TOKEN: ["dinner"]}, media_dir=support.MEDIA_DIR,
+            media={self.HASHED},
+        )
+        self.assertEqual(stats.files, 7)
+
+    def test_a_media_file_under_the_name_of_the_data_is_refused(self):
+        out = self.with_media()
+        (out / "assets" / support.MEDIA_DIR / "venue-1.png").write_bytes(b"png")
+        problems = self.media_problems(out)
+        self.assertIn(
+            "assets/<mediaDir>/….png: unexpected file (only the media the pages show are "
+            "published, under the hash of their contents)",
+            problems,
+        )
+        self.assertNotIn("venue-1", "\n".join(problems))
+
+    def test_a_hashed_file_that_no_page_shows_is_refused(self):
+        out = self.with_media()
+        (out / "assets" / support.MEDIA_DIR / "fedcba9876543210.png").write_bytes(b"png")
+        self.assertIn(
+            "assets/<mediaDir>/fedcba9876543210.png: unexpected file (only the media the "
+            "pages show are published, under the hash of their contents)",
+            self.media_problems(out),
+        )
+
+    def test_a_published_name_missing_from_the_media_directory(self):
+        out = self.make_tree()
+        (out / "assets" / support.MEDIA_DIR).mkdir()
+        self.assertIn(
+            f"assets/<mediaDir>/{self.HASHED}: missing from the output", self.media_problems(out)
+        )
+
+    def test_directories_in_assets(self):
+        out = self.with_media()
+        (out / "assets" / "vendor").mkdir()
+        (out / "assets" / "vendor" / "x.js").write_text("//", encoding="utf-8")
+        (out / "assets" / support.MEDIA_DIR / "sub").mkdir()
+        (out / "assets" / "fonts" / "deep").mkdir(parents=True)
+        (out / "assets" / "fonts" / "deep" / "a.woff2").write_bytes(b"w")
+        problems = self.media_problems(out)
+        tail = "unexpected directory (only fonts/ and the media directory with the media the pages show are allowed in assets/)"
+        self.assertIn(f"assets/vendor: {tail}", problems)
+        self.assertIn(f"assets/<mediaDir>/…: {tail}", problems)
+        self.assertFalse(any(p.startswith("assets/fonts") for p in problems), problems)
+
+    def test_no_media_directory_without_media(self):
+        out = self.with_media()
+        problems = self.media_problems(out, media=())
+        self.assertTrue(any(p.startswith("assets/<mediaDir>: unexpected directory") for p in problems))
 
     def test_long_problem_lists_are_capped(self):
         out = self.make_tree()

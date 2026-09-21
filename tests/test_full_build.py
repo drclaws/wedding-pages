@@ -62,7 +62,7 @@ class FullBuildTestCase(CliTestCase):
         assets = self.code / "assets"
         (assets / "styleguide.css").write_text("/* sg */\n", encoding="utf-8")
         (assets / "styleguide.js").write_text("// sg\n", encoding="utf-8")
-        (assets / "vendor" / "Styleguide.extra.css").write_text("/* sg */\n", encoding="utf-8")
+        (assets / "fonts" / "Styleguide.extra.css").write_text("/* sg */\n", encoding="utf-8")
         (assets / "empty" / "nested").mkdir(parents=True)
         # media that the data does not refer to
         (self.media / "unused.webp").write_bytes(b"")
@@ -90,7 +90,7 @@ class OutputContentsTests(FullBuildTestCase):
                     "assets/app.css",
                     "assets/favicon.svg",
                     "assets/og.png",
-                    "assets/vendor/lib.js",
+                    "assets/fonts/sans.woff2",
                     *(f"{MEDIA}/{published_name(name)}" for name in support.MEDIA_FILES),
                     *(f"i/{token}/index.html" for token in TOKENS),
                     *calendar_files(),
@@ -114,7 +114,7 @@ class OutputContentsTests(FullBuildTestCase):
                     "assets/app.css",
                     "assets/favicon.svg",
                     "assets/og.png",
-                    "assets/vendor/lib.js",
+                    "assets/fonts/sans.woff2",
                     *(f"i/{token}/index.html" for token in TOKENS),
                     *calendar_files(),
                     "index.html",
