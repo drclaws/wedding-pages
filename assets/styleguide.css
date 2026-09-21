@@ -180,6 +180,19 @@ html[data-sg-font-scale="330"] { font-size: var(--sg-font-scale-330); }
   border-radius: var(--radius-lg);
 }
 
+/* Верхний край окна для панели: рамка обрезает заливку над панелью
+   (.cover-bar::before — на высоту экрана), чтобы она не закрыла витрину.
+   Полосы-плашки — содержимое страницы: над панелью — то, что на iOS 26
+   видно под строкой состояния, под панелью — то, что уезжает под неё. */
+.sg-edge {
+  overflow: clip;
+  padding-block-end: var(--space-xs);
+}
+
+.sg-edge__strip {
+  block-size: var(--space-2xl);
+}
+
 .sg-plate__display {
   font-family: var(--font-heading);
   font-size: var(--text-display);
