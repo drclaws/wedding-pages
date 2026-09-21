@@ -998,7 +998,7 @@ def _check_invitations(
                 f"{invitation_label(number)}: must be an object, got {json_type(invitation)}"
             )
             continue
-        check = _Checker(report, invitation_label(number, invitation.get("token")), known)
+        check = _Checker(report, invitation_label(number), known)
         checkers.append(check)
         _check_invitation(check, invitation, index, number, seen)
 

@@ -9,7 +9,8 @@
 - Texts: a string, or an object with exactly the keys `ty` and `vy` (the
   informal and the formal form of address).  `{name}` inserts a value, `{{`
   and `}}` are literal braces; see `check_text` and `resolve_text`.
-- Tokens and names: `check_token`, `generate_token`, `invitation_label`,
+- Tokens and names: `check_token`, `generate_token`,
+  `generate_prefixed_token`, `invitation_label`, `short_token_summary`,
   `json_type`, `format_size` and `check_media_name`.
 
 Messages never quote the data.  A key is shown only when it looks like a
@@ -20,8 +21,8 @@ and the name of an unknown placeholder never, because it is a part of the
 text.  Messages have the form `field '<path>' <problem>`; the caller puts the
 name of the file or the invitation in front.
 
-Pure functions: no input/output and no printing (`generate_token` alone reads
-the random source).  Problems are returned as messages or raised as
+Pure functions: no input/output and no printing (the two token generators
+alone read the random source).  Problems are returned as messages or raised as
 `TextError`.  Standard library only.
 """
 
@@ -508,9 +509,18 @@ def format_size(size: int) -> str:
 # Tokens and the media directory
 # --------------------------------------------------------------------------
 
-#: Token rules (>= 120 bits of entropy).
-MIN_TOKEN_LENGTH = 20
-MIN_UUID_HEX_DIGITS = 30
+#: Tokens are written by the owners and may be short and readable: the token
+#: is the only thing that protects a page from being guessed, so the build
+#: counts the short ones (`short_token_summary`) and the README explains the
+#: trade-off.
+MIN_TOKEN_LENGTH = 5
+#: Tokens shorter than this are counted in the summary of `validate` and `build`.
+SHORT_TOKEN_LENGTH = 12
+#: `token --prefix NAME` appends `-` and this many random characters.
+TOKEN_SUFFIX_LENGTH = 4
+#: Lower case letters and digits without the ones that are easy to confuse
+#: (0/o, 1/l/i): the tail is read and typed by people.
+TOKEN_SUFFIX_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"
 #: Random media directory name (`site.json` -> `mediaDir`).
 MIN_MEDIA_DIR_LENGTH = 16
 #: Tokens and `mediaDir` become directory names, so their length is capped well
@@ -518,10 +528,6 @@ MIN_MEDIA_DIR_LENGTH = 16
 MAX_NAME_LENGTH = 200
 
 _TOKEN_CHARS_RE = re.compile(r"[A-Za-z0-9_-]+\Z")
-_HEX_DASH_RE = re.compile(r"[0-9A-Fa-f-]+\Z")
-_TOKEN_ALPHABET = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
-)
 _MEDIA_DIR_RE = re.compile(
     rf"[A-Za-z0-9_-]{{{MIN_MEDIA_DIR_LENGTH},{MAX_NAME_LENGTH}}}\Z"
 )
@@ -540,15 +546,7 @@ def check_token(token: Any) -> str | None:
             f"'token' is too long: at most {MAX_NAME_LENGTH} characters allowed "
             f"(it becomes a directory name), got {len(token)}"
         )
-    if _HEX_DASH_RE.match(token):
-        # UUID-like token: only hex digits carry entropy.
-        digits = len(token) - token.count("-")
-        if digits < MIN_UUID_HEX_DIGITS:
-            return (
-                "'token' is too weak: a token built from hex digits and dashes needs "
-                f"at least {MIN_UUID_HEX_DIGITS} hex digits, got {digits}"
-            )
-    elif len(token) < MIN_TOKEN_LENGTH:
+    if len(token) < MIN_TOKEN_LENGTH:
         return (
             f"'token' is too short: at least {MIN_TOKEN_LENGTH} characters required, "
             f"got {len(token)}"
@@ -564,12 +562,65 @@ def generate_token() -> str:
             return token
 
 
-def invitation_label(index: int, token: Any = None) -> str:
-    """Log-safe identification of an invitation: number + first 4 token chars."""
-    if isinstance(token, str) and token:
-        head = "".join(ch if ch in _TOKEN_ALPHABET else "?" for ch in token[:4])
-        return f"invitation #{index} ({head}…)"
-    return f"invitation #{index} (no token)"
+#: The longest prefix that still leaves room for `-` and the random tail.
+MAX_TOKEN_PREFIX_LENGTH = MAX_NAME_LENGTH - 1 - TOKEN_SUFFIX_LENGTH
+
+
+def check_token_prefix(prefix: Any) -> str | None:
+    """Return a problem description for the NAME of `token --prefix`, or None."""
+    if not isinstance(prefix, str) or not prefix:
+        return "the prefix is empty"
+    if not _TOKEN_CHARS_RE.match(prefix):
+        return "the prefix may only contain A-Z, a-z, 0-9, '_' and '-'"
+    if len(prefix) > MAX_TOKEN_PREFIX_LENGTH:
+        return (
+            f"the prefix is too long: at most {MAX_TOKEN_PREFIX_LENGTH} characters "
+            f"allowed, got {len(prefix)}"
+        )
+    return None
+
+
+def generate_prefixed_token(prefix: str) -> str:
+    """`<prefix>-xxxx`: a readable token with a short random tail.
+
+    The tail comes from `secrets`, so the token cannot be guessed from a list
+    of names alone.  `ValueError` when the prefix breaks `check_token_prefix`.
+    """
+    problem = check_token_prefix(prefix)
+    if problem:
+        raise ValueError(problem)
+    tail = "".join(secrets.choice(TOKEN_SUFFIX_ALPHABET) for _ in range(TOKEN_SUFFIX_LENGTH))
+    return f"{prefix}-{tail}"
+
+
+def invitation_label(index: int) -> str:
+    """Log-safe identification of an invitation: its number in
+    `invitations.json`, counted from 1.
+
+    Not a single character of the token is shown: tokens may be short and
+    readable, so even a part of one is a part of somebody's page address.
+    """
+    return f"invitation #{index}"
+
+
+def short_token_summary(invitations: Sequence[Any]) -> str | None:
+    """A log line with the number of short tokens, or None when there are none.
+
+    Only counts are reported, never the tokens.  Values that are not strings
+    are skipped (the validation reports them).
+    """
+    tokens = [
+        item.get("token") for item in invitations if isinstance(item, dict)
+    ]
+    short = sum(
+        1 for token in tokens if isinstance(token, str) and len(token) < SHORT_TOKEN_LENGTH
+    )
+    if not short:
+        return None
+    return (
+        f"tokens: {len(tokens)} ({short} shorter than {SHORT_TOKEN_LENGTH} characters, "
+        "see README 3.3)"
+    )
 
 
 # --------------------------------------------------------------------------

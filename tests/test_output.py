@@ -156,10 +156,9 @@ class ReplaceableOutputTests(TempDirTestCase):
         with self.assertRaises(build.BuildError) as caught:
             build.check_replaceable(pages)
         message = str(caught.exception)
-        self.assertIn("'EveT…'", message)
-        self.assertIn("'Karl…'", message)
-        self.assertNotIn("EveToken", message)
-        self.assertNotIn("KarlKlara", message)
+        self.assertIn("(unexpected: '…', '…')", message)
+        self.assertNotIn("EveT", message)
+        self.assertNotIn("Karl", message)
 
         assets = self.tmp / "dist" / "assets"
         (assets / "m3d1a-f1xtur3-dir").mkdir(parents=True)
@@ -167,9 +166,36 @@ class ReplaceableOutputTests(TempDirTestCase):
         with self.assertRaises(build.BuildError) as caught:
             build.check_replaceable(assets)
         message = str(caught.exception)
-        self.assertIn("'m3d1…'", message)
+        self.assertIn("'…'", message)
         self.assertIn("'app.css'", message)
-        self.assertNotIn("m3d1a-f1xtur3-dir", message)
+        self.assertNotIn("m3d1", message)
+
+    def test_short_tokens_in_a_pages_directory_are_masked(self):
+        # every entry of a directory named "i" may be a token, however short
+        pages = self.tmp / "dist" / "i"
+        for token in ("quokka", "otter_king"):
+            (pages / token).mkdir(parents=True)
+        with self.assertRaises(build.BuildError) as caught:
+            build.check_replaceable(pages)
+        message = str(caught.exception)
+        self.assertIn("(unexpected: '…', '…')", message)
+        for token in ("quokka", "otter_king"):
+            self.assertNotIn(token[:3], message)
+        # a token that is also a known name of the output is hidden as well
+        (pages / "quokka").rmdir()
+        (pages / "otter_king").rmdir()
+        (pages / "_headers").mkdir()
+        with self.assertRaises(build.BuildError) as caught:
+            build.check_replaceable(pages)
+        message = str(caught.exception)
+        self.assertIn("('…' is not a regular file)", message)
+        self.assertNotIn("_headers", message)
+        # elsewhere short names are shown: they help to find the directory
+        other = self.tmp / "notes"
+        (other / "quokka").mkdir(parents=True)
+        with self.assertRaises(build.BuildError) as caught:
+            build.check_replaceable(other)
+        self.assertIn("'quokka'", str(caught.exception))
 
     def test_known_names(self):
         self.assertEqual(
@@ -178,19 +204,24 @@ class ReplaceableOutputTests(TempDirTestCase):
         )
 
     def test_tokens_in_paths_are_redacted(self):
-        token = "EveToken-0123456789abcdefg"
-        for path in (
-            f"i/{token}/index.html",
-            f"dist/i/{token}/index.html",
-            f"dist\\i\\{token}\\index.html",
-            f"cannot write 'i/{token}/index.html'",
-        ):
-            with self.subTest(path=path):
-                redacted = build._redact_paths(path)
-                self.assertNotIn(token, redacted)
-                self.assertIn("EveT…", redacted)
-        # other directories whose name merely ends in "i" are left alone
-        self.assertEqual(build._redact_paths(f"wiki/{token}"), f"wiki/{token}")
+        for token in ("EveToken-0123456789abcdefg", "quokka", "abc12", "otter_king"):
+            for path in (
+                f"i/{token}/index.html",
+                f"dist/i/{token}/index.html",
+                f"dist\\i\\{token}\\index.html",
+                f"cannot write 'i/{token}/index.html'",
+                f"/i/{token}/dinner.ics",
+                f"i/{token}",
+            ):
+                with self.subTest(path=path):
+                    redacted = build._redact_paths(path)
+                    self.assertNotIn(token[:3], redacted)
+                    self.assertIn("i/…", redacted.replace("\\", "/"))
+            # other directories whose name merely ends in "i" are left alone
+            self.assertEqual(build._redact_paths(f"wiki/{token}"), f"wiki/{token}")
+        # files of the pages directory are not tokens
+        self.assertEqual(build._redact_paths("i/index.html"), "i/index.html")
+        self.assertEqual(build._redact_paths("dist/i/"), "dist/i/")
 
     def test_unexpected_entries_are_listed_but_capped(self):
         out = self.tmp / "dist"

@@ -451,7 +451,7 @@ class DomIdCollisionTests(unittest.TestCase):
         self.assertEqual(len(report.errors), len(invitations))
         self.assertEqual(
             report.errors[0],
-            "invitation #1 (0R-p…): ids of the markup repeat on the page ('s-invite-w1'); "
+            "invitation #1: ids of the markup repeat on the page ('s-invite-w1'); "
             "rename one of the ids in site.json",
         )
 
@@ -464,7 +464,7 @@ class DomIdCollisionTests(unittest.TestCase):
         self.assertEqual(
             report.errors,
             [
-                "invitation #1 (0R-p…): ids of the markup repeat on the page ('s-where--w1'); "
+                "invitation #1: ids of the markup repeat on the page ('s-where--w1'); "
                 "rename one of the ids in site.json"
             ],
         )
@@ -474,7 +474,7 @@ class DomIdCollisionTests(unittest.TestCase):
         self.assertEqual(
             report.errors,
             [
-                "invitation #1 (0R-p…): ids of the markup repeat on the page (not shown); "
+                "invitation #1: ids of the markup repeat on the page (not shown); "
                 "rename one of the ids in site.json"
             ],
         )

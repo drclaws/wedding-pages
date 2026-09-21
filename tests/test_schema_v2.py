@@ -32,8 +32,8 @@ NAME_KEYS = ("IvanPetrov", "ivan-petrov", "ivan")
 #: A value that stands for personal data inside the data.
 SECRET = "Секрет-Метка"
 
-GUEST_1 = "invitation #1 (0R-p…)"
-GUEST_2 = "invitation #2 (oWaE…)"
+GUEST_1 = "invitation #1"
+GUEST_2 = "invitation #2"
 
 
 def run(mutate=None, site=None, invitations=None) -> F.Collector:
@@ -494,7 +494,7 @@ class EventTests(SchemaTestCase):
         )
         self.assertEqual(
             report.errors[1:],
-            ["invitation #7 (hoC8…): field 'events' hides every event; at least one must stay visible"],
+            ["invitation #7: field 'events' hides every event; at least one must stay visible"],
         )
 
     def test_unknown_main_event(self):
@@ -717,29 +717,69 @@ class TextTests(SchemaTestCase):
 
 class InvitationTests(SchemaTestCase):
     def test_token_rules(self):
-        report = run(lambda s, i: i[1].update(token="short"))
+        report = run(lambda s, i: i[1].update(token="tiny"))
         self.assertOneError(
             report,
-            "invitation #2 (shor…): 'token' is too short: at least 20 characters required, got 5",
+            "invitation #2: 'token' is too short: at least 5 characters required, got 4",
         )
+
+    def test_token_length_limits(self):
+        for length, valid in ((4, False), (5, True), (19, True), (20, True), (200, True), (201, False)):
+            token = ("otter_" * 40)[:length]
+            with self.subTest(length=length):
+                report = run(lambda s, i: i[1].update(token=token))
+                self.assertEqual(not report.errors, valid, report.errors)
+                for message in report.errors:
+                    self.assertNotIn(token[:3], message)
+
+    def test_readable_tokens(self):
+        for token in ("quokka", "otter_king", "badger_den", "heron-4tx9", "Walrus-Bay_12"):
+            with self.subTest(token=token):
+                self.assertMessages(run(lambda s, i: i[1].update(token=token)))
+
+    def test_token_characters(self):
+        for token in ("otter king", "otter.king", "выдра-выдра", "otter/king", "otter%20"):
+            with self.subTest(token=token):
+                report = run(lambda s, i: i[1].update(token=token))
+                self.assertOneError(
+                    report, "invitation #2: 'token' may only contain A-Z, a-z, 0-9, '_' and '-'"
+                )
+
+    def test_uuid_like_tokens_have_no_rule_of_their_own(self):
+        for token in ("9b1f0c3e-5a7d-4e2b-8c6f-1d2e3f4a5b6c", "abc12", "12345", "dead-beef"):
+            with self.subTest(token=token):
+                self.assertMessages(run(lambda s, i: i[1].update(token=token)))
 
     def test_duplicate_token(self):
         report = run(lambda s, i: i[1].update(token=i[0]["token"].upper()))
         self.assertOneError(
             report,
-            "invitation #2 (0R-P…): duplicate token (same as invitation #1; tokens are compared "
+            "invitation #2: duplicate token (same as invitation #1; tokens are compared "
             "case-insensitively because they become directory names)",
         )
 
-    def test_label_holds_four_characters_of_the_token(self):
+    def test_duplicate_short_token_in_another_letter_case(self):
+        def change(site, invitations):
+            invitations[2]["token"] = "Quokka"
+            invitations[6]["token"] = "quokka"
+
+        report = run(change)
+        self.assertOneError(
+            report,
+            "invitation #7: duplicate token (same as invitation #3; tokens are compared "
+            "case-insensitively because they become directory names)",
+        )
+
+    def test_label_holds_no_character_of_the_token(self):
         report = run(lambda s, i: i[0].update(greeting=""))
         self.assertOneError(report, f"{GUEST_1}: field 'greeting' must not be empty")
+        self.assertEqual(_data.invitation_label(12), "invitation #12")
 
     def test_form(self):
         report = run(lambda s, i: i[5].update(form="tu"))
-        self.assertOneError(report, "invitation #6 (IBAh…): field 'form' must be one of: ty, vy")
+        self.assertOneError(report, "invitation #6: field 'form' must be one of: ty, vy")
         report = run(lambda s, i: i[5].pop("form"))
-        self.assertOneError(report, "invitation #6 (IBAh…): field 'form' is required ('ty' or 'vy')")
+        self.assertOneError(report, "invitation #6: field 'form' is required ('ty' or 'vy')")
 
     def test_greeting_is_one_line(self):
         report = run(lambda s, i: i[0].update(greeting="Дорогая\nКэрол"))
@@ -786,7 +826,7 @@ class InvitationTests(SchemaTestCase):
         report = run(lambda s, i: i[5]["sections"]["travel"]["widgets"].update(hotel={"visible": True}))
         self.assertOneError(
             report,
-            "invitation #6 (IBAh…): field 'sections.travel.widgets.<unknown key>' refers to no "
+            "invitation #6: field 'sections.travel.widgets.<unknown key>' refers to no "
             "widget of section 'travel'; widgets with an id: hotel-booked",
         )
 
@@ -798,25 +838,25 @@ class InvitationTests(SchemaTestCase):
         report = run(lambda s, i: i[2].update(primaryEvent="brunhc"))
         self.assertOneError(
             report,
-            "invitation #3 (48lh…): field 'primaryEvent' refers to an unknown event (did you "
+            "invitation #3: field 'primaryEvent' refers to an unknown event (did you "
             "mean 'brunch'?); known: ceremony, dinner, brunch",
         )
         report = run(lambda s, i: i[4].update(events={"ceremony": {"visible": False}}))
         self.assertOneError(
-            report, "invitation #5 (uGeJ…): field 'primaryEvent' refers to 'ceremony', which is hidden for this invitation"
+            report, "invitation #5: field 'primaryEvent' refers to 'ceremony', which is hidden for this invitation"
         )
         report = run(lambda s, i: i[3].update(events={"dinner": {"visible": False}}))
         self.assertOneError(
-            report, "invitation #4 (lXG6…): field 'primaryEvent' is required: the main event 'dinner' is hidden for this invitation"
+            report, "invitation #4: field 'primaryEvent' is required: the main event 'dinner' is hidden for this invitation"
         )
         report = run(lambda s, i: i[3].update(primaryEvent="brunch"))
         self.assertOneError(
-            report, "invitation #4 (lXG6…): field 'primaryEvent' refers to 'brunch', which is hidden for this invitation"
+            report, "invitation #4: field 'primaryEvent' refers to 'brunch', which is hidden for this invitation"
         )
 
     def test_every_event_hidden(self):
         report = run(lambda s, i: i[6].update(events={e: {"visible": False} for e in ("ceremony", "dinner")}))
-        self.assertIn("invitation #7 (hoC8…): field 'events' hides every event; at least one must stay visible", report.errors)
+        self.assertIn("invitation #7: field 'events' hides every event; at least one must stay visible", report.errors)
 
     def test_cover_cannot_be_set(self):
         report = run(lambda s, i: i[0]["sections"].update(cover={"visible": False}))
@@ -844,7 +884,7 @@ class InvitationTests(SchemaTestCase):
             report.warnings,
             [
                 f"{GUEST_2}: field 'events.brunch.note' is set, but the event is hidden for this invitation",
-                "invitation #5 (uGeJ…): field 'sections.travel.note' is set, but the section is hidden for this invitation",
+                "invitation #5: field 'sections.travel.note' is set, but the section is hidden for this invitation",
             ],
         )
 
@@ -863,7 +903,7 @@ class InvitationTests(SchemaTestCase):
 
     def test_invitation_must_be_an_object(self):
         report = run(lambda s, i: i.append("x"))
-        self.assertOneError(report, "invitation #9 (no token): must be an object, got a string")
+        self.assertOneError(report, "invitation #9: must be an object, got a string")
 
     def test_broken_sections_are_not_reported_again_for_the_invitations(self):
         def change(site, invitations):

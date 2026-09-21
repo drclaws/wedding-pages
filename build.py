@@ -3,7 +3,7 @@
 
     python build.py build    [--data DIR] [--media DIR] [--out DIR] [--base-url URL]
     python build.py validate [--data DIR] [--media DIR]
-    python build.py token
+    python build.py token    [--prefix NAME]
     python build.py links    --base URL [--data DIR]
 
 Only the Python 3 standard library is used (Python >= 3.10).
@@ -72,10 +72,13 @@ from tools._data import (  # noqa: E402
     IMAGE_EXTENSIONS,
     MIN_MEDIA_DIR_LENGTH,
     _extension_list,
+    check_token_prefix,
     format_size,
+    generate_prefixed_token,
     generate_token,
     invitation_label,
     json_type,
+    short_token_summary,
 )
 from tools._dates import parse_date_iso  # noqa: E402
 from tools._maps import _url_component, media_url  # noqa: E402
@@ -2495,7 +2498,7 @@ def check_output(
       entities or external references (see `check_svg`).
 
     `base_url` is passed on to `check_html`.  Messages never quote page text,
-    tokens in paths are shortened and the address of the site is masked.
+    tokens in paths are hidden (`i/…`) and the address of the site is masked.
     """
     root = Path(out_dir)
     try:
@@ -2508,8 +2511,9 @@ def check_output(
     problems = [_redact_paths(problem) for problem in problems]
 
     known_dirs = set(directories)
-    # problem -> [(file, line)], in order of appearance
-    found: dict[str, list[tuple[str, int]]] = {}
+    # problem -> [(file as shown, line, file)], in order of appearance; the
+    # shown names of the pages are all alike (`i/…/index.html`)
+    found: dict[str, list[tuple[str, int, str]]] = {}
     for relative, size in files.items():
         extension = os.path.splitext(relative)[1].lower()
         if extension not in (".html", ".css", ".svg") or size > MAX_FILE_BYTES:
@@ -2535,11 +2539,11 @@ def check_output(
                 text, files.__contains__, known_dirs.__contains__, posixpath.dirname(relative)
             )
         for line, message in file_problems:
-            found.setdefault(_redact_paths(message), []).append((shown, line))
+            found.setdefault(_redact_paths(message), []).append((shown, line, relative))
 
     for message, places in found.items():
-        first_file, first_line = places[0]
-        distinct = len({name for name, _line in places})
+        first_file, first_line, _first = places[0]
+        distinct = len({name for _shown, _line, name in places})
         if distinct == 1:
             problems.append(f"{first_file} line {first_line}: {message}")
         else:
@@ -2574,18 +2578,21 @@ def display_path(path: Path | str) -> str:
 
 
 #: `i/<token>`: both are whole path components, `i` may start the path, and a
-#: name with a dot (`i/index.html`) is a file, not a token.
+#: name with a dot (`i/index.html`) is a file, not a token.  Tokens may be as
+#: short as a word, so the whole component is hidden, whatever its length.
 _TOKEN_IN_PATH_RE = re.compile(
-    rf"(?<![A-Za-z0-9_.-])({PAGES_DIRNAME}[/\\])([A-Za-z0-9_-]{{4}})[A-Za-z0-9_-]+"
-    r"(?![A-Za-z0-9_.-])"
+    rf"(?<![A-Za-z0-9_.-])({PAGES_DIRNAME}[/\\])[A-Za-z0-9_-]+(?![A-Za-z0-9_.-])"
 )
-#: A name that may be an invitation token or a media directory.
+#: A name that may be a media directory (or a long token).
 _SECRET_LIKE_RE = re.compile(rf"[A-Za-z0-9_-]{{{MIN_MEDIA_DIR_LENGTH},}}\Z")
+#: What takes the place of a hidden name.
+NAME_MASK = "…"
 
 
 def _redact_paths(text: Any) -> str:
-    """Hide invitation tokens that may appear inside file system paths."""
-    return _TOKEN_IN_PATH_RE.sub(r"\1\2…", str(text))
+    """Hide invitation tokens that may appear inside file system paths:
+    `i/<token>/index.html` becomes `i/…/index.html`."""
+    return _TOKEN_IN_PATH_RE.sub(rf"\1{NAME_MASK}", str(text))
 
 
 #: What takes the place of the address of the site in a message.
@@ -2615,11 +2622,15 @@ def mask_site(text: str, base_url: str) -> str:
     return re.sub("|".join(patterns), SITE_MASK, text, flags=re.IGNORECASE)
 
 
-def _mask_name(name: str) -> str:
-    """A directory entry for an error message: names that look like a token or
-    a media directory are cut down to their first four characters."""
-    if _SECRET_LIKE_RE.match(name):
-        return f"{name[:4]}…"
+def _mask_name(name: str, *, pages: bool = False) -> str:
+    """A directory entry for an error message.
+
+    Every entry of a pages directory (`pages`: the directory is named `i`) may
+    be a token, however short, and names that look like a media directory or
+    a long token are secrets as well: all of them are hidden completely.
+    """
+    if pages or _SECRET_LIKE_RE.match(name):
+        return NAME_MASK
     return _shorten(name, 40)
 
 
@@ -2714,8 +2725,9 @@ def check_replaceable(out_dir: Path | str) -> None:
     (files created by the operating system are ignored).  No marker file is
     written into the output: its contents stay limited to what the site needs.
 
-    The message never shows a name in full if it looks like a token or a media
-    directory (`--out` may point inside a previous build by mistake).
+    The message never shows a name that may be a token or a media directory
+    (`--out` may point inside a previous build by mistake): the entries of a
+    directory named `i` and long names of token characters are shown as `…`.
     """
     out = Path(out_dir)
     try:
@@ -2730,8 +2742,9 @@ def check_replaceable(out_dir: Path | str) -> None:
     entries = [entry for entry in entries if entry.name not in OS_JUNK_FILES]
     advice = "remove it manually or choose another --out"
     unexpected = [entry.name for entry in entries if entry.name not in OUTPUT_TOP_LEVEL]
+    pages = Path(os.path.abspath(out)).name == PAGES_DIRNAME
     if unexpected:
-        listed = ", ".join(f"'{_mask_name(name)}'" for name in unexpected[:3])
+        listed = ", ".join(f"'{_mask_name(name, pages=pages)}'" for name in unexpected[:3])
         more = f" and {len(unexpected) - 3} more" if len(unexpected) > 3 else ""
         raise BuildError(
             f"refusing to replace {display_path(out)}: it does not look like a "
@@ -2748,7 +2761,8 @@ def check_replaceable(out_dir: Path | str) -> None:
             expected = "a directory" if is_directory else "a regular file"
             raise BuildError(
                 f"refusing to replace {display_path(out)}: it does not look like a "
-                f"previous build output ('{entry.name}' is not {expected}); {advice}"
+                f"previous build output ('{_mask_name(entry.name, pages=pages)}' is not "
+                f"{expected}); {advice}"
             )
 
 
@@ -3140,7 +3154,7 @@ def render_pages(
     pages: list[tuple[str, str]] = []
     failures: dict[str, list[str]] = {}  # message -> labels, in order of appearance
     for index, (invitation, tree) in enumerate(zip(invitations, trees), start=1):
-        label = invitation_label(index, invitation.get("token"))
+        label = invitation_label(index)
         try:
             page = template.render(tree)
             pages.append((invitation["token"], strip_html_comments(page, template.name)))
@@ -3221,6 +3235,9 @@ def build_site(
         f"build: {len(data.invitations)} invitation(s), {report.media_files} media "
         f"file(s) validated (data: {display_path(data_dir)}, media: {display_path(media_dir)})"
     )
+    summary = short_token_summary(data.invitations)
+    if summary:
+        log(f"build: {summary}")
 
     images = report.site_images
     check_reserved_asset_names(assets_dir)
@@ -3295,7 +3312,7 @@ def _stderr(message: str) -> None:
 
 
 def _cli_report() -> Report:
-    return Report(on_warn=lambda message: _stderr(f"warning: {message}"))
+    return Report(on_warn=lambda message: _stderr(f"warning: {_redact_paths(message)}"))
 
 
 def _data_dir(args: argparse.Namespace, code_dir: Path) -> Path:
@@ -3348,11 +3365,24 @@ def cmd_validate(args: argparse.Namespace) -> int:
         f"{report.media_files} media file(s) (data: {display_path(data_dir)}, "
         f"media: {display_path(media_dir)})"
     )
+    summary = short_token_summary(data.invitations)
+    if summary:
+        _stdout(f"validate: {summary}")
     return EXIT_OK
 
 
-def cmd_token(_args: argparse.Namespace) -> int:
-    _stdout(generate_token())
+def token_prefix(value: str) -> str:
+    """`token --prefix NAME`: the characters of a token; the value is not
+    repeated in the message."""
+    problem = check_token_prefix(value)
+    if problem:
+        raise argparse.ArgumentTypeError(problem)
+    return value
+
+
+def cmd_token(args: argparse.Namespace) -> int:
+    prefix = getattr(args, "prefix", None)
+    _stdout(generate_token() if prefix is None else generate_prefixed_token(prefix))
     return EXIT_OK
 
 
@@ -3476,6 +3506,14 @@ def build_parser() -> argparse.ArgumentParser:
     validate_cmd.set_defaults(func=cmd_validate)
 
     token_cmd = subparsers.add_parser("token", help="print a new invitation token")
+    token_cmd.add_argument(
+        "--prefix",
+        metavar="NAME",
+        type=token_prefix,
+        help="print a readable token NAME-xxxx with a random tail of "
+        f"{data_tools.TOKEN_SUFFIX_LENGTH} characters (NAME: A-Z, a-z, 0-9, '_' and '-'); "
+        "without it the token is fully random",
+    )
     token_cmd.set_defaults(func=cmd_token)
 
     links_cmd = subparsers.add_parser(

@@ -491,6 +491,24 @@ class ExampleDataTests(CliTestCase):
         out = self.build_example("data-venue-pending")
         self.assertFalse((out / "assets" / site["mediaDir"]).exists())
         self.assertEqual(len(list((out / "i").rglob("*.ics"))), len(invitations))
+        # readable tokens, a short one among them, are directory names as they are
+        self.assertEqual(
+            sorted(p.name for p in (out / "i").iterdir()),
+            sorted(item["token"] for item in invitations),
+        )
+
+    def test_short_tokens_of_the_examples_are_counted(self):
+        result = support.run_cli(
+            self.code, "validate", "--data", str(support.ROOT / "examples" / "data-venue-pending"),
+            "--media", str(self.tmp / "no-media"), cwd=self.work,
+        )  # fmt: skip
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "validate: tokens: 3 (2 shorter than 12 characters, see README 3.3)\n", result.stdout
+        )
+        # the main example keeps its random tokens: no summary
+        _site, invitations = self.load("data")
+        self.assertIsNone(build.data_tools.short_token_summary(invitations))
 
 
 if __name__ == "__main__":  # pragma: no cover

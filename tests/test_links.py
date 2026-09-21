@@ -108,12 +108,12 @@ class LinksCommandTests(CliTestCase):
 
     def test_invalid_data_prints_nothing(self):
         invitations = invitations_data()
-        invitations[2]["token"] = "short"
+        invitations[2]["token"] = "tiny"
         write_data(self.data, invitations=invitations)
         result = self.links()
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")  # not even the valid invitations
-        self.assertIn("invitation #3 (shor…)", result.stderr)
+        self.assertIn("invitation #3: 'token' is too short", result.stderr)
         self.assertIn("links: failed with 1 error(s)", result.stderr)
         self.assertNoPrivateData(result.stderr)
 
