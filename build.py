@@ -697,7 +697,7 @@ def _parse(source: str, name: str, fragment: bool = False) -> tuple[list[Any], b
             children().append(_Include(fixed, "", "", line, in_scope()))
             return
         check_syntax(path, line, shown)
-        if not path.startswith("."):
+        if not path.startswith(".") or path == ".":
             raise TemplateError(
                 f"{shown}: a fragment is chosen by a field of the current item, "
                 "write {{.field}}",

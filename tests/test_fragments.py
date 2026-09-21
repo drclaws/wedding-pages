@@ -250,11 +250,17 @@ class ChooseByTypeTests(unittest.TestCase):
         message = error_of(build.Fragments, dict(WIDGETS, **{"widgets/box": box}))
         self.assertTrue(message.startswith("fragments/widgets/box.html line 2:"), message)
         self.assertIn("must be inside", message)
-        # only a field of the current item chooses
-        message = error_of(
-            parse, "<!-- each:w --><!-- include:widgets/{{kind}} --><!-- endeach -->", WIDGETS
-        )
-        self.assertIn("chosen by a field of the current item", message)
+        # only a field of the current item chooses: not a field of the page,
+        # not the item itself
+        for path in ("kind", "."):
+            with self.subTest(path=path):
+                message = error_of(
+                    parse,
+                    "<!-- each:w -->\n<!-- include:widgets/{{" + path + "}} --><!-- endeach -->",
+                    WIDGETS,
+                )
+                self.assertTrue(message.startswith("template.html line 2:"), message)
+                self.assertIn("chosen by a field of the current item, write {{.field}}", message)
 
     def test_choosing_from_an_empty_or_missing_directory_is_a_parse_error(self):
         template = "<!-- each:w -->\n<!-- include:widgets/{{.type}} --><!-- endeach -->"
