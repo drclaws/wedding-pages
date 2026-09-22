@@ -125,7 +125,7 @@ class OutputContentsTests(FullBuildTestCase):
             ),
         )
         page = self.page(support.TOKEN_A)
-        self.assertIn("Подробности сообщим позже", page)
+        self.assertIn("Подробности появятся на этой странице позже", page)
         self.assertNotIn("<video", page)
         self.assertNotIn("<img", page)
         self.assertNotIn("maps", page)

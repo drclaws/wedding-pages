@@ -875,7 +875,7 @@ class FragmentContractTests(unittest.TestCase):
             self.assertNotIn(part, compact)
         self.assertIn('<h4 class="venue__name">', card(nested=True))
         pending = card(ready=False)
-        self.assertIn("Подробности сообщим позже.", pending)
+        self.assertIn("Подробности появятся на этой странице позже.", pending)
         self.assertNotIn("venue__name", pending)
         self.assertNotIn("venue__maps", pending)
 
