@@ -3229,6 +3229,13 @@ def link_preview(
         image = preview_tools.link_preview_image(page, files, options.chrome)
     except preview_tools.PreviewError as exc:
         raise BuildError(f"link preview image: {exc}") from None
+    if not image.window_fits or not image.in_safe_zone:
+        # no names or dates in the message: only what to check
+        report.warn(
+            "the text of the cover does not fit into the middle square of the link preview "
+            "image (small previews crop to it); look at the picture - shorter names in "
+            "'coupleNames' or a shorter eyebrow help"
+        )
     if not image.fits:
         report.warn(
             f"the link preview image is {format_size(len(image.content))} even at JPEG "

@@ -49,6 +49,10 @@ QUALITIES = (85, 80, 75, 70, 65, 60)
 TIMEOUT_SECONDS = 60.0
 #: Screenshots taken until two in a row are the same.
 MAX_CAPTURES = 5
+#: The text of the cover stays inside the middle square of the image (what a
+#: square crop keeps): x from 285 to 915 of 1200.
+SAFE_LEFT = (IMAGE_SIZE[0] - IMAGE_SIZE[1]) / 2
+SAFE_RIGHT = SAFE_LEFT + IMAGE_SIZE[1]
 
 #: The environment variable with the path of the browser (`--chrome`).
 CHROME_VARIABLE = "CHROME"
@@ -132,6 +136,18 @@ class PreviewImage:
     fits: bool = True
     #: (left, top, right, bottom) of the text of the cover, in image pixels.
     text_box: tuple[float, float, float, float] | None = None
+    #: False when the cover fitted into none of `VIEWPORTS` (the widest is used).
+    window_fits: bool = True
+
+    @property
+    def in_safe_zone(self) -> bool:
+        """The text of the cover is inside the image and its middle square."""
+        if self.text_box is None:
+            return False
+        left, top, right, bottom = self.text_box
+        return (
+            left >= SAFE_LEFT and right <= SAFE_RIGHT and top >= 0 and bottom <= self.height
+        )
 
 
 # --------------------------------------------------------------------------
@@ -158,7 +174,9 @@ def find_chrome(
             path = given.strip()
             found = path if os.sep in path else shutil.which(path, path=environ.get("PATH"))
             if found is None or not _executable(found):
-                raise PreviewError(f"{what} does not name an executable file of a browser")
+                raise PreviewError(
+                    f"{what} does not name an executable file of a browser; {NO_BROWSER_HINT}"
+                )
             return found
     for path in defaults:
         if _executable(path):
@@ -228,13 +246,23 @@ class _Browser:
                 return reply.get("result", {})
             self._pending.append(reply)
 
-    def wait_for(self, method: str, session: str) -> dict:
+    def wait_for(self, method: str, session: str, match: Any = None) -> dict:
+        """The first event `method` of the session (for which `match(params)`
+        is true, when given); other events are kept for later."""
+
+        def wanted(event: dict) -> bool:
+            return (
+                event.get("method") == method
+                and event.get("sessionId") == session
+                and (match is None or match(event.get("params", {})))
+            )
+
         for position, event in enumerate(self._pending):
-            if event.get("method") == method and event.get("sessionId") == session:
+            if wanted(event):
                 return self._pending.pop(position)
         while True:
             event = self._read()
-            if event.get("method") == method and event.get("sessionId") == session:
+            if wanted(event):
                 return event
             self._pending.append(event)
 
@@ -327,12 +355,14 @@ def _render(browser: _Browser, url: str) -> PreviewImage:
         "Target.attachToTarget", {"targetId": target, "flatten": True}
     )["sessionId"]
     browser.call("Page.enable", session=session)
+    browser.call("Page.setLifecycleEventsEnabled", {"enabled": True}, session)
     browser.call(
         "Emulation.setEmulatedMedia",
         {"media": "screen", "features": [{"name": "prefers-reduced-motion", "value": "reduce"}]},
         session,
     )
     chosen = None
+    window_fits = False
     for width, height in VIEWPORTS:
         browser.call(
             "Emulation.setDeviceMetricsOverride",
@@ -342,8 +372,16 @@ def _render(browser: _Browser, url: str) -> PreviewImage:
         )
         # the scripts of the page never run; the measuring script runs after
         browser.call("Emulation.setScriptExecutionDisabled", {"value": True}, session)
-        browser.call("Page.navigate", {"url": url}, session)
-        browser.wait_for("Page.loadEventFired", session)
+        navigation = browser.call("Page.navigate", {"url": url}, session)
+        if navigation.get("errorText"):
+            raise PreviewError("the browser could not open the preview page")
+        loader = navigation.get("loaderId")
+        # the load of this very navigation, not of an earlier one
+        browser.wait_for(
+            "Page.lifecycleEvent",
+            session,
+            lambda params: params.get("name") == "load" and params.get("loaderId") == loader,
+        )
         browser.call("Emulation.setScriptExecutionDisabled", {"value": False}, session)
         browser.call(
             "Runtime.evaluate",
@@ -354,7 +392,8 @@ def _render(browser: _Browser, url: str) -> PreviewImage:
             "Runtime.evaluate", {"expression": _FIT_SCRIPT, "returnByValue": True}, session
         ).get("result", {}).get("value")
         chosen = (width, height)
-        if fits is True:
+        window_fits = fits is True
+        if window_fits:
             break
     assert chosen is not None
     box = browser.call(
@@ -376,6 +415,7 @@ def _render(browser: _Browser, url: str) -> PreviewImage:
         viewport=chosen,
         fits=len(content) <= MAX_IMAGE_BYTES,
         text_box=text_box,
+        window_fits=window_fits,
     )
 
 
@@ -383,7 +423,9 @@ def render_page(page: str, files: Mapping[str, Path | bytes], chrome: str) -> Pr
     """Render the preview page `page` (HTML) with its `files` (URL path ->
     a file or its contents) in the browser `chrome`."""
     deadline = time.monotonic() + TIMEOUT_SECONDS
-    with tempfile.TemporaryDirectory(prefix="link-preview-") as temporary:
+    # a helper process of the browser may still write into the profile while
+    # it is removed: that must not fail a finished build
+    with tempfile.TemporaryDirectory(prefix="link-preview-", ignore_cleanup_errors=True) as temporary:
         root = Path(temporary) / "site"
         profile = Path(temporary) / "profile"
         root.mkdir()
@@ -396,6 +438,9 @@ def render_page(page: str, files: Mapping[str, Path | bytes], chrome: str) -> Pr
             server = _serve(root)
             try:
                 return _render(browser, f"http://127.0.0.1:{server.server_address[1]}/")
+            except (ValueError, KeyError, TypeError):
+                # an answer that is not JSON or lacks a field the protocol promises
+                raise PreviewError("unexpected answer of the browser") from None
             finally:
                 server.shutdown()
                 server.server_close()

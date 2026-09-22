@@ -123,8 +123,11 @@ class FindChromeTests(support.TempDirTestCase):
                 with self.assertRaises(_preview.PreviewError) as caught:
                     _preview.find_chrome(explicit, environ, ())
                 self.assertEqual(
-                    str(caught.exception), f"{name} does not name an executable file of a browser"
+                    str(caught.exception),
+                    f"{name} does not name an executable file of a browser; "
+                    + _preview.NO_BROWSER_HINT,
                 )
+                self.assertIn("--no-link-preview-image", str(caught.exception))
                 self.assertNotIn("secret-place", str(caught.exception))
 
     def test_no_browser_is_an_error_with_a_hint(self):
@@ -139,11 +142,13 @@ class FindChromeTests(support.TempDirTestCase):
 class _FakeBrowser:
     """Answers the DevTools calls of `_render` without a browser."""
 
-    def __init__(self, fits_from: int, sizes: dict[int, int]):
+    def __init__(self, fits_from: int, sizes: dict[int, int], navigation=None):
         self.fits_from = fits_from
         self.sizes = sizes
         self.viewport = None
         self.calls: list[str] = []
+        self.navigation = {"frameId": "f", "loaderId": "l"} if navigation is None else navigation
+        self.matches = []
 
     def call(self, method, params=None, session=None):
         self.calls.append(method)
@@ -162,12 +167,15 @@ class _FakeBrowser:
             if params["expression"] is _preview._TEXT_BOX_SCRIPT:
                 return {"result": {"value": [150, 20, 450, 290]}}
             return {"result": {"value": True}}
+        if method == "Page.navigate":
+            return self.navigation
         if method == "Page.captureScreenshot":
             size = self.sizes.get(params["quality"], 1000)
             return {"data": base64.b64encode(bytes([params["quality"]]) * size).decode()}
         return {}
 
-    def wait_for(self, method, session):
+    def wait_for(self, method, session, match=None):
+        self.matches.append((method, match))
         return {}
 
 
@@ -184,6 +192,49 @@ class RenderLogicTests(unittest.TestCase):
     def test_nothing_fits_the_widest_window_is_taken(self):
         image = _preview._render(_FakeBrowser(fits_from=5000, sizes={}), "http://127.0.0.1:1/")
         self.assertEqual(image.viewport, (1200, 630))
+        self.assertFalse(image.window_fits)
+
+    def test_a_failed_navigation_is_an_error(self):
+        browser = _FakeBrowser(600, {}, navigation={"frameId": "f", "errorText": "net::ERR_X"})
+        with self.assertRaises(_preview.PreviewError) as caught:
+            _preview._render(browser, "http://127.0.0.1:1/")
+        self.assertEqual(str(caught.exception), "the browser could not open the preview page")
+
+    def test_the_load_of_this_navigation_is_awaited(self):
+        browser = _FakeBrowser(600, {})
+        _preview._render(browser, "http://127.0.0.1:1/")
+        method, match = browser.matches[0]
+        self.assertEqual(method, "Page.lifecycleEvent")
+        self.assertTrue(match({"name": "load", "loaderId": "l"}))
+        self.assertFalse(match({"name": "load", "loaderId": "earlier"}))
+        self.assertFalse(match({"name": "DOMContentLoaded", "loaderId": "l"}))
+        self.assertIn("Page.setLifecycleEventsEnabled", browser.calls)
+
+    def test_the_safe_zone(self):
+        def image(box):
+            return _preview.PreviewImage(b"x", 1200, 630, 85, "X", (600, 315), text_box=box)
+
+        self.assertTrue(image((285, 0, 915, 630)).in_safe_zone)
+        self.assertFalse(image((284, 10, 900, 600)).in_safe_zone)
+        self.assertFalse(image((300, 10, 916, 600)).in_safe_zone)
+        self.assertFalse(image((300, -1, 900, 600)).in_safe_zone)
+        self.assertFalse(image(None).in_safe_zone)
+
+    def test_an_unexpected_answer_is_a_preview_error(self):
+        class Quiet:
+            def __init__(self, *_args):
+                pass
+
+            def close(self):
+                pass
+
+        for problem in (KeyError("targetId"), ValueError("not JSON")):
+            with self.subTest(problem=problem), mock.patch.object(
+                _preview, "_Browser", Quiet
+            ), mock.patch.object(_preview, "_render", side_effect=problem):
+                with self.assertRaises(_preview.PreviewError) as caught:
+                    _preview.render_page("<html></html>", {}, "chrome")
+                self.assertEqual(str(caught.exception), "unexpected answer of the browser")
 
     def test_the_quality_goes_down_until_the_image_is_small_enough(self):
         big = _preview.MAX_IMAGE_BYTES + 1
@@ -317,11 +368,32 @@ class LinkPreviewBuildTests(CliTestCase):
             return _preview.PreviewImage(
                 content=fake_preview.FAKE_JPEG, width=1200, height=630, quality=60,
                 browser="X", viewport=(600, 315), fits=False,
+                text_box=(300.0, 150.0, 900.0, 480.0),
             )  # fmt: skip
 
         with mock.patch.object(_preview, "link_preview_image", large):
             result = self.build()
         self.assertIn("warning: the link preview image is 32 B even at JPEG quality 60", result.stderr)
+
+    def test_a_cover_out_of_the_safe_zone_is_a_warning(self):
+        for changes in ({"text_box": (100.0, 10.0, 1100.0, 600.0)}, {"window_fits": False}):
+            with self.subTest(changes=changes):
+                def outside(*_args, **_kwargs):
+                    values = dict(
+                        content=fake_preview.FAKE_JPEG, width=1200, height=630, quality=85,
+                        browser="X", viewport=(1200, 630), text_box=(300.0, 150.0, 900.0, 480.0),
+                    )  # fmt: skip
+                    values.update(changes)
+                    return _preview.PreviewImage(**values)
+
+                with mock.patch.object(_preview, "link_preview_image", outside):
+                    result = self.build()
+                self.assertIn(
+                    "warning: the text of the cover does not fit into the middle square",
+                    result.stderr,
+                )
+                self.assertNotIn(support.COUPLE_NAMES, result.stderr)
+        self.assertNotIn("middle square", self.build().stderr)
 
     def test_validate_notes_an_eyebrow_that_depends_on_the_guest(self):
         site = support.site_data()

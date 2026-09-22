@@ -45,6 +45,7 @@ def fake_link_preview_image(page, files, chrome=None, environ=None):
         quality=85,
         browser=FAKE_BROWSER,
         viewport=(600, 315),
+        text_box=(300.0, 150.0, 900.0, 480.0),
     )
 
 

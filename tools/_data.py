@@ -278,6 +278,9 @@ COMMON_FORM = "all"
 TEXT_FORMS = (*FORMS, COMMON_FORM)
 #: How deep named texts may use each other.
 MAX_TEXT_DEPTH = 8
+#: The longest text once its named texts are expanded: a guard against a
+#: text that uses others many times over (the pages hold a few sentences).
+MAX_EXPANDED_LENGTH = 10000
 
 
 def form_problem(form: Any) -> str | None:
@@ -422,6 +425,7 @@ def expand_texts(
     used: set[str] | None = None,
     show_unknown: bool = True,
     _chain: tuple[str, ...] = (),
+    _cache: dict | None = None,
 ) -> str:
     """Replace every `{text:<id>}` with the variant of that named text for
     `form` (`ty`, `vy` or `all`), recursively.
@@ -433,19 +437,29 @@ def expand_texts(
     without the variant for `form` raise `TextError`; the ids of the chain
     are shown (only valid ids reach here), the texts never.  `used` collects
     the ids of the named texts that were inserted.  With `show_unknown` false
-    an unknown id is not shown (it may come from an invitation).
+    an unknown id is not shown (it may come from an invitation).  Each named
+    text is expanded once per call (the results are reused), and a result
+    longer than `MAX_EXPANDED_LENGTH` characters is an error.
     """
+    cache = {} if _cache is None else _cache
     pieces: list[str] = []
     for kind, value, where in _scan(text):
         if kind == "ref":
             pieces.append(
-                _expand_ref(value, where, form, texts, used, show_unknown, _chain)
+                _expand_ref(value, where, form, texts, used, show_unknown, _chain, cache)
             )
         elif kind == "name":
             pieces.append(f"{{{value}}}")
         else:
             pieces.append(value)
-    return "".join(pieces)
+    result = "".join(pieces)
+    if len(result) > MAX_EXPANDED_LENGTH:
+        through = f" (in {_chain_text(_chain)})" if _chain else ""
+        raise TextError(
+            f"is longer than {MAX_EXPANDED_LENGTH} characters once its texts are "
+            f"expanded{through}; a text probably uses other texts too many times"
+        )
+    return result
 
 
 def _chain_text(chain: Sequence[str]) -> str:
@@ -460,6 +474,7 @@ def _expand_ref(
     used: set[str] | None,
     show_unknown: bool,
     chain: tuple[str, ...],
+    cache: dict,
 ) -> str:
     if text_id not in texts:
         shown = f" '{text_id}'" if show_unknown and is_identifier(text_id) else ""
@@ -487,11 +502,26 @@ def _expand_ref(
                 "- the variant for everybody"
             )
         raise TextError(f"uses the text '{text_id}'{through}, which has no form '{form}'")
+    cached = cache.get(text_id)
+    if cached is not None:
+        expanded, below, height = cached
+        if len(chain) + height > MAX_TEXT_DEPTH:
+            raise TextError(
+                f"nests texts deeper than {MAX_TEXT_DEPTH} levels: "
+                f"{_chain_text((*chain, text_id))} -> …"
+            )
+    else:
+        below: set[str] = set()
+        expanded = expand_texts(
+            variant, form, texts, used=below, show_unknown=show_unknown,
+            _chain=(*chain, text_id), _cache=cache,
+        )  # fmt: skip
+        height = 1 + max((cache[item][2] for item in below if item in cache), default=0)
+        cache[text_id] = (expanded, below, height)
     if used is not None:
         used.add(text_id)
-    return expand_texts(
-        variant, form, texts, used=used, show_unknown=show_unknown, _chain=(*chain, text_id)
-    )
+        used.update(below)
+    return expanded
 
 
 def _placeholder_names(known: Iterable[str]) -> tuple[str, ...]:

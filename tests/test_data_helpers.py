@@ -687,6 +687,39 @@ class NamedTextTests(unittest.TestCase):
             self.expand("{text:t1}", texts=chain)
         self.assertTrue(str(caught.exception).startswith("nests texts deeper than 8 levels: 't1'"))
 
+    def test_a_text_that_grows_too_long_is_an_error_and_fast(self):
+        import time
+
+        # eight levels of ten references each: 10**8 insertions without a limit
+        texts = {f"t{n}": f"{{text:t{n + 1}}}" * 10 for n in range(1, 8)}
+        texts["t8"] = "слово "
+        started = time.monotonic()
+        with self.assertRaises(data_tools.TextError) as caught:
+            self.expand("{text:t1}", texts=texts)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertTrue(
+            str(caught.exception).startswith("is longer than 10000 characters once its texts")
+        )
+
+    def test_a_text_used_many_times_is_expanded_once(self):
+        import time
+
+        texts = {f"t{n}": f"{{text:t{n + 1}}}" * 40 for n in range(1, 8)}
+        texts["t8"] = ""
+        used = set()
+        started = time.monotonic()
+        self.assertEqual(self.expand("{text:t1}", texts=texts, used=used), "")
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(used, set(texts))
+
+    def test_a_reused_text_still_counts_its_depth(self):
+        chain = {f"t{n}": f"{{text:t{n + 1}}}" for n in range(1, 9)}
+        chain["t9"] = "конец"
+        # t2 first (8 levels, fine), then t1 reaches the cached t2 one level deeper
+        with self.assertRaises(data_tools.TextError) as caught:
+            self.expand("{text:t2} {text:t1}", texts=chain)
+        self.assertTrue(str(caught.exception).startswith("nests texts deeper than 8 levels"))
+
     def test_values_of_placeholders_are_not_parsed_for_texts(self):
         values = {"greeting": "{text:announce}", "coupleNames": "Алиса и Боб"}
         self.assertEqual(
