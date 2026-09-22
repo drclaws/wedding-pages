@@ -147,7 +147,7 @@
     }
 
     function stop() {
-      window.removeEventListener('scroll', onChange);
+      window.removeEventListener('scroll', onChange, true);
       window.removeEventListener('resize', onChange);
       window.removeEventListener('load', onChange);
       if (frame) {
@@ -186,9 +186,12 @@
     }
 
     /* Сначала маркер: без него панель скрыта и её высоту не измерить.
-       Подписка до первого расчёта: при ошибке stop() её же и снимет. */
+       Подписка до первого расчёта: при ошибке stop() её же и снимет.
+       Прокрутку на странице приглашения ведёт body (app.css, секция 3), а
+       scroll элемента до window не всплывает — слушатель ловит его на фазе
+       перехвата, прокрутку документа тоже. */
     root.classList.add('cover-bar-on');
-    window.addEventListener('scroll', onChange, { passive: true });
+    window.addEventListener('scroll', onChange, { passive: true, capture: true });
     window.addEventListener('resize', onChange);
     window.addEventListener('load', onChange);
     update();
@@ -590,7 +593,7 @@
       }
       frame = 0;
       doc.removeEventListener('focusin', onFocusIn);
-      window.removeEventListener('scroll', onViewportChange);
+      window.removeEventListener('scroll', onViewportChange, true);
       window.removeEventListener('resize', onViewportChange);
       window.removeEventListener('orientationchange', onViewportChange);
       doc.removeEventListener('visibilitychange', onVisibilityChange);
@@ -651,10 +654,18 @@
        пришёл ли колбэк наблюдателя, и идёт не чаще кадра. Граница та же, что у
        наблюдателя; у самого конца страницы блок может до неё не дойти — там
        она снимается. */
+    /* Конец страницы — у документа или у body, если прокручивает он
+       (страница приглашения, app.css секция 3). */
+    function atEnd() {
+      var body = doc.body;
+      return viewportHeight() + window.pageYOffset >= root.scrollHeight - 2 ||
+        (body.scrollHeight > body.clientHeight &&
+          body.scrollTop + body.clientHeight >= body.scrollHeight - 2);
+    }
+
     var onFrame = guarded(function () {
       frame = 0;
-      var atEnd = viewportHeight() + window.pageYOffset >= root.scrollHeight - 2;
-      sweepWithin(atEnd ? 0 : REVEAL_INSET);
+      sweepWithin(atEnd() ? 0 : REVEAL_INSET);
     });
 
     function onViewportChange() {
@@ -712,7 +723,9 @@
         observer.observe(element);
       });
       doc.addEventListener('focusin', onFocusIn);
-      window.addEventListener('scroll', onViewportChange, { passive: true });
+      /* Перехват: прокрутка body (страница приглашения) до window не
+         всплывает. */
+      window.addEventListener('scroll', onViewportChange, { passive: true, capture: true });
       window.addEventListener('resize', onViewportChange);
       window.addEventListener('orientationchange', onViewportChange);
       doc.addEventListener('visibilitychange', onVisibilityChange);
@@ -1024,8 +1037,11 @@
     function lockScroll(on) {
       if (on) {
         /* Место исчезнувшей полосы прокрутки занимает отступ: страница под
-           окном не сдвигается. */
-        var gap = window.innerWidth - root.clientWidth;
+           окном не сдвигается. Полоса — у окна или у body, если прокручивает
+           он (страница приглашения, app.css секция 3); рамки у body нет. */
+        var body = doc.body;
+        var gap = window.innerWidth - root.clientWidth +
+          (body ? body.offsetWidth - body.clientWidth : 0);
         if (gap > 0) {
           root.style.setProperty('--lightbox-scroll-gap', gap + 'px');
         }

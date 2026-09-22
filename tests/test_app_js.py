@@ -101,9 +101,14 @@ class AppJsSourceTest(unittest.TestCase):
         self.assertRegex(tick, r"try\s*\{\s*update\(\);\s*\}\s*catch")
         self.assertIn("finish();", tick)
         # reveal: a scroll/resize sweep that does not depend on observer callbacks
-        for event in ("scroll", "resize", "orientationchange"):
+        for event in ("resize", "orientationchange"):
             self.assertIn("window.addEventListener('%s', onViewportChange" % event, self.code)
             self.assertIn("window.removeEventListener('%s', onViewportChange)" % event, self.code)
+        # the scroll of body (the invitation page) does not bubble to window:
+        # caught in the capture phase, removed with the same flag
+        self.assertIn("window.addEventListener('scroll', onViewportChange, { passive: true, capture: true });",
+                      self.code)
+        self.assertIn("window.removeEventListener('scroll', onViewportChange, true);", self.code)
         self.assertIn("requestAnimationFrame(onFrame)", self.code)
 
     def test_every_countdown_starts_in_its_own_try(self):
@@ -594,12 +599,14 @@ class CoverBarTest(unittest.TestCase):
         backgrounds = [selector for selector, body in rules
                        if re.match(r"html\b", selector) and re.search(r"\bbackground(?:-color)?\s*:", body)]
         self.assertEqual(backgrounds, ["html.invitation"])
-        canvas = dict(rules)["html.invitation"]
-        self.assertEqual(canvas.strip(), "background-color: var(--color-cover-veil);")
+        first = {}
+        for selector, body in rules:
+            first.setdefault(selector, body)  # the rules outside @media screen come first
+        self.assertEqual(first["html.invitation"].strip(), "background-color: var(--color-cover-veil);")
         # with a background of <html> the one of body no longer reaches the
         # canvas: body is at least as tall as the window, so a short page shows
         # its own background below the content, as before
-        self.assertEqual(dict(rules)["html.invitation body"].strip(),
+        self.assertEqual(first["html.invitation body"].strip(),
                          "min-block-size: var(--viewport-height-dynamic);")
         self.assertIn("color-scheme: only light;", self.css)
         template = (ROOT / "template.html").read_text(encoding="utf-8")
@@ -608,6 +615,43 @@ class CoverBarTest(unittest.TestCase):
             with self.subTest(page=other):
                 self.assertNotIn("invitation", re.search(r"<html[^>]*>", (ROOT / other).read_text(
                     encoding="utf-8")).group(0))
+
+    def test_on_screen_the_invitation_page_scrolls_body_within_the_window(self):
+        # WebKit (the in-app browser of Telegram on iOS, Safari on iOS 26)
+        # paints the scrolled document above the layout viewport, under the
+        # translucent top bar: body as tall as the window scrolls instead, so
+        # its content is clipped at its edge and only the canvas shows above
+        blocks = re.findall(r"@media screen\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}", self.css)
+        self.assertEqual(len(blocks), 1)
+        rules = {" ".join(selector.split()): " ".join(body.split())
+                 for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", blocks[0])}
+        self.assertEqual(rules, {
+            "html.invitation": "block-size: 100%; overflow: hidden;",
+            "html.invitation body": "block-size: 100%; min-block-size: 0; overflow-y: auto;",
+            # anchors and focus clear the bar in the scroller that is body now
+            "html.js.cover-bar-on.invitation body": "scroll-padding-block-start: var(--cover-bar-block-size);",
+            # the page under the viewer window does not scroll
+            "html.invitation.is-lightbox-open body": "overflow: hidden;",
+        })
+        # nothing else scrolls the page on screen, print keeps the document
+        self.assertNotRegex(re.sub(r"@media screen\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}", "", self.css),
+                            r"html\.invitation[^{}]*\{[^{}]*overflow")
+        self.assertNotRegex(self.css, r"@media print\s*\{[^@]*html\.invitation")
+
+    def test_the_scripts_follow_the_scroll_of_body(self):
+        reveal = self.code[self.code.index("register('reveal'"):self.code.index("register('countdown'")]
+        end = reveal[reveal.index("function atEnd()"):reveal.index("var onFrame")]
+        self.assertIn("window.pageYOffset >= root.scrollHeight - 2", end)
+        self.assertIn("body.scrollTop + body.clientHeight >= body.scrollHeight - 2", end)
+        self.assertIn("sweepWithin(atEnd() ? 0 : REVEAL_INSET);", reveal)
+        # the scrollbar gap under the viewer window counts the scrollbar of body
+        lock = self.code[self.code.index("function lockScroll("):self.code.index("function releaseVideo(")]
+        self.assertIn("window.innerWidth - root.clientWidth +", lock)
+        self.assertIn("body.offsetWidth - body.clientWidth", lock)
+        # no listener of the window scroll left that would miss the one of body
+        for listener in re.findall(r"window\.addEventListener\('scroll', [^;]*;", self.code):
+            with self.subTest(listener=listener):
+                self.assertIn("capture: true", listener)
 
     def test_the_timeline_covers_the_cover_itself(self):
         self.assertIn("view-timeline-inset: 0;", self.motion)
@@ -674,15 +718,20 @@ class CoverBarTest(unittest.TestCase):
         self.assertNotRegex(self.module, r"[А-Яа-яЁё]")  # no text of its own
         # frames, not every scroll event
         self.assertIn("frame = window.requestAnimationFrame(update);", self.function("onChange"))
-        self.assertIn("{ passive: true }", self.module)
+        self.assertIn("{ passive: true, capture: true }", self.module)
 
     def test_stop_returns_the_view_without_the_module(self):
         stop = self.function("stop")
         self.assertIn("root.classList.remove('cover-bar-on');", stop)
         self.assertIn("node.style.removeProperty('--cover-progress');", stop)
-        for listener in re.findall(r"window\.addEventListener\('(\w+)', onChange", self.module):
+        for listener, options in re.findall(r"window\.addEventListener\('(\w+)', onChange(?:, (\{[^}]*\}))?\)",
+                                            self.module):
             with self.subTest(listener=listener):
-                self.assertIn("window.removeEventListener('%s', onChange);" % listener, stop)
+                capture = ", true" if "capture: true" in options else ""
+                self.assertIn("window.removeEventListener('%s', onChange%s);" % (listener, capture), stop)
+        # the scroll of body (the invitation page) does not bubble to window
+        self.assertIn("window.addEventListener('scroll', onChange, { passive: true, capture: true });",
+                      self.module)
         self.assertRegex(self.function("update"), r"catch \(error\) \{\s*stop\(\);\s*report\('coverBar', error\);")
         # the listeners are in place before the first count, so a failure removes them
         init = self.module[self.module.index("root.classList.add('cover-bar-on');\n    window"):]
