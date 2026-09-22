@@ -73,7 +73,11 @@ SITE_FIELDS = (
     "locations",
     "schedules",
     "media",
+    "texts",
+    "linkPreview",
 )
+#: Fields of `linkPreview`: what the services that show link previews read.
+LINK_PREVIEW_FIELDS = ("description",)
 #: Fields of the old format and where their contents live now.
 V1_SITE_HINTS = {
     "dateISO": "the date and time belong to the events now ('events.<id>.start')",
@@ -456,6 +460,8 @@ class SiteIndex:
     locations: dict | None = None
     schedules: dict | None = None
     media: dict | None = None
+    #: The named texts (`texts`); None when the registry is broken.
+    texts: dict | None = None
     main_event: str | None = None
     #: Sections with a usable id and type, in their order.
     sections: dict[str, dict] = field(default_factory=dict)
@@ -526,7 +532,9 @@ def check_site(site: Any, report: Any, where: str = SITE_FILE) -> SiteIndex:
     index.locations = _check_locations(check, site, index)
     index.events = _check_events(check, site, index)
     _check_main_event(check, site, index)
+    index.texts = _check_texts(check, site, index)
     _check_sections(check, site, index)
+    _check_link_preview(check, site, index)
     index.errors = check.errors
     return index
 
@@ -916,6 +924,146 @@ def _check_text(
             check.error(variant_parts, "must not be empty")
         elif single_line and ("\n" in text or "\r" in text):
             check.error(variant_parts, "must be a single line (no line breaks)")
+        elif index.texts is not None and _valid_syntax(text):
+            # the named texts in the form of this variant (a string serves both)
+            forms = FORMS if isinstance(value, str) else (variant_parts[-1],)
+            for form in forms:
+                try:
+                    expanded = _data.expand_texts(text, form, index.texts)
+                except _data.TextError as exc:
+                    check.error(variant_parts, str(exc))
+                    break
+                if single_line and ("\n" in expanded or "\r" in expanded):
+                    check.error(
+                        variant_parts,
+                        "must be a single line (no line breaks), but a text it uses has "
+                        "several lines",
+                    )
+                    break
+
+
+def _valid_syntax(text: str) -> bool:
+    """False when a text has a syntax problem (it is reported on its own)."""
+    try:
+        _data.parse_text(text)
+    except _data.TextError:
+        return False
+    return True
+
+
+def _placeholder_names(text: str) -> set[str]:
+    """The built-in placeholders of a text whose syntax is valid."""
+    try:
+        parts = _data.parse_text(text)
+    except _data.TextError:
+        return set()
+    return {part.name for part in parts if isinstance(part, _data.Placeholder)}
+
+
+_TEXT_SHAPE = (
+    "must be a string or an object with the strings 'ty' and 'vy' "
+    f"(and, for places without a guest, the common form '{_data.COMMON_FORM}')"
+)
+
+
+def _check_texts(check: _Checker, site: dict, index: SiteIndex) -> dict | None:
+    """The named texts: `texts.<id>` is a string or `{ty, vy[, all]}`."""
+    texts = _registry(check, site, "texts")
+    if not texts:
+        return texts
+    common = _data.COMMON_FORM
+    for text_id, value in texts.items():
+        parts = ("texts", text_id)
+        if isinstance(value, str):
+            variants = [(parts, None, value)]
+        elif isinstance(value, dict):
+            for key in value:
+                if key not in _data.TEXT_FORMS:
+                    check.errors += 1
+                    check.report.error(
+                        f"{check.where}: unknown field '{check.path((*parts, key))}'"
+                        f"{did_you_mean(key, _data.TEXT_FORMS)}"
+                    )
+            missing = [form for form in FORMS if form not in value]
+            if missing:
+                listed = " and ".join(f"'{form}'" for form in missing)
+                check.error(parts, f"must have both 'ty' and 'vy' (missing {listed})")
+            for key in _data.TEXT_FORMS:
+                if key in value and not isinstance(value[key], str):
+                    check.error((*parts, key), f"must be a string, got {json_type(value[key])}")
+            variants = [
+                ((*parts, form), form, value[form])
+                for form in _data.TEXT_FORMS
+                if isinstance(value.get(form), str)
+            ]
+        else:
+            check.error(parts, f"{_TEXT_SHAPE}, got {json_type(value)}")
+            continue
+        for where, form, text in variants:
+            if not text.strip():
+                check.error(where, "must not be empty")
+                continue
+            problems = _data.placeholder_problems(text, PLACEHOLDERS, index.available)
+            for problem in problems:
+                check.error(where, problem)
+            if problems:
+                continue
+            for expand_form in (form,) if form is not None else FORMS:
+                try:
+                    expanded = _data.expand_texts(text, expand_form, texts)
+                except _data.TextError as exc:
+                    check.error(where, str(exc))
+                    break
+                if form == common and "greeting" in _placeholder_names(expanded):
+                    check.error(
+                        where,
+                        "uses {greeting} (directly or through another text): the common "
+                        f"form '{common}' is the same for everybody and knows no guest",
+                    )
+    return texts
+
+
+def _check_link_preview(check: _Checker, site: dict, index: SiteIndex) -> None:
+    """`linkPreview.description`: one string for everybody."""
+    preview = check.value(site, "linkPreview", "object", ())
+    if preview is MISSING:
+        return
+    parts = ("linkPreview",)
+    check.unknown_fields(preview, LINK_PREVIEW_FIELDS, parts)
+    if "description" not in preview:
+        return
+    where = (*parts, "description")
+    value = preview["description"]
+    if isinstance(value, dict):
+        check.error(
+            where,
+            "must be one string for everybody: the link preview knows no guest; put the "
+            "forms of address into a named text ('texts') with the common form "
+            f"'{_data.COMMON_FORM}' and use it here as {{text:<id>}}",
+        )
+        return
+    text = check.value(preview, "description", "string", parts)
+    if text is MISSING:
+        if isinstance(value, str):
+            check.error(where, "must not be empty (remove the field instead)")
+        return
+    problems = _data.placeholder_problems(text, PLACEHOLDERS, index.available)
+    for problem in problems:
+        check.error(where, problem)
+    if problems or index.texts is None:
+        return
+    try:
+        expanded = _data.expand_texts(text, _data.COMMON_FORM, index.texts)
+    except _data.TextError as exc:
+        check.error(where, str(exc))
+        return
+    if "greeting" in _placeholder_names(expanded):
+        check.error(
+            where,
+            "uses {greeting} (directly or through a text): the link preview is the same "
+            "for everybody; use named texts with the common form "
+            f"'{_data.COMMON_FORM}' without {{greeting}}",
+        )
 
 
 def _check_sections(check: _Checker, site: dict, index: SiteIndex) -> None:
@@ -1184,8 +1332,19 @@ def _check_note(check: _Checker, override: dict, parts: Sequence[PathPart], inde
     note = check.value(override, "note", "string", parts)
     if note is MISSING:
         return
-    for problem in _data.placeholder_problems(note, PLACEHOLDERS, index.available):
+    problems = _data.placeholder_problems(note, PLACEHOLDERS, index.available)
+    for problem in problems:
         check.error((*parts, "note"), problem)
+    if problems or index.texts is None:
+        return
+    # a note has no forms: the named texts take the form of the invitation,
+    # checked here in both (the form itself is checked on its own)
+    for form in FORMS:
+        try:
+            _data.expand_texts(note, form, index.texts, show_unknown=False)
+        except _data.TextError as exc:
+            check.error((*parts, "note"), str(exc))
+            return
 
 
 def _check_guest_events(

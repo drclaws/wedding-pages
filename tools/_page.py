@@ -27,7 +27,15 @@ from datetime import timedelta
 from typing import Any, Callable, Mapping, Sequence
 
 from tools import _dates, _maps
-from tools._data import format_path, invitation_label, resolve_text, show_id, substitute
+from tools._data import (
+    COMMON_FORM,
+    expand_texts,
+    format_path,
+    invitation_label,
+    pick_form,
+    show_id,
+    substitute,
+)
 from tools._mp4 import format_duration
 from tools._schema import (
     COVER_FOCUSES,
@@ -120,6 +128,8 @@ class Usage:
     locations: set[str] = field(default_factory=set)
     schedules: set[str] = field(default_factory=set)
     media: set[str] = field(default_factory=set)
+    #: Named texts (`texts`) used on a page or in the link preview.
+    texts: set[str] = field(default_factory=set)
 
 
 # --------------------------------------------------------------------------
@@ -182,43 +192,33 @@ class _Page:
         # default: the cards are ordered by the time they start
         return [item.id for item in self.timeline]
 
-    def _place_name(self, event_id: str) -> str:
-        place = self.site.get("locations", {}).get(self.events[event_id]["location"], {})
-        return _text(place.get("name")) if place.get("ready", True) is not False else ""
-
     def _text_values(self) -> dict[str, str]:
-        primary = self.events[self.primary_id]
-        start = _dates.parse_date_iso(primary["start"])
-        values = {
-            "coupleNames": self.site["coupleNames"],
-            "greeting": self.invitation["greeting"],
-            "eventTitle": primary["title"],
-            "eventDate": _dates.format_date(start),
-            "eventTime": _dates.format_time(start),
-            "eventPlace": self._place_name(self.primary_id),
-        }
-        if _text(self.site.get("rsvpDeadline")):
-            values["rsvpDeadline"] = self.site["rsvpDeadline"]
+        values = text_values(self.site, self.primary_id)
+        values["greeting"] = self.invitation["greeting"]
         return values
+
+    def _expand(self, text: str) -> str:
+        """The named texts of a text in the form of the invitation."""
+        return expand_texts(text, self.form, self.site.get("texts", {}), used=self.usage.texts)
 
     def resolve(self, value: Any, parts: Sequence[Any]) -> str:
         """A text of `site.json` in the form of the invitation."""
         if value is None:
             return ""
-        self._check_place(value, parts)
-        return resolve_text(value, self.form, self.values, PLACEHOLDERS)
+        source = self._expand(pick_form(value, self.form))
+        self._check_place(source, parts)
+        return substitute(source, self.values, PLACEHOLDERS)
 
     def resolve_note(self, value: Any) -> str:
-        """A note of the invitation (placeholders only, no forms)."""
+        """A note of the invitation (placeholders and named texts, no forms)."""
         if not _text(value):
             return ""
-        return substitute(value, self.values, PLACEHOLDERS)
+        return substitute(self._expand(value), self.values, PLACEHOLDERS)
 
-    def _check_place(self, value: Any, parts: Sequence[Any]) -> None:
+    def _check_place(self, text: str, parts: Sequence[Any]) -> None:
         if self.warn is None or self.values["eventPlace"]:
             return
-        texts = value.values() if isinstance(value, dict) else [value]
-        if any(isinstance(text, str) and "{eventPlace}" in text for text in texts):
+        if "{eventPlace}" in text:
             path = format_path(parts)
             key = (path, self.primary_id)
             if key not in self.place_warnings:
@@ -568,6 +568,28 @@ def build_page(
     return page.tree()
 
 
+def _place_name(site: dict, event_id: str) -> str:
+    place = site.get("locations", {}).get(site["events"][event_id]["location"], {})
+    return _text(place.get("name")) if place.get("ready", True) is not False else ""
+
+
+def text_values(site: dict, event_id: str) -> dict[str, str]:
+    """The values of the placeholders that do not depend on a guest; the
+    `{event…}` ones are those of `event_id` (`{greeting}` is not among them)."""
+    event = site["events"][event_id]
+    start = _dates.parse_date_iso(event["start"])
+    values = {
+        "coupleNames": site["coupleNames"],
+        "eventTitle": event["title"],
+        "eventDate": _dates.format_date(start),
+        "eventTime": _dates.format_time(start),
+        "eventPlace": _place_name(site, event_id),
+    }
+    if _text(site.get("rsvpDeadline")):
+        values["rsvpDeadline"] = site["rsvpDeadline"]
+    return values
+
+
 def seen_events(site: dict, invitation: dict) -> set[str]:
     """The ids of the events an invitation sees."""
     overrides = invitation.get("events", {})
@@ -701,12 +723,16 @@ def warn_unused(site: dict, usage: Usage, report: Any) -> None:
         ("locations", "location", usage.locations),
         ("schedules", "schedule", usage.schedules),
         ("media", "media item", usage.media),
+        ("texts", "text", usage.texts),
     )
     for registry, what, shown in registries:
         for entry_id in site.get(registry, {}):
             if entry_id in shown:
                 continue
-            tail = " and its files are not published" if registry == "media" else ""
+            tail = {
+                "media": " and its files are not published",
+                "texts": " nor in the link preview",
+            }.get(registry, "")
             warn(f"{SITE_FILE}: {what} {show_id(entry_id)} is not shown on any page{tail}")
 
 

@@ -937,6 +937,221 @@ class TextTests(SchemaTestCase):
         self.assertOneError(report, "site.json: field 'sections[1].widgets[0].text' is required")
 
 
+def with_texts(site: dict, **texts) -> None:
+    """Named texts: `announce` and `invite` by default, used by the section `invite`."""
+    site["texts"] = texts or {
+        "announce": "Мы, {coupleNames}, женимся!",
+        "invite": {
+            "ty": "Ждём тебя {eventDate}.",
+            "vy": "Ждём вас {eventDate}.",
+            "all": "Ждём вас {eventDate}.",
+        },
+    }
+    widgets = site["sections"][1]["widgets"]
+    widgets[0]["text"] = "{text:announce}"
+    widgets[2]["text"] = "{text:invite}"
+
+
+class NamedTextTests(SchemaTestCase):
+    WIDGET = "site.json: field 'sections[1].widgets[0].text'"
+
+    def test_named_texts_and_the_link_preview_are_valid(self):
+        def mutate(site, _invitations):
+            with_texts(site)
+            site["linkPreview"] = {"description": "{text:announce} {text:invite}"}
+
+        self.assertMessages(run(mutate))
+
+    def test_an_unknown_text(self):
+        def mutate(site, _invitations):
+            with_texts(site)
+            site["sections"][1]["widgets"][0]["text"] = "{text:anounce}"
+
+        self.assertOneError(
+            run(mutate),
+            f"{self.WIDGET} refers to an unknown text 'anounce' at character 1 (did you mean "
+            "'announce'?); known: announce, invite",
+        )
+
+    def test_a_reference_with_a_bad_id(self):
+        report = run(lambda s, i: s["sections"][1]["widgets"][0].update(text="{text:Анна}"))
+        self.assertEqual(len(report.errors), 1)
+        self.assertTrue(
+            report.errors[0].startswith(f"{self.WIDGET} has a malformed text reference at character 1")
+        )
+        self.assertNotIn("Анна", report.errors[0])
+
+    def test_a_cycle_and_its_chain(self):
+        def mutate(site, _invitations):
+            with_texts(site, announce="{text:invite}", invite={"ty": "{text:announce}", "vy": "x"})
+
+        report = run(mutate)
+        self.assertIn(
+            "site.json: field 'texts.announce' uses texts in a cycle: 'invite' -> 'announce' -> "
+            "'invite'",
+            report.errors,
+        )
+        self.assertIn(
+            "site.json: field 'sections[1].widgets[0].text' uses texts in a cycle: 'announce' -> "
+            "'invite' -> 'announce'",
+            report.errors,
+        )
+
+    def test_a_text_with_several_lines_in_a_title(self):
+        def mutate(site, _invitations):
+            with_texts(site)
+            site["texts"]["heading"] = {"ty": "Дата\nи время", "vy": "Дата", "all": "Дата"}
+            site["sections"][3]["title"] = "{text:heading}"
+
+        self.assertOneError(
+            run(mutate),
+            "site.json: field 'sections[3].title' must be a single line (no line breaks), but a "
+            "text it uses has several lines",
+        )
+
+    def test_the_shape_of_a_named_text(self):
+        def mutate(site, _invitations):
+            with_texts(site)
+            site["texts"].update(
+                number=5, half={"ty": "a"}, extra={"ty": "a", "vy": "b", "al": "c"}, empty=""
+            )
+
+        report = run(mutate)
+        self.assertEqual(
+            report.errors,
+            [
+                "site.json: field 'texts.number' must be a string or an object with the strings "
+                "'ty' and 'vy' (and, for places without a guest, the common form 'all'), got a number",
+                "site.json: field 'texts.half' must have both 'ty' and 'vy' (missing 'vy')",
+                "site.json: unknown field 'texts.extra.al' (did you mean 'all'?)",
+                "site.json: field 'texts.empty' must not be empty",
+            ],
+        )
+
+    def test_texts_are_not_quoted(self):
+        def mutate(site, _invitations):
+            with_texts(site, a=f"{SECRET} {{unknownName}}", b={"ty": SECRET, "vy": f"{SECRET} {{"})
+
+        report = run(mutate)
+        self.assertEqual(len(report.errors), 4)  # two in the registry, two unknown uses
+        self.assertNoPrivateData(report, SECRET, "unknownName")
+
+    def test_the_common_form_knows_no_guest(self):
+        def mutate(site, _invitations):
+            with_texts(site)
+            site["texts"]["invite"]["all"] = "{greeting}, ждём вас."
+
+        self.assertOneError(
+            run(mutate),
+            "site.json: field 'texts.invite.all' uses {greeting} (directly or through another "
+            "text): the common form 'all' is the same for everybody and knows no guest",
+        )
+
+    def test_the_common_form_knows_no_guest_through_another_text(self):
+        def mutate(site, _invitations):
+            with_texts(site)
+            site["texts"]["hello"] = "{greeting}"
+            site["texts"]["invite"]["all"] = "{text:hello} Ждём вас."
+            site["sections"][1]["widgets"][1]["text"] = "{text:hello}"
+
+        report = run(mutate)
+        self.assertEqual(
+            report.errors,
+            [
+                "site.json: field 'texts.invite.all' uses {greeting} (directly or through another "
+                "text): the common form 'all' is the same for everybody and knows no guest"
+            ],
+        )
+
+    def test_the_common_form_is_for_named_texts_only(self):
+        def mutate(site, _invitations):
+            site["sections"][1]["widgets"][1]["text"]["all"] = "Для всех"
+
+        self.assertOneError(
+            run(mutate),
+            "site.json: unknown field 'sections[1].widgets[1].text.all' (the common form 'all' is "
+            "allowed in 'texts' only)",
+        )
+
+    def test_a_note_may_use_a_text_but_an_unknown_id_is_not_shown(self):
+        def mutate(site, invitations):
+            with_texts(site)
+            invitations[1]["events"]["dinner"]["note"] = "{text:announce}"
+            invitations[2]["sections"]["personal"]["note"] = "{text:ivan}"
+
+        report = run(mutate)
+        self.assertEqual(
+            report.errors,
+            [
+                "invitation #3: field 'sections.personal.note' refers to an unknown text at "
+                "character 1; known: announce, invite"
+            ],
+        )
+
+    def test_a_texts_registry_of_the_wrong_type(self):
+        report = run(lambda s, i: s.update(texts=["a"]))
+        self.assertOneError(report, "site.json: field 'texts' must be an object { id: … }, got an array")
+
+
+class LinkPreviewTests(SchemaTestCase):
+    FIELD = "site.json: field 'linkPreview.description'"
+
+    def run_with(self, description, **texts):
+        def mutate(site, _invitations):
+            with_texts(site, **texts)
+            site["linkPreview"] = {"description": description}
+
+        return run(mutate)
+
+    def test_one_string_for_everybody(self):
+        report = self.run_with({"ty": "a", "vy": "b"})
+        self.assertOneError(
+            report,
+            f"{self.FIELD} must be one string for everybody: the link preview knows no guest; put "
+            "the forms of address into a named text ('texts') with the common form 'all' and use "
+            "it here as {text:<id>}",
+        )
+
+    def test_a_text_with_forms_needs_the_common_form(self):
+        report = self.run_with(
+            "{text:invite}", announce="Мы женимся!", invite={"ty": "Ждём тебя.", "vy": "Ждём вас."}
+        )
+        self.assertEqual(
+            report.errors,
+            [
+                f"{self.FIELD} uses the text 'invite', which has forms of address but no common "
+                "form 'all'; add \"all\" to 'texts.invite' - the variant for everybody"
+            ],
+        )
+
+    def test_no_greeting_directly_or_through_a_text(self):
+        expected = (
+            f"{self.FIELD} uses {{greeting}} (directly or through a text): the link preview is "
+            "the same for everybody; use named texts with the common form 'all' without {greeting}"
+        )
+        self.assertOneError(self.run_with("{greeting}, ждём!"), expected)
+        report = self.run_with("{text:hello}", hello="{greeting}!", announce="a", invite="b")
+        self.assertEqual(report.errors, [expected])
+
+    def test_shape(self):
+        self.assertOneError(
+            run(lambda s, i: s.update(linkPreview="x")),
+            "site.json: field 'linkPreview' must be an object, got a string",
+        )
+        self.assertOneError(
+            run(lambda s, i: s.update(linkPreview={"descripton": "x"})),
+            "site.json: unknown field 'linkPreview.descripton' (did you mean 'description'?)",
+        )
+        self.assertOneError(
+            run(lambda s, i: s.update(linkPreview={"description": " "})),
+            f"{self.FIELD} must not be empty (remove the field instead)",
+        )
+        self.assertOneError(
+            run(lambda s, i: s.update(linkPreview={"description": 5})),
+            f"{self.FIELD} must be a string, got a number",
+        )
+
+
 class InvitationTests(SchemaTestCase):
     def test_token_rules(self):
         report = run(lambda s, i: i[1].update(token="tiny"))
@@ -1274,7 +1489,7 @@ class PageWarningTests(SchemaTestCase):
 
     def test_place_not_announced(self):
         def change(site, invitations):
-            site["sections"][1]["widgets"][0]["text"] = "Ждём вас в {eventPlace}."
+            site["sections"][1]["widgets"][0]["text"] = "Ждём вас в {eventPlace}. {text:announce}"
             invitations[0]["primaryEvent"] = "brunch"
 
         warnings = self.warnings(change)

@@ -9,6 +9,9 @@
 - Texts: a string, or an object with exactly the keys `ty` and `vy` (the
   informal and the formal form of address).  `{name}` inserts a value, `{{`
   and `}}` are literal braces; see `check_text` and `resolve_text`.
+  `{text:<id>}` inserts a named text of the site (the registry `texts`) in
+  the same form; `expand_texts` replaces them before the placeholders are
+  filled in.
 - Tokens and names: `check_token`, `generate_token`,
   `generate_prefixed_token`, `invitation_label`, `short_token_summary`,
   `json_type`, `format_size` and `check_media_name`.
@@ -257,6 +260,26 @@ class Placeholder(NamedTuple):
     position: int
 
 
+class TextRef(NamedTuple):
+    """`{text:<id>}`: a named text of the site (the registry `texts`)."""
+
+    id: str
+    #: Position of its `{` in the text: the number of the character, from 1.
+    position: int
+
+
+#: `{text:<id>}` inserts a named text; the prefix keeps the names of the
+#: author apart from the built-in placeholders.
+TEXT_REF_PREFIX = "text:"
+#: The common form of a named text: the variant for places without a guest
+#: (the link preview).  Allowed in the registry `texts` only.
+COMMON_FORM = "all"
+#: The keys of a named text given as an object.
+TEXT_FORMS = (*FORMS, COMMON_FORM)
+#: How deep named texts may use each other.
+MAX_TEXT_DEPTH = 8
+
+
 def form_problem(form: Any) -> str | None:
     """The problem of a form of address, or None; the value is never shown."""
     return None if form in FORMS else f"must be one of: {', '.join(FORMS)}"
@@ -270,7 +293,12 @@ def text_value_problems(value: Any, path: Sequence[PathPart]) -> list[str]:
     if not isinstance(value, dict):
         return [f"field '{field}' {_TEXT_SHAPE}"]
     problems = [
-        f"unknown field '{format_path((*path, key))}'{did_you_mean(key, FORMS)}"
+        f"unknown field '{format_path((*path, key))}'"
+        + (
+            f" (the common form '{COMMON_FORM}' is allowed in 'texts' only)"
+            if key == COMMON_FORM
+            else did_you_mean(key, FORMS)
+        )
         for key in value
         if key not in FORMS
     ]
@@ -284,26 +312,24 @@ def text_value_problems(value: Any, path: Sequence[PathPart]) -> list[str]:
     return problems
 
 
-def parse_text(text: str) -> list[str | Placeholder]:
-    """Split a text into literal parts and placeholders.
-
-    `{{` and `}}` become literal braces.  The first syntax problem raises
-    `TextError` with its position; the contents of the braces are never shown.
-    """
-    parts: list[str | Placeholder] = []
-    literal: list[str] = []
+def _scan(text: str) -> Iterable[tuple[str, str, int]]:
+    """The pieces of a text as (kind, value, position): `literal` (braces
+    decoded), `escape` (`{{` or `}}` as written), `name` (a placeholder) and
+    `ref` (the id of `{text:<id>}`).  The first syntax problem raises
+    `TextError` with its position; the contents of the braces are never
+    shown."""
     position = 0
     while True:
         match = _BRACE_RE.search(text, position)
         if match is None:
-            literal.append(text[position:])
-            break
-        literal.append(text[position : match.start()])
+            yield "literal", text[position:], 0
+            return
+        yield "literal", text[position : match.start()], 0
         brace = match.group()
         where = match.start() + 1
         position = match.end()
         if brace in ("{{", "}}"):
-            literal.append(brace[0])
+            yield "escape", brace, where
             continue
         if brace == "}":
             raise TextError(
@@ -322,20 +348,150 @@ def parse_text(text: str) -> list[str | Placeholder]:
                 f"has an empty placeholder at character {where} "
                 "(write '{{}}' for literal braces)"
             )
-        if _PLACEHOLDER_NAME_RE.fullmatch(name) is None:
+        if name.startswith(TEXT_REF_PREFIX):
+            if not is_identifier(name[len(TEXT_REF_PREFIX) :]):
+                raise TextError(
+                    f"has a malformed text reference at character {where} (write "
+                    f"{{{TEXT_REF_PREFIX}<id>}} with the id of one of 'texts': {ID_RULE}; "
+                    "write '{{' for a literal brace)"
+                )
+            yield "ref", name[len(TEXT_REF_PREFIX) :], where
+        elif _PLACEHOLDER_NAME_RE.fullmatch(name) is None:
             raise TextError(
                 f"has a malformed placeholder at character {where} (a name has only "
                 "latin letters and digits and starts with a letter; write '{{' for a "
                 "literal brace)"
             )
+        else:
+            yield "name", name, where
+        position = end + 1
+
+
+def parse_text(text: str) -> list[str | Placeholder | TextRef]:
+    """Split a text into literal parts, placeholders and text references.
+
+    `{{` and `}}` become literal braces.  The first syntax problem raises
+    `TextError` with its position; the contents of the braces are never shown.
+    """
+    parts: list[str | Placeholder | TextRef] = []
+    literal: list[str] = []
+    for kind, value, where in _scan(text):
+        if kind == "literal":
+            literal.append(value)
+            continue
+        if kind == "escape":
+            literal.append(value[0])
+            continue
         if any(literal):
             parts.append("".join(literal))
         literal = []
-        parts.append(Placeholder(name, where))
-        position = end + 1
+        parts.append(Placeholder(value, where) if kind == "name" else TextRef(value, where))
     if any(literal):
         parts.append("".join(literal))
     return parts
+
+
+def text_refs(text: str) -> list[TextRef]:
+    """The text references of a text, in their order (`TextError` on bad syntax)."""
+    return [part for part in parse_text(text) if isinstance(part, TextRef)]
+
+
+def text_variant(value: Any, form: str) -> str | None:
+    """The variant of a named text for `form` (`ty`, `vy` or `all`): a string
+    serves every form; None when an object has no such variant."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and isinstance(value.get(form), str):
+        return value[form]
+    return None
+
+
+def _known_texts(texts: Mapping[str, Any]) -> str:
+    known = [item for item in texts if is_identifier(item)]
+    if not known:
+        return "; there are no texts (declare them in 'texts')"
+    listed = ", ".join(known[:8])
+    return f"; known: {listed}{', …' if len(known) > 8 else ''}"
+
+
+def expand_texts(
+    text: str,
+    form: str,
+    texts: Mapping[str, Any],
+    *,
+    used: set[str] | None = None,
+    show_unknown: bool = True,
+    _chain: tuple[str, ...] = (),
+) -> str:
+    """Replace every `{text:<id>}` with the variant of that named text for
+    `form` (`ty`, `vy` or `all`), recursively.
+
+    The result is source text again: built-in placeholders and `{{`/`}}` are
+    kept as written, so that one `substitute` fills them in afterwards (and
+    never parses a value it inserted).  A text that is not known, a cycle
+    (`a -> b -> a`), nesting deeper than `MAX_TEXT_DEPTH` and a named text
+    without the variant for `form` raise `TextError`; the ids of the chain
+    are shown (only valid ids reach here), the texts never.  `used` collects
+    the ids of the named texts that were inserted.  With `show_unknown` false
+    an unknown id is not shown (it may come from an invitation).
+    """
+    pieces: list[str] = []
+    for kind, value, where in _scan(text):
+        if kind == "ref":
+            pieces.append(
+                _expand_ref(value, where, form, texts, used, show_unknown, _chain)
+            )
+        elif kind == "name":
+            pieces.append(f"{{{value}}}")
+        else:
+            pieces.append(value)
+    return "".join(pieces)
+
+
+def _chain_text(chain: Sequence[str]) -> str:
+    return " -> ".join(f"'{item}'" for item in chain)
+
+
+def _expand_ref(
+    text_id: str,
+    where: int,
+    form: str,
+    texts: Mapping[str, Any],
+    used: set[str] | None,
+    show_unknown: bool,
+    chain: tuple[str, ...],
+) -> str:
+    if text_id not in texts:
+        shown = f" '{text_id}'" if show_unknown and is_identifier(text_id) else ""
+        hint = did_you_mean(text_id, texts) if show_unknown else ""
+        through = f" (through {_chain_text(chain)})" if chain else ""
+        raise TextError(
+            f"refers to an unknown text{shown} at character {where}{through}{hint}"
+            f"{_known_texts(texts)}"
+        )
+    if text_id in chain:
+        cycle = _chain_text((*chain[chain.index(text_id) :], text_id))
+        raise TextError(f"uses texts in a cycle: {cycle}")
+    if len(chain) >= MAX_TEXT_DEPTH:
+        raise TextError(
+            f"nests texts deeper than {MAX_TEXT_DEPTH} levels: "
+            f"{_chain_text((*chain, text_id))}"
+        )
+    variant = text_variant(texts[text_id], form)
+    if variant is None:
+        through = f" (through {_chain_text(chain)})" if chain else ""
+        if form == COMMON_FORM:
+            raise TextError(
+                f"uses the text '{text_id}'{through}, which has forms of address but no "
+                f"common form '{COMMON_FORM}'; add \"{COMMON_FORM}\" to 'texts.{text_id}' "
+                "- the variant for everybody"
+            )
+        raise TextError(f"uses the text '{text_id}'{through}, which has no form '{form}'")
+    if used is not None:
+        used.add(text_id)
+    return expand_texts(
+        variant, form, texts, used=used, show_unknown=show_unknown, _chain=(*chain, text_id)
+    )
 
 
 def _placeholder_names(known: Iterable[str]) -> tuple[str, ...]:
@@ -449,6 +605,11 @@ def substitute(text: str, values: Mapping[str, str], known: Iterable[str]) -> st
     names = _placeholder_names(known)
     result: list[str] = []
     for part in parse_text(text):
+        if isinstance(part, TextRef):
+            raise TextError(
+                f"has a text reference at character {part.position} that was not "
+                "expanded (expand_texts comes first)"
+            )
         if isinstance(part, Placeholder):
             problem = _placeholder_problem(part, names, values)
             if problem is not None:
@@ -460,10 +621,17 @@ def substitute(text: str, values: Mapping[str, str], known: Iterable[str]) -> st
 
 
 def resolve_text(
-    value: Any, form: str, values: Mapping[str, str], known: Iterable[str]
+    value: Any,
+    form: str,
+    values: Mapping[str, str],
+    known: Iterable[str],
+    texts: Mapping[str, Any] | None = None,
+    used: set[str] | None = None,
 ) -> str:
-    """The finished text for a form of address: `pick_form`, then `substitute`."""
-    return substitute(pick_form(value, form), values, known)
+    """The finished text for a form of address: `pick_form`, then the named
+    texts in the same form (`expand_texts`), then `substitute` in one pass."""
+    source = expand_texts(pick_form(value, form), form, texts or {}, used=used)
+    return substitute(source, values, known)
 
 
 # --------------------------------------------------------------------------
