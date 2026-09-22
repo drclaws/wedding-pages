@@ -1,5 +1,5 @@
 """The icon and the link preview image in a build: generated from the design
-tokens, replaced from the media directory, and the address of the site."""
+tokens, replaced from the media directory; no address of the site."""
 
 from __future__ import annotations
 
@@ -163,7 +163,7 @@ class GeneratedImagesTests(SiteImagesTestCase):
         result = self.build()
         self.assertIn("build: assets/favicon.svg generated from the design tokens", result.stdout)
         self.assertIn("build: assets/og.png generated from the design tokens", result.stdout)
-        self.assertIn("link preview image URL is a path from the site root", result.stdout)
+        self.assertNotIn("URL is", result.stdout)  # no line about the address of the site
 
     def test_command_line_from_another_directory(self):
         """`python path/to/build.py`: the generators are found next to it."""
@@ -232,13 +232,13 @@ class MediaOverrideTests(SiteImagesTestCase):
 
     def test_og_jpg(self):
         (self.media / "og.jpg").write_bytes(TINY_JPEG)
-        self.build("--base-url", BASE_URL)
+        self.build()
         self.assertEqual((self.out / "assets" / "og.jpg").read_bytes(), TINY_JPEG)
         self.assertFalse((self.out / "assets" / "og.png").exists())
         meta = self.page().meta
         self.assertEqual(
             (meta["og:image"], meta["og:image:type"], meta["og:image:width"], meta["og:image:height"]),
-            (f"{BASE_URL}/assets/og.jpg", "image/jpeg", "1000", "600"),
+            ("/assets/og.jpg", "image/jpeg", "1000", "600"),
         )
 
     def test_overrides_still_need_the_design_tokens(self):
@@ -351,145 +351,56 @@ class MediaOverrideTests(SiteImagesTestCase):
         self.assertFalse(self.out.exists())
 
 
-class BaseUrlTests(SiteImagesTestCase):
-    def test_absolute_image_url(self):
-        result = self.build("--base-url", BASE_URL + "/")
-        self.assertEqual(self.page().meta["og:image"], f"{BASE_URL}/assets/og.png")
-        # the address goes into that one attribute and nowhere else
-        self.assertNotIn("invite.example", result.stdout + result.stderr)
-        self.assertIn("link preview image URL is absolute (https://…)", result.stdout)
-        for name in tree_files(self.out):
-            content = (self.out / name).read_bytes()
-            expected = 1 if name.startswith("i/") and name.endswith(".html") else 0
-            self.assertEqual(content.count(b"invite.example"), expected, name)
-        self.assertEqual(self.page().icons[0]["href"], "/assets/favicon.svg")
+class SiteAddressTests(SiteImagesTestCase):
+    """The build never knows the address of the site: every URL of the
+    output is a path from the site root."""
 
-    def test_base_url_with_a_path(self):
-        self.build("--base-url", "http://localhost:8080/preview")
-        self.assertEqual(
-            self.page().meta["og:image"], "http://localhost:8080/preview/assets/og.png"
-        )
-
-    def test_environment_variable(self):
-        result = self.build(env={"SITE_BASE_URL": f" {BASE_URL}/ "})
-        self.assertEqual(self.page().meta["og:image"], f"{BASE_URL}/assets/og.png")
-        self.assertNotIn("invite.example", result.stdout + result.stderr)
-        # the option wins
-        self.build("--base-url", "https://other.example.invalid", env={"SITE_BASE_URL": BASE_URL})
-        self.assertEqual(
-            self.page().meta["og:image"], "https://other.example.invalid/assets/og.png"
-        )
-        # an empty variable is the same as no variable
-        self.build(env={"SITE_BASE_URL": ""})
-        self.assertEqual(self.page().meta["og:image"], "/assets/og.png")
-
-    def test_invalid_values_are_not_echoed(self):
-        for value in ("ftp://secret-host.example.invalid", "secret-host.example.invalid",
-                      "https://secret-host.example.invalid/?x=1", "https://secret-host.example.invalid/#a",
-                      "https://secret-host .example.invalid"):  # fmt: skip
-            with self.subTest(value=value):
-                result = self.build_in_process(env={"SITE_BASE_URL": value})
-                self.assertEqual(result.returncode, 1)
-                self.assertIn("SITE_BASE_URL: expected the site address", result.stderr)
-                self.assertNotIn("secret-host", result.stdout + result.stderr)
-                result = self.build_in_process("--base-url", value)
-                self.assertEqual(result.returncode, 2)
-                self.assertIn("expected the site address", result.stderr)
-                self.assertFalse(self.out.exists())
-
-    def test_credentials_in_the_address_are_refused(self):
-        for value in (
-            "https://user:pass@secret-host.example.invalid",
-            "https://user@secret-host.example.invalid",
-            "https://secret-host.example.invalid:8443@evil.example.invalid",
-        ):
-            with self.subTest(value=value):
-                result = self.build_in_process("--base-url", value)
-                self.assertEqual(result.returncode, 2)
-                self.assertIn("no user information", result.stderr)
-                # "no user information" is part of the hint, the value is not
-                for secret in ("secret-host", "user:pass", "user@", "pass@"):
-                    self.assertNotIn(secret, result.stdout + result.stderr)
-                self.assertFalse(self.out.exists())
-
-    def test_percent_encoded_credentials_are_refused(self):
-        """'%40' is '@': urlsplit reads it as part of the host, and the
-        absolute og:image would quietly point at nothing."""
-        for value in (
-            "https://user%40secret-host.example.invalid",
-            "https://user%3Apass%40secret-host.example.invalid",
-            "https://secret-host.example.invalid%3A8443",
-        ):
-            with self.subTest(value=value):
-                result = self.build_in_process("--base-url", value)
-                self.assertEqual(result.returncode, 2)
-                self.assertIn("expected the site address", result.stderr)
-                for secret in ("secret-host", "%40", "%3A", "user"):
-                    self.assertNotIn(secret, result.stdout + result.stderr.replace(
-                        "no user information", ""
-                    ))
-                self.assertFalse(self.out.exists())
-
-    def test_the_address_is_masked_in_problem_messages(self):
-        """A template that puts the address anywhere else fails - without
-        repeating the address in the message."""
-        template = support.TEMPLATE.replace(
-            '<meta property="og:image" content="{{ogImage}}">',
-            '<meta property="og:image" content="{{ogImage}}">\n'
-            '<meta name="twitter:image" content="{{ogImage}}">',
-        )
-        (self.code / "template.html").write_text(template, encoding="utf-8")
+    def test_the_option_is_gone(self):
         result = self.build_in_process("--base-url", BASE_URL)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("<meta twitter:image>: external URL '<site>/…'", result.stderr)
-        for text in (result.stdout, result.stderr):
-            self.assertNotIn("invite.example", text)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unrecognized arguments: --base-url", result.stderr)
         self.assertFalse(self.out.exists())
 
-    def test_foreign_absolute_url_is_still_an_error(self):
+    def test_the_old_variable_is_not_read(self):
+        result = self.build(env={"SITE_BASE_URL": BASE_URL})
+        self.assertEqual(self.page().meta["og:image"], "/assets/og.png")
+        self.assertNotIn("invite.example", result.stdout + result.stderr)
+        for name in tree_files(self.out):
+            self.assertNotIn(b"invite.example", (self.out / name).read_bytes(), name)
+
+    def test_foreign_absolute_url_is_an_error(self):
         template = support.TEMPLATE.replace(
             'content="{{ogImage}}"', 'content="https://cdn.example.invalid/og.png"'
         )
         (self.code / "template.html").write_text(template, encoding="utf-8")
-        for extra in ((), ("--base-url", BASE_URL)):
-            with self.subTest(extra=extra):
-                result = self.build_in_process(*extra)
-                self.assertEqual(result.returncode, 1)
-                self.assertIn(
-                    "<meta og:image>: external URL 'https://cdn.example.invalid/…'", result.stderr
-                )
+        result = self.build_in_process()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "<meta og:image>: external URL 'https://cdn.example.invalid/…'", result.stderr
+        )
+        self.assertFalse(self.out.exists())
 
-    def test_the_address_is_allowed_in_og_image_only(self):
-        def problems(document: str, base_url: str = BASE_URL) -> list[str]:
-            found = build.check_html(document, {"assets/og.png"}.__contains__, base_url=base_url)
+    def test_any_absolute_url_in_meta_is_an_error(self):
+        def problems(document: str) -> list[str]:
+            found = build.check_html(document, {"assets/og.png"}.__contains__)
             return [message for _line, message in found]
 
-        ok = f'<meta property="og:image" content="{BASE_URL}/assets/og.png">'
-        self.assertEqual(problems(ok), [])
-        self.assertIn("external URL", problems(ok, base_url="")[0])
+        self.assertEqual(problems('<meta property="og:image" content="/assets/og.png">'), [])
         cases = {
-            f'<meta property="og:image" content="{BASE_URL}/assets/missing.png">': "does not exist",
-            f'<meta property="og:image" content="{BASE_URL}.evil.example.invalid/assets/og.png">': "external URL",
-            f'<meta property="og:image" content="{BASE_URL}//evil.example.invalid/og.png">': "external URL",
-            f'<meta property="og:image" content="{BASE_URL}/../x">': "not a plain absolute path",
-            f'<meta property="og:image" content="{BASE_URL}">': "external URL",
-            f'<meta property="og:url" content="{BASE_URL}/assets/og.png">': "external URL",
-            f'<meta property="twitter:image" content="{BASE_URL}/assets/og.png">': "external URL",
+            f'<meta property="og:image" content="{BASE_URL}/assets/og.png">': "external URL",
+            '<meta property="og:image" content="//invite.example.invalid/assets/og.png">': "external URL",
+            f'<meta property="og:image:secure_url" content="{BASE_URL}/assets/og.png">': "external URL",
+            f'<meta property="og:url" content="{BASE_URL}/">': "external URL",
+            f'<meta name="twitter:image" content="{BASE_URL}/assets/og.png">': "external URL",
             f'<meta name="description" content="{BASE_URL}/assets/og.png">': "external URL",
-            f'<img src="{BASE_URL}/assets/og.png" alt="">': "external URL",
-            f'<a href="{BASE_URL}/assets/og.png">x</a>': "external link",
+            '<meta property="og:image" content="/assets/missing.png">': "does not exist",
+            '<meta property="og:image" content="assets/og.png">': "relative path",
         }  # fmt: skip
         for document, expected in cases.items():
             with self.subTest(document=document):
                 found = problems(document)
                 self.assertEqual(len(found), 1, found)
                 self.assertIn(expected, found[0])
-
-    def test_reproducible_with_a_base_url(self):
-        self.build("--base-url", BASE_URL)
-        first = tree_digest(self.out)
-        self.build("--base-url", BASE_URL)
-        self.assertEqual(tree_digest(self.out), first)
 
 
 class ContextFieldTests(support.TempDirTestCase):

@@ -1308,39 +1308,5 @@ class SvgFileTests(unittest.TestCase):
         )
 
 
-class SiteAddressMaskTests(unittest.TestCase):
-    """`mask_site`: the address of the site never reaches a message."""
-
-    BASE = "https://invite.example.invalid"
-
-    def test_the_address_and_the_host_are_masked(self):
-        cases = {
-            f"external URL '{self.BASE}/…'": "external URL '<site>/…'",
-            f"external URL '{self.BASE}'": "external URL '<site>'",
-            "host invite.example.invalid here": "host <site> here",
-            "//invite.example.invalid:8443/x": "<site>/x",
-            "HTTPS://INVITE.EXAMPLE.INVALID/x": "<site>/x",
-        }
-        for text, expected in cases.items():
-            with self.subTest(text=text):
-                self.assertEqual(build.mask_site(text, self.BASE), expected)
-
-    def test_a_long_address_is_masked_in_its_shortened_form(self):
-        base = "https://" + "a" * 70 + ".example.invalid"
-        shown = build._show_url(f"{base}/assets/og.png")
-        self.assertIn("…", shown)
-        masked = build.mask_site(f"external URL '{shown}'", base)
-        self.assertNotIn("aaa", masked)
-
-    def test_without_an_address_nothing_changes(self):
-        self.assertEqual(build.mask_site("host example.org", ""), "host example.org")
-
-    def test_other_text_is_left_alone(self):
-        self.assertEqual(
-            build.mask_site("assets/app.css line 3: url()", self.BASE),
-            "assets/app.css line 3: url()",
-        )
-
-
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

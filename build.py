@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Static builder for personal invitation pages.
 
-    python build.py build    [--data DIR] [--media DIR] [--out DIR] [--base-url URL]
+    python build.py build    [--data DIR] [--media DIR] [--out DIR]
     python build.py validate [--data DIR] [--media DIR]
     python build.py token    [--prefix NAME]
     python build.py links    --base URL [--data DIR]
@@ -125,8 +125,6 @@ SITE_IMAGE_TYPES = {
     ".ico": "image/x-icon",
     ".jpg": "image/jpeg",
 }
-#: Environment variable with the address of the published site (`--base-url`).
-BASE_URL_VARIABLE = "SITE_BASE_URL"
 
 #: Defaults relative to CODE_DIR.
 DEFAULT_DATA_DIR = Path("examples") / "data"
@@ -1243,19 +1241,17 @@ def _warn_site_image_lookalikes(
         )
 
 
-def site_images_context(
-    images: SiteImages = DEFAULT_SITE_IMAGES, base_url: str = ""
-) -> dict:
+def site_images_context(images: SiteImages = DEFAULT_SITE_IMAGES) -> dict:
     """The computed fields of the icon and the link preview image.
 
-    `ogImage` is absolute when the address of the site is known (`base_url`,
-    without a trailing '/'), and a path from the site root otherwise.  None of
-    the fields depends on the data: the stub may use them as well.
+    Every URL is a path from the site root: the build never knows the address
+    of the site.  None of the fields depends on the data: the stub may use
+    them as well.
     """
     return {
         "faviconPath": f"/{ASSETS_DIRNAME}/{_url_component(images.favicon.name)}",
         "faviconType": images.favicon.mime,
-        "ogImage": f"{base_url}/{ASSETS_DIRNAME}/{_url_component(images.og.name)}",
+        "ogImage": f"/{ASSETS_DIRNAME}/{_url_component(images.og.name)}",
         "ogImageType": images.og.mime,
         "ogImageWidth": images.og.width,
         "ogImageHeight": images.og.height,
@@ -1699,8 +1695,6 @@ _META_URL_KEYS = frozenset(
         "msapplication-tileimage",
     }
 )
-#: The one of them that may hold an absolute URL of the site itself.
-_META_SITE_URL_KEY = "og:image"
 _SCHEME_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*):")
 #: Schemes that are named in messages; anything else before a ':' may be text.
 _KNOWN_SCHEMES = frozenset(
@@ -2113,13 +2107,11 @@ def check_css(
 class _HtmlChecker(HTMLParser):
     """Walks one HTML document and applies the URL and script rules."""
 
-    def __init__(self, policy: _UrlPolicy, base_url: str = ""):
+    def __init__(self, policy: _UrlPolicy):
         # text is reported as written: an escaped "&lt;!--" in a guest's note
         # is text, not the start of a comment (attribute values are decoded)
         super().__init__(convert_charrefs=False)
         self.policy = policy
-        #: Address of the site: `og:image` may be an absolute URL below it.
-        self.base_url = base_url
         self._in_script = False
 
     @property
@@ -2189,13 +2181,8 @@ class _HtmlChecker(HTMLParser):
             self.policy.problem(line, '<meta http-equiv="refresh"> is not allowed')
             return
         if key in _META_URL_KEYS:
-            if key == _META_SITE_URL_KEY and self.base_url:
-                # services that show link previews want an absolute URL; it is
-                # the one place where the address of the site itself may appear,
-                # and what follows it must be a file of the output all the same
-                prefix = f"{self.base_url}/"
-                if _clean_url(content).startswith(prefix):
-                    content = _clean_url(content)[len(prefix) - 1 :]
+            # a path from the site root, a file of the output: the build never
+            # knows the address of the site, an absolute URL is an error
             self.policy.check_resource(line, f"<meta {key}>", content)
             return
         external = _EXTERNAL_TEXT_RE.search(content)
@@ -2235,17 +2222,13 @@ def check_html(
     document: str,
     exists: Callable[[str], bool],
     is_dir: Callable[[str], bool] | None = None,
-    base_url: str = "",
 ) -> list[tuple[int, str]]:
     """Problems of one HTML document as (line, message) pairs.
 
     `exists` tells whether a file (relative path with '/') is in the output,
     `is_dir` does the same for directories (only used to word the messages).
-    Whatever the parser may read differently from a browser is an error.
-
-    With `base_url` (the address of the site, no trailing '/') the content of
-    `<meta property="og:image">` may be an absolute URL that starts with
-    exactly that address; every other external URL stays an error.
+    Whatever the parser may read differently from a browser is an error;
+    so is any absolute URL, `<meta>` links (`og:image`) included.
     """
     policy = _UrlPolicy(exists, is_dir)
     leftover = _LEFTOVER_RE.search(document)
@@ -2257,7 +2240,7 @@ def check_html(
     unsafe = find_unsafe_markup(document)
     if unsafe:
         policy.problem(*unsafe)
-    checker = _HtmlChecker(policy, base_url)
+    checker = _HtmlChecker(policy)
     checker.feed(document)
     checker.close()
     return policy.problems
@@ -2553,7 +2536,6 @@ def _check_output_tree(
 def check_output(
     out_dir: Path | str,
     pages: Iterable[str],
-    base_url: str = "",
     media_dir: str = "",
     media: Collection[str] = (),
     calendars: Collection[str] = (),
@@ -2573,8 +2555,7 @@ def check_output(
     * SVG: no scripts, styles sheets, event handlers, `<foreignObject>`,
       entities or external references (see `check_svg`).
 
-    `base_url` is passed on to `check_html`.  Messages never quote page text,
-    tokens in paths are hidden (`i/…`) and the address of the site is masked.
+    Messages never quote page text, and tokens in paths are hidden (`i/…`).
     """
     root = Path(out_dir)
     try:
@@ -2604,7 +2585,7 @@ def check_output(
             raise BuildError(f"cannot read {shown}: {exc.strerror}") from None
         if extension == ".html":
             file_problems = check_html(
-                text, files.__contains__, known_dirs.__contains__, base_url
+                text, files.__contains__, known_dirs.__contains__
             )
         elif extension == ".css":
             file_problems = check_stylesheet(
@@ -2628,8 +2609,6 @@ def check_output(
             )
 
     if problems:
-        # the address of the site may appear in a message about og:image
-        problems = [mask_site(problem, base_url) for problem in problems]
         hidden = len(problems) - MAX_REPORTED_PROBLEMS
         if hidden > 0:
             problems = problems[:MAX_REPORTED_PROBLEMS] + [
@@ -2672,33 +2651,6 @@ def _redact_paths(text: Any) -> str:
     """Hide invitation tokens that may appear inside file system paths:
     `i/<token>/index.html` becomes `i/…/index.html`."""
     return _TOKEN_IN_PATH_RE.sub(rf"\1{NAME_MASK}", str(text))
-
-
-#: What takes the place of the address of the site in a message.
-SITE_MASK = "<site>"
-
-
-def mask_site(text: str, base_url: str) -> str:
-    """Hide the address of the site (`--base-url`) in a message.
-
-    The address is the one external URL the output may legitimately carry
-    (`og:image`), so a problem message can quote it - and with it the host,
-    which is exactly what the log must not repeat.  The whole address and the
-    bare host (with or without a scheme and a port) become `<site>`; long URLs
-    reach messages shortened by `_show_url`, so that form is masked as well.
-    """
-    if not base_url:
-        return text
-    address = base_url.rstrip("/")
-    host = urlsplit(address).hostname or ""
-    forms = {address, _shorten(address)}
-    patterns = [re.escape(form) for form in sorted(forms, key=len, reverse=True)]
-    if host:
-        patterns.append(
-            rf"(?:[A-Za-z][A-Za-z0-9+.-]*:)?//{re.escape(host)}(?::[0-9]+)?"
-        )
-        patterns.append(rf"{re.escape(host)}(?::[0-9]+)?")
-    return re.sub("|".join(patterns), SITE_MASK, text, flags=re.IGNORECASE)
 
 
 def _mask_name(name: str, *, pages: bool = False) -> str:
@@ -3100,11 +3052,6 @@ def write_site_images(
     return copied
 
 
-def mask_base_url(base_url: str) -> str:
-    """The address of the site for the log: the scheme only."""
-    return f"{base_url.split(':', 1)[0].lower()}://…"
-
-
 # --------------------------------------------------------------------------
 # Build
 # --------------------------------------------------------------------------
@@ -3316,18 +3263,12 @@ def build_site(
     code_dir: Path = CODE_DIR,
     report: Report | None = None,
     log: Callable[[str], None] = print,
-    base_url: str = "",
 ) -> OutputStats:
     """Validate the data, write the output directory and check the result.
 
     The output is assembled in a temporary directory and only replaces
     `out_dir` when every check has passed.  The log gets counters and paths,
     never data.
-
-    `base_url` is the address of the published site (see `parse_base_url`).
-    It makes the URL of the link preview image absolute, which is what most
-    services that show previews need; it goes into that `<meta>` tag only and
-    is never logged in full.
     """
     report = report if report is not None else Report()
     assets_dir = code_dir / ASSETS_DIRNAME
@@ -3347,7 +3288,7 @@ def build_site(
     # the pages always need the palette (their theme colour), the images only
     # when they are generated
     palette = load_palette(assets_dir)
-    site_fields = {**site_images_context(images, base_url), **site_colors_context(palette)}
+    site_fields = {**site_images_context(images), **site_colors_context(palette)}
 
     template = load_template(code_dir / TEMPLATE_FILE)
     stub = load_stub(code_dir / STUB_FILE, site_fields).encode("utf-8")
@@ -3371,7 +3312,6 @@ def build_site(
         stats = check_output(
             stage,
             [invitation["token"] for invitation in data.invitations],
-            base_url=base_url,
             media_dir=media_name,
             media=published,
             calendars=[entry.name for entry in calendars.values()],
@@ -3395,10 +3335,6 @@ def build_site(
             f"copied from {display_path(media_dir)}"
         )
         log(f"build: {ASSETS_DIRNAME}/{image.name} {origin}")
-    log(
-        "build: link preview image URL is "
-        + (f"absolute ({mask_base_url(base_url)})" if base_url else "a path from the site root")
-    )
     log(
         f"build: OK -> {out_shown} ({written} page(s), {media} media file(s), "
         f"{stats.files} file(s) in total, {format_size(stats.size)})"
@@ -3432,24 +3368,8 @@ def _media_dir(args: argparse.Namespace, code_dir: Path) -> Path:
     return Path(args.media) if args.media is not None else code_dir / DEFAULT_MEDIA_DIR
 
 
-def base_url_setting(args: argparse.Namespace, environ: Any = None) -> str:
-    """`--base-url`, else the `SITE_BASE_URL` variable, else ""."""
-    if getattr(args, "base_url", None):
-        return args.base_url
-    environ = os.environ if environ is None else environ
-    value = environ.get(BASE_URL_VARIABLE, "").strip()
-    if not value:
-        return ""
-    try:
-        return parse_base_url(value)
-    except argparse.ArgumentTypeError as exc:
-        # the value is not echoed: it may be the private address of the site
-        raise BuildError(f"{BASE_URL_VARIABLE}: {exc}") from None
-
-
 def cmd_build(args: argparse.Namespace) -> int:
     code_dir = CODE_DIR
-    base_url = base_url_setting(args)
     build_site(
         _data_dir(args, code_dir),
         _media_dir(args, code_dir),
@@ -3459,7 +3379,6 @@ def cmd_build(args: argparse.Namespace) -> int:
         # the log shows the paths of --data, --media and --out, and --out may
         # point at a directory named like a token (`dist/i/<token>`)
         log=lambda message: _stdout(_redact_paths(message)),
-        base_url=base_url,
     )
     return EXIT_OK
 
@@ -3518,8 +3437,8 @@ _PERCENT_CREDENTIALS_RE = re.compile(r"%(?:40|3a)", re.IGNORECASE)
 
 
 def parse_base_url(value: str) -> str:
-    """`--base` / `--base-url`: an http(s) URL of the site; the trailing '/'
-    is dropped."""
+    """`links --base`: an http(s) URL of the site; the trailing '/' is
+    dropped."""
     value = value.strip()
     try:
         parts = urlsplit(value)
@@ -3534,7 +3453,7 @@ def parse_base_url(value: str) -> str:
         or parts.password
         or "@" in parts.netloc
         # percent-encoded '@' and ':' hide credentials from urlsplit, and the
-        # address would silently build a broken absolute og:image
+        # address would silently build broken links
         or _PERCENT_CREDENTIALS_RE.search(parts.netloc)
         or parts.query
         or parts.fragment
@@ -3600,15 +3519,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         metavar="DIR",
         help=f"output directory, replaced on every build (default: {DEFAULT_OUT_DIR})",
-    )
-    build_cmd.add_argument(
-        "--base-url",
-        metavar="URL",
-        type=parse_base_url,
-        help="address of the published site, e.g. https://example.org; makes the URL "
-        "of the link preview image absolute (default: the "
-        f"{BASE_URL_VARIABLE} environment variable; without either the URL is a path "
-        "from the site root)",
     )
     build_cmd.set_defaults(func=cmd_build)
 

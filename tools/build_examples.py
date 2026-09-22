@@ -1,7 +1,7 @@
 """Build the example data sets of the repository with one command.
 
     python3 tools/build_examples.py [--set data|data-venue-pending|all]
-                                    [--out DIR] [--port N] [--base-url URL]
+                                    [--out DIR] [--port N]
 
 For every set it generates the placeholder media (the main set only, with
 ``tools/gen_example_media.py`` into ``examples/media/``, which git ignores),
@@ -78,7 +78,7 @@ def pages(data: Path) -> list[tuple[str, str]]:
     return [(item["token"], " ".join(item["greeting"].split())) for item in invitations]
 
 
-def build_set(name: str, out: Path, port: int, base_url: str | None) -> int:
+def build_set(name: str, out: Path, port: int) -> int:
     data = EXAMPLES / name
     media = SETS[name]
     print(f"== {name}", flush=True)
@@ -96,8 +96,6 @@ def build_set(name: str, out: Path, port: int, base_url: str | None) -> int:
             return code
     target = out / name
     args = [str(BUILD), "build", "--data", str(data), "--media", str(media), "--out", str(target)]
-    if base_url:
-        args += ["--base-url", base_url]
     code = run(args)
     if code != 0:
         return code
@@ -136,16 +134,11 @@ def main(argv: list[str] | None = None) -> int:
         metavar="N",
         help="port of the addresses that are printed (default: 8000)",
     )
-    parser.add_argument(
-        "--base-url",
-        metavar="URL",
-        help="address of the published site, passed on to build.py",
-    )
     args = parser.parse_args(argv)
     names = list(SETS) if args.set == "all" else [args.set]
     failed = 0
     for name in names:
-        code = build_set(name, Path(args.out), args.port, args.base_url)
+        code = build_set(name, Path(args.out), args.port)
         failed = failed or code
     return failed
 
