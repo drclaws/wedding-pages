@@ -335,6 +335,67 @@ class TextTests(unittest.TestCase):
         self.assertEqual(rsvp[0]["variant"], "body")
 
 
+class RegistryTextTests(unittest.TestCase):
+    """The descriptions of the registries and the texts of a programme are
+    texts like any other: they stay on the page of the guest."""
+
+    @staticmethod
+    def with_texts(site, _invitations):
+        site["texts"]["wait"] = {
+            "ty": "Просим тебя подождать у входа.",
+            "vy": "Просим вас подождать у входа.",
+        }
+        site["events"]["ceremony"]["description"] = "Зал небольшой. {text:wait}"
+        site["locations"]["manor"]["description"] = {
+            "ty": "Тебя встретят у ворот, {greeting}",
+            "vy": "Вас встретят у ворот, {greeting}",
+        }
+        site["schedules"]["dinner"][0]["title"] = {"ty": "Встречаем тебя", "vy": "Встречаем вас"}
+        site["schedules"]["dinner"][0]["text"] = "Сбор к {eventTime}."
+
+    @staticmethod
+    def ceremony(page):
+        return next(item for item in walk_events(page) if item["id"] == "ceremony")
+
+    @staticmethod
+    def place(page, location_id):
+        places = [item["location"] for item in walk_events(page)]
+        places += [widget["location"] for widget in widgets(page, "location")]
+        return next(item for item in places if item["id"] == location_id)
+
+    def test_an_event_description_uses_the_named_texts_in_the_form_of_the_guest(self):
+        pages = build(self.with_texts)
+        # invitation #1: ty, #5: vy
+        self.assertEqual(
+            self.ceremony(pages[0])["description"], "Зал небольшой. Просим тебя подождать у входа."
+        )
+        self.assertEqual(
+            self.ceremony(pages[4])["description"], "Зал небольшой. Просим вас подождать у входа."
+        )
+
+    def test_a_place_description_has_forms_and_the_greeting(self):
+        pages = build(self.with_texts)
+        manor = self.place(pages[4], "manor")
+        self.assertEqual(manor["description"], "Вас встретят у ворот, Дорогие Пегги и Виктор!")
+
+    def test_a_programme_item_has_forms_and_placeholders(self):
+        pages = build(self.with_texts)
+        # the programme of the dinner; #1 sees it in the card of the event
+        item = next(
+            entry
+            for page_event in walk_events(pages[0])
+            if page_event["program"] is not None
+            for entry in page_event["program"]["items"]
+        )
+        self.assertEqual(item["title"], "Встречаем тебя")
+        # {eventTime} is that of the primary event of the guest, as everywhere
+        self.assertEqual(item["text"], "Сбор к 16:00.")
+
+    def test_a_description_without_a_text_is_left_as_it_is(self):
+        manor = self.place(build()[0], "manor")
+        self.assertEqual(manor["description"], F.SITE["locations"]["manor"]["description"])
+
+
 def parse_dom_id(dom_id):
     """The path of a DOM id: its parts, split at `--`."""
     return dom_id.split("--")

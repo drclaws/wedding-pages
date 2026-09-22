@@ -527,12 +527,13 @@ def check_site(site: Any, report: Any, where: str = SITE_FILE) -> SiteIndex:
             "long and may only contain A-Z, a-z, 0-9, '_' and '-'",
         )
 
+    # the named texts come first: the registries insert them by id
+    index.texts = _check_texts(check, site, index)
     index.media = _check_media(check, site)
-    index.schedules = _check_schedules(check, site)
+    index.schedules = _check_schedules(check, site, index)
     index.locations = _check_locations(check, site, index)
     index.events = _check_events(check, site, index)
     _check_main_event(check, site, index)
-    index.texts = _check_texts(check, site, index)
     _check_sections(check, site, index)
     _check_link_preview(check, site, index)
     index.errors = check.errors
@@ -698,7 +699,7 @@ def _check_media(check: _Checker, site: dict) -> dict | None:
     return media
 
 
-def _check_schedules(check: _Checker, site: dict) -> dict | None:
+def _check_schedules(check: _Checker, site: dict, index: SiteIndex) -> dict | None:
     schedules = _registry(check, site, "schedules")
     if not schedules:
         return schedules
@@ -716,8 +717,8 @@ def _check_schedules(check: _Checker, site: dict) -> dict | None:
                 continue
             check.unknown_fields(item, SCHEDULE_ITEM_FIELDS, item_parts)
             check.value(item, "time", "string", item_parts, single_line=True)
-            check.value(item, "title", "string", item_parts, required=True, single_line=True)
-            check.value(item, "text", "string", item_parts)
+            _check_text(check, item, "title", item_parts, index, required=True, single_line=True)
+            _check_text(check, item, "text", item_parts, index)
     return schedules
 
 
@@ -742,7 +743,7 @@ def _check_locations(check: _Checker, site: dict, index: SiteIndex) -> dict | No
                 "is required unless the place is not announced yet ('ready': false)",
             )
         check.value(place, "address", "string", parts, single_line=True)
-        check.value(place, "description", "string", parts)
+        _check_text(check, place, "description", parts, index)
         geo = check.value(place, "geo", "object", parts)
         if geo is not MISSING:
             geo_parts = (*parts, "geo")
@@ -824,7 +825,7 @@ def _check_events(check: _Checker, site: dict, index: SiteIndex) -> dict | None:
             continue
         check.unknown_fields(event, EVENT_FIELDS, parts)
         check.value(event, "title", "string", parts, required=True, single_line=True)
-        check.value(event, "description", "string", parts)
+        _check_text(check, event, "description", parts, index)
         check.value(event, "visible", "boolean", parts)
         show_end = check.value(event, "showEnd", "boolean", parts)
         if "location" not in event:

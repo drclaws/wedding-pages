@@ -800,6 +800,57 @@ class ScheduleTests(SchemaTestCase):
         self.assertOneError(report, "site.json: field 'schedules.dinner[2].title' is required")
 
 
+class RegistryTextTests(SchemaTestCase):
+    """The descriptions of the events and the places and the texts of a
+    programme are texts: forms of address, named texts and placeholders."""
+
+    def test_forms_and_named_texts_are_accepted(self):
+        def mutate(site, _invitations):
+            site["texts"]["wait"] = {"ty": "Подожди у входа.", "vy": "Подождите у входа."}
+            site["events"]["ceremony"]["description"] = "Зал небольшой. {text:wait}"
+            site["locations"]["manor"]["description"] = {
+                "ty": "Тебя встретят, {greeting}",
+                "vy": "Вас встретят, {greeting}",
+            }
+            site["schedules"]["dinner"][0]["title"] = {"ty": "Ждём тебя", "vy": "Ждём вас"}
+            site["schedules"]["dinner"][0]["text"] = "Сбор к {eventTime}."
+
+        self.assertMessages(run(mutate))
+
+    def test_unknown_placeholder_in_an_event_description(self):
+        report = run(lambda s, i: s["events"]["ceremony"].update(description="Ждём {coupleName}."))
+        self.assertEqual(len(report.errors), 1)
+        self.assertTrue(
+            report.errors[0].startswith(
+                "site.json: field 'events.ceremony.description' has an unknown placeholder "
+                "at character 6 (did you mean {coupleNames}?)"
+            ),
+            report.errors[0],
+        )
+
+    def test_unknown_named_text_in_a_place_description(self):
+        report = run(lambda s, i: s["locations"]["manor"].update(description="{text:nowhere}"))
+        self.assertOneError(
+            report,
+            "site.json: field 'locations.manor.description' refers to an unknown text "
+            "'nowhere' at character 1; known: announce, invite",
+        )
+
+    def test_a_programme_title_stays_one_line(self):
+        report = run(lambda s, i: s["schedules"]["dinner"][0].update(title="Сбор\nгостей"))
+        self.assertOneError(
+            report,
+            "site.json: field 'schedules.dinner[0].title' must be a single line (no line breaks)",
+        )
+
+    def test_an_event_title_is_not_a_text(self):
+        """It goes into the calendar file, the same for everybody."""
+        report = run(lambda s, i: s["events"]["ceremony"].update(title={"ty": "Роспись", "vy": "Роспись"}))
+        self.assertOneError(
+            report, "site.json: field 'events.ceremony.title' must be a string, got an object"
+        )
+
+
 class MediaDataTests(SchemaTestCase):
     def test_video_must_be_mp4(self):
         report = run(lambda s, i: s["media"]["proposal"].update(file="proposal.webm"))

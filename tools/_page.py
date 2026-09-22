@@ -215,6 +215,12 @@ class _Page:
         self._check_place(source, parts)
         return substitute(source, self.values, PLACEHOLDERS)
 
+    def registry_text(self, value: Any, parts: Sequence[Any]) -> str:
+        """A text of a registry that stays on the page of the guest: the form
+        of address, the named texts and the placeholders, as everywhere else;
+        blank stays "" (the fragment then leaves the field out)."""
+        return _text(self.resolve(value, parts))
+
     def resolve_note(self, value: Any) -> str:
         """A note of the invitation (placeholders and named texts, no forms)."""
         if not _text(value):
@@ -249,7 +255,9 @@ class _Page:
             "id": event_id,
             "domId": own_id,
             "title": raw["title"],
-            "description": _text(raw.get("description")),
+            "description": self.registry_text(
+                raw.get("description"), ("events", event_id, "description")
+            ),
             "note": self.resolve_note(self.event_overrides.get(event_id, {}).get("note")),
             "isMain": event_id == self.main_id,
             "isPrimary": is_primary,
@@ -314,7 +322,9 @@ class _Page:
         tree.update(
             name=name,
             address=address,
-            description=_text(place.get("description")),
+            description=self.registry_text(
+                place.get("description"), ("locations", location_id, "description")
+            ),
             mapLinks=links,
             hasMapLinks=_maps.has_map_links(links),
             photos=[self.media(media_id) for media_id in place.get("photos", [])],
@@ -328,10 +338,14 @@ class _Page:
         return [
             {
                 "time": _text(item.get("time")),
-                "title": item["title"],
-                "text": _text(item.get("text")),
+                "title": self.registry_text(
+                    item["title"], ("schedules", schedule_id, position, "title")
+                ),
+                "text": self.registry_text(
+                    item.get("text"), ("schedules", schedule_id, position, "text")
+                ),
             }
-            for item in items
+            for position, item in enumerate(items)
         ]
 
     def _calendar_src(self, event_id: str) -> str:
