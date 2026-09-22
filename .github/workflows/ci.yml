@@ -90,6 +90,8 @@ jobs:
           python tools/gen_example_media.py
 
       - name: Validate and build the main example set
+        env:
+          SITE_NAME: Example
         run: |
           set -euo pipefail
           python build.py validate
@@ -115,6 +117,9 @@ jobs:
               tags = dict(meta.findall(page.read_text(encoding="utf-8")))
               assert tags.get("og:image", "").startswith("/assets/"), "og:image is not a path from the site root"
               assert "og:url" not in tags, "og:url must not be written"
+              assert tags.get("og:site_name") == "Example", "og:site_name is not the SITE_NAME of the build"
+              assert tags.get("og:title", "").startswith("Приглашение · "), "og:title has no names"
+              assert tags.get("og:description"), "no og:description"
               for key, value in tags.items():
                   assert "://" not in value, f"an absolute URL in <meta {key}>"
           for stub in ("index.html", "404.html"):
@@ -152,6 +157,8 @@ jobs:
           check_site examples/data-venue-pending "$RUNNER_TEMP/dist-pending"
 
       - name: Reproducible build
+        env:
+          SITE_NAME: Example
         run: |
           set -euo pipefail
           python build.py build --out "$RUNNER_TEMP/dist2"

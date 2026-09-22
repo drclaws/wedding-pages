@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Static builder for personal invitation pages.
 
-    python build.py build    [--data DIR] [--media DIR] [--out DIR]
+    python build.py build    [--data DIR] [--media DIR] [--out DIR] [--site-name NAME]
     python build.py validate [--data DIR] [--media DIR]
     python build.py token    [--prefix NAME]
     python build.py links    --base URL [--data DIR]
@@ -125,6 +125,11 @@ SITE_IMAGE_TYPES = {
     ".ico": "image/x-icon",
     ".jpg": "image/jpeg",
 }
+
+#: Environment variable with the name of the site in link previews
+#: (`og:site_name`, `--site-name`); without either there is no such tag.
+SITE_NAME_VARIABLE = "SITE_NAME"
+MAX_SITE_NAME_LENGTH = 80
 
 #: Defaults relative to CODE_DIR.
 DEFAULT_DATA_DIR = Path("examples") / "data"
@@ -3263,12 +3268,16 @@ def build_site(
     code_dir: Path = CODE_DIR,
     report: Report | None = None,
     log: Callable[[str], None] = print,
+    site_name: str = "",
 ) -> OutputStats:
     """Validate the data, write the output directory and check the result.
 
     The output is assembled in a temporary directory and only replaces
     `out_dir` when every check has passed.  The log gets counters and paths,
     never data.
+
+    `site_name` is the name of the site in link previews (`og:site_name`,
+    see `check_site_name`); "" writes no such tag.
     """
     report = report if report is not None else Report()
     assets_dir = code_dir / ASSETS_DIRNAME
@@ -3288,7 +3297,11 @@ def build_site(
     # the pages always need the palette (their theme colour), the images only
     # when they are generated
     palette = load_palette(assets_dir)
-    site_fields = {**site_images_context(images), **site_colors_context(palette)}
+    site_fields = {
+        **site_images_context(images),
+        **site_colors_context(palette),
+        "siteName": site_name,
+    }
 
     template = load_template(code_dir / TEMPLATE_FILE)
     stub = load_stub(code_dir / STUB_FILE, site_fields).encode("utf-8")
@@ -3330,6 +3343,7 @@ def build_site(
         f"build: wrote {events} calendar file(s), one per event the invitations see, "
         f"under the hash of their contents to {out_shown}/{ASSETS_DIRNAME}/<mediaDir>/"
     )
+    log(f"build: link preview site name: {'set' if site_name else 'not set'}")
     for image in images:
         origin = "generated from the design tokens" if image.source is None else (
             f"copied from {display_path(media_dir)}"
@@ -3368,8 +3382,42 @@ def _media_dir(args: argparse.Namespace, code_dir: Path) -> Path:
     return Path(args.media) if args.media is not None else code_dir / DEFAULT_MEDIA_DIR
 
 
+def check_site_name(value: str) -> str:
+    """The name of the site in link previews; `ValueError` names the problem
+    (never the value).  Surrounding white space is dropped."""
+    value = value.strip()
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("must be one line without control characters")
+    if len(value) > MAX_SITE_NAME_LENGTH:
+        raise ValueError(f"must be at most {MAX_SITE_NAME_LENGTH} characters long")
+    if "//" in value:
+        raise ValueError("must not contain '//' (it is a name, not an address)")
+    return value
+
+
+def site_name_argument(value: str) -> str:
+    """`build --site-name`: a bad value is a bad command line (code 2)."""
+    try:
+        return check_site_name(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def site_name_setting(args: argparse.Namespace, environ: Any = None) -> str:
+    """`--site-name`, else the `SITE_NAME` variable, else "" (no tag)."""
+    if getattr(args, "site_name", None):
+        return args.site_name
+    environ = os.environ if environ is None else environ
+    try:
+        return check_site_name(environ.get(SITE_NAME_VARIABLE, ""))
+    except ValueError as exc:
+        # the value is not echoed
+        raise BuildError(f"{SITE_NAME_VARIABLE}: {exc}") from None
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     code_dir = CODE_DIR
+    site_name = site_name_setting(args)
     build_site(
         _data_dir(args, code_dir),
         _media_dir(args, code_dir),
@@ -3379,6 +3427,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         # the log shows the paths of --data, --media and --out, and --out may
         # point at a directory named like a token (`dist/i/<token>`)
         log=lambda message: _stdout(_redact_paths(message)),
+        site_name=site_name,
     )
     return EXIT_OK
 
@@ -3519,6 +3568,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         metavar="DIR",
         help=f"output directory, replaced on every build (default: {DEFAULT_OUT_DIR})",
+    )
+    build_cmd.add_argument(
+        "--site-name",
+        metavar="NAME",
+        type=site_name_argument,
+        help="name of the site in link previews (og:site_name), one line of at most "
+        f"{MAX_SITE_NAME_LENGTH} characters (default: the {SITE_NAME_VARIABLE} environment "
+        "variable; without either there is no such tag)",
     )
     build_cmd.set_defaults(func=cmd_build)
 

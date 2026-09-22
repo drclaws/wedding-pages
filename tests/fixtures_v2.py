@@ -38,6 +38,7 @@ SITE = {
             "all": "Ждём вас {eventDate} в {eventTime}.",
         },
     },
+    "linkPreview": {"description": "{text:announce} {text:invite}"},
     "sections": [
         {"id": "cover", "type": "cover", "background": "cover", "backgroundFocus": "center"},
         {

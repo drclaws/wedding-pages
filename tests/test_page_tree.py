@@ -19,7 +19,7 @@ from tools._media import MediaInfo
 ROOT_FIELDS = {
     "greeting", "form", "ty", "vy", "coupleNames", "rsvpDeadline", "mediaPath",
     "faviconPath", "faviconType", "ogImage", "ogImageType", "ogImageWidth",
-    "ogImageHeight", "themeColor", "primaryEvent", "sections",
+    "ogImageHeight", "themeColor", "siteName", "linkDescription", "primaryEvent", "sections",
 }  # fmt: skip
 SECTION_FIELDS = {
     "id", "type", "domId", "titleId", "title", "titleHidden", "align", "width",
@@ -727,6 +727,7 @@ class NamedTextTests(unittest.TestCase):
     }
 
     def with_texts(self, site, _invitations):
+        site.pop("linkPreview")
         site["texts"] = copy.deepcopy(self.texts)
         widgets = site["sections"][1]["widgets"]
         widgets[0]["text"] = "{text:announce}"
@@ -815,8 +816,10 @@ class NamedTextsChangeNothingTests(unittest.TestCase):
         return support.build.render_pages(template, invitations, trees)
 
     def test_the_pages_are_byte_for_byte_the_same(self):
-        before = self.render(inline_texts(F.site()), F.invitations())
-        after = self.render(F.site(), F.invitations())
+        site = F.site()
+        site.pop("linkPreview")  # the description needs the named texts
+        before = self.render(inline_texts(copy.deepcopy(site)), F.invitations())
+        after = self.render(site, F.invitations())
         self.assertEqual(len(before), len(F.INVITATIONS))
         self.assertEqual(after, before)
 

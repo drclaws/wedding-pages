@@ -56,8 +56,13 @@ SITE_IMAGE_FIELDS = (
 #: The colour fields of the site at the root of every tree: `themeColor`, the
 #: colour of the browser interface above the page (`<meta name="theme-color">`).
 SITE_COLOR_FIELDS = ("themeColor",)
+#: The name of the site in link previews (`og:site_name`); "" when not set.
+SITE_NAME_FIELDS = ("siteName",)
 #: Everything `PageSettings.site_images` copies to the root of every tree.
-SITE_FIELDS = SITE_IMAGE_FIELDS + SITE_COLOR_FIELDS
+SITE_FIELDS = SITE_IMAGE_FIELDS + SITE_COLOR_FIELDS + SITE_NAME_FIELDS
+#: A link preview description longer than this gets a warning: services show
+#: one or two sentences (WhatsApp: about 80 characters, Telegram: about 170).
+LINK_DESCRIPTION_WARN_LENGTH = 200
 #: Joins the parts of a DOM id.  An id of the data never holds `--`, so the
 #: parts are always told apart: `s-where--w1--e-dinner--l-manor` is the place
 #: `manor` of the event `dinner` in the first widget of the section `where`.
@@ -100,8 +105,8 @@ class PageSettings:
     #: Duration of an event without an end.
     default_duration: timedelta
     #: `faviconPath`, `faviconType`, `ogImage`, `ogImageType`, `ogImageWidth`,
-    #: `ogImageHeight` and `themeColor` (`SITE_FIELDS`): copied to the root of
-    #: every tree; a missing one is "".
+    #: `ogImageHeight`, `themeColor` and `siteName` (`SITE_FIELDS`): copied to
+    #: the root of every tree; a missing one is "".
     site_images: Mapping[str, Any]
     #: File name from the data -> its URL; by default the name under
     #: `mediaPath`.
@@ -399,6 +404,7 @@ class _Page:
             "coupleNames": self.site["coupleNames"],
             "rsvpDeadline": _text(self.site.get("rsvpDeadline")),
             "mediaPath": self.media_path,
+            "linkDescription": link_description(self.site, self.usage.texts),
             **images,
             "primaryEvent": self.event(self.primary_id, ""),
             "sections": sections,
@@ -590,6 +596,20 @@ def text_values(site: dict, event_id: str) -> dict[str, str]:
     return values
 
 
+def link_description(site: dict, used: set[str] | None = None) -> str:
+    """`linkPreview.description` filled in: the named texts in their common
+    form, the placeholders of the site with the `{event…}` of the main event,
+    all white space as single spaces; "" without the field.  The same for
+    every invitation: nothing of a guest is in it."""
+    preview = site.get("linkPreview")
+    text = preview.get("description") if isinstance(preview, dict) else None
+    if not _text(text):
+        return ""
+    source = expand_texts(text, COMMON_FORM, site.get("texts", {}), used=used)
+    filled = substitute(source, text_values(site, site["mainEvent"]), PLACEHOLDERS)
+    return " ".join(filled.split())
+
+
 def seen_events(site: dict, invitation: dict) -> set[str]:
     """The ids of the events an invitation sees."""
     overrides = invitation.get("events", {})
@@ -684,6 +704,14 @@ def build_pages(
             )
         pages.append(tree)
     if report is not None:
+        description = link_description(site, usage.texts)
+        if len(description) > LINK_DESCRIPTION_WARN_LENGTH:
+            warn(
+                f"{SITE_FILE}: field 'linkPreview.description' is {len(description)} "
+                f"characters long once filled in (more than {LINK_DESCRIPTION_WARN_LENGTH}); "
+                "link previews show one or two sentences - put the main thing into the "
+                "first 80 characters"
+            )
         warn_unused(site, usage, report)
     return pages, usage
 

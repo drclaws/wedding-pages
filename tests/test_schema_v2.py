@@ -938,7 +938,9 @@ class TextTests(SchemaTestCase):
 
 
 def with_texts(site: dict, **texts) -> None:
-    """Named texts: `announce` and `invite` by default, used by the section `invite`."""
+    """Named texts: `announce` and `invite` by default, used by the section
+    `invite`; the link preview of the fixture is removed."""
+    site.pop("linkPreview", None)
     site["texts"] = texts or {
         "announce": "Мы, {coupleNames}, женимся!",
         "invite": {

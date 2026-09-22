@@ -8,13 +8,19 @@
   <meta name="text-scale" content="scale">
   <meta name="robots" content="noindex, nofollow">
   <meta name="referrer" content="no-referrer">
-  <title>Приглашение</title>
-  <meta property="og:title" content="Приглашение">
+  <title>Приглашение · {{coupleNames}}</title><!-- if:linkDescription -->
+  <meta name="description" content="{{linkDescription}}"><!-- endif -->
+  <meta property="og:title" content="Приглашение · {{coupleNames}}"><!-- if:linkDescription -->
+  <meta property="og:description" content="{{linkDescription}}"><!-- endif -->
   <meta property="og:type" content="website">
+  <meta property="og:locale" content="ru_RU"><!-- if:siteName -->
+  <meta property="og:site_name" content="{{siteName}}"><!-- endif -->
   <meta property="og:image" content="{{ogImage}}">
   <meta property="og:image:type" content="{{ogImageType}}">
   <meta property="og:image:width" content="{{ogImageWidth}}">
   <meta property="og:image:height" content="{{ogImageHeight}}">
+  <meta property="og:image:alt" content="Приглашение · {{coupleNames}}">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" href="{{faviconPath}}" type="{{faviconType}}">
   <link rel="stylesheet" href="/assets/app.css">
   <script src="/assets/app.js" defer></script>
@@ -27,7 +33,13 @@
      живёт в fragments/, здесь только <head> и <main>.
      theme-color — цвет свёрнутой панели: значение подставляет сборка из токена
      --color-cover-veil (app.css); класс invitation у <html> красит в тот же цвет
-     холст страницы (app.css, секция 3). Своих цветов в шаблоне нет. -->
+     холст страницы (app.css, секция 3). Своих цветов в шаблоне нет.
+     Заголовок и превью ссылки одинаковы у всех гостей: «Приглашение · имена
+     пары» — в <title>, og:title и og:image:alt; описание (linkDescription) —
+     linkPreview.description из site.json в общей форме, без данных гостя;
+     og:site_name — только если сборке задано имя сайта (SITE_NAME). Все ссылки
+     в мета-тегах — пути от корня: адреса сайта сборка не знает, og:url нет.
+     Условия стоят в строках разметки: без поля не остаётся пустой строки. -->
 <main class="page">
 <!-- include:partials/sections -->
 </main>
