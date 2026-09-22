@@ -645,8 +645,13 @@ class CoverBarTest(unittest.TestCase):
     def test_the_scripts_follow_the_scroll_of_body(self):
         reveal = self.code[self.code.index("register('reveal'"):self.code.index("register('countdown'")]
         end = reveal[reveal.index("function atEnd()"):reveal.index("var onFrame")]
-        self.assertIn("window.pageYOffset >= root.scrollHeight - 2", end)
-        self.assertIn("body.scrollTop + body.clientHeight >= body.scrollHeight - 2", end)
+        # body scrolls: only body is asked -- the document is then as tall as
+        # the window and always "at its end", so an "or" of the two would keep
+        # the reveal inset off for the whole page
+        self.assertRegex(end, r"if \(window\.getComputedStyle\(body\)\.overflowY !== 'visible'\) \{\s*"
+                              r"return body\.scrollTop \+ body\.clientHeight >= body\.scrollHeight - 2;\s*\}\s*"
+                              r"return viewportHeight\(\) \+ window\.pageYOffset >= root\.scrollHeight - 2;")
+        self.assertNotIn("||", end)
         self.assertIn("sweepWithin(atEnd() ? 0 : REVEAL_INSET);", reveal)
         # the scrollbar gap under the viewer window counts the scrollbar of body
         lock = self.code[self.code.index("function lockScroll("):self.code.index("function releaseVideo(")]

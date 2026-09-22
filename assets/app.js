@@ -654,13 +654,15 @@
        пришёл ли колбэк наблюдателя, и идёт не чаще кадра. Граница та же, что у
        наблюдателя; у самого конца страницы блок может до неё не дойти — там
        она снимается. */
-    /* Конец страницы — у документа или у body, если прокручивает он
-       (страница приглашения, app.css секция 3). */
+    /* Конец страницы — у body, если прокручивает он (страница приглашения
+       на сенсорном экране, app.css секция 3), иначе у документа. Документ
+       тогда размером с окно и «в конце» всегда — его не спрашивать. */
     function atEnd() {
       var body = doc.body;
-      return viewportHeight() + window.pageYOffset >= root.scrollHeight - 2 ||
-        (body.scrollHeight > body.clientHeight &&
-          body.scrollTop + body.clientHeight >= body.scrollHeight - 2);
+      if (window.getComputedStyle(body).overflowY !== 'visible') {
+        return body.scrollTop + body.clientHeight >= body.scrollHeight - 2;
+      }
+      return viewportHeight() + window.pageYOffset >= root.scrollHeight - 2;
     }
 
     var onFrame = guarded(function () {
