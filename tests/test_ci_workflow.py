@@ -135,15 +135,24 @@ class CiWorkflowTest(unittest.TestCase):
         self.assertIn('tracked dist examples/media', block)
         self.assertEqual(block.count("exit 1"), 3)
 
-    def test_absolute_site_address_build_is_checked(self):
-        blocks = [block for block in self.runs if "--base-url" in block]
+    def test_link_preview_tags_are_checked_without_a_site_address(self):
+        self.assertNotIn("--base-url", self.raw)
+        self.assertNotIn("dist-abs", self.raw)
+        blocks = [block for block in self.runs if "Link preview tags" in block or "og:url" in block]
         self.assertEqual(len(blocks), 1)
-        self.assertIn('--base-url https://example.invalid --out "$RUNNER_TEMP/dist-abs"', blocks[0])
-        self.assertIn("'og:image'", blocks[0])
-        self.assertIn("'content=\"https://example.invalid/assets/'", blocks[0])
-        self.assertIn('"$RUNNER_TEMP/dist-abs/index.html"', blocks[0])
-        for message in ("No invitation page was built", "No og:image on"):
-            self.assertIn(message, blocks[0])
+        block = blocks[0]
+        self.assertIn('"$RUNNER_TEMP/dist"', block)
+        for text in (r'"/assets/[A-Za-z0-9_-]+/[0-9a-f]{16}\.jpg"', '"og:url" not in tags',
+                     '"://" not in value', '("index.html", "404.html")', "300 * 1024",
+                     "(1200, 630)", '"assets/og.*"', '"Example"'):  # fmt: skip
+            self.assertIn(text, block)
+
+    def test_chrome_is_checked_and_the_site_name_is_set(self):
+        blocks = [block for block in self.runs if "google-chrome --version" in block]
+        self.assertEqual(len(blocks), 1)
+        self.assertIn("exit 1", blocks[0])
+        self.assertEqual(self.raw.count("SITE_NAME: Example"), 2)
+        self.assertNotIn("LINK_PREVIEW_IMAGE", self.raw)
 
     def test_build_output_goes_to_runner_temp(self):
         outs = re.findall(r"--out\s+(\S+)", "\n".join(self.runs))

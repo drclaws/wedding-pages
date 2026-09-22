@@ -18,7 +18,7 @@ from tests.support import ROOT, TempDirTestCase
 
 FFMPEG = shutil.which("ffmpeg")
 #: What the script needs of the repository.
-PARTS = ("build.py", "template.html", "stub.html", "tools", "fragments", "assets",
+PARTS = ("build.py", "template.html", "stub.html", "preview.html", "tools", "fragments", "assets",
          "examples/data", "examples/data-venue-pending")  # fmt: skip
 
 
@@ -49,6 +49,8 @@ class BuildExamplesTests(TempDirTestCase):
         environ = {key: value for key, value in os.environ.items() if key not in ("CI", "GITHUB_ACTIONS")}
         environ["PYTHONDONTWRITEBYTECODE"] = "1"
         environ["TMPDIR"] = str(self.tmp)
+        # no browser in the tests: the neutral link preview image
+        environ["LINK_PREVIEW_IMAGE"] = "off"
         if path is not None:
             environ["PATH"] = path
         environ.update(env or {})
@@ -87,6 +89,20 @@ class BuildExamplesTests(TempDirTestCase):
         for token, greeting in tokens("data-venue-pending"):
             self.assertNotIn(token, result.stdout + result.stderr)
             self.assertNotIn(greeting, result.stdout + result.stderr)
+
+    def test_the_options_of_the_link_preview_image_are_passed_on(self):
+        on = {"LINK_PREVIEW_IMAGE": "on"}
+        result = self.run_script(
+            "--set", "data-venue-pending", "--out", "out", "--chrome", str(self.tmp / "nowhere"),
+            env=on,
+        )  # fmt: skip
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--chrome does not name an executable file of a browser", result.stderr)
+        result = self.run_script(
+            "--set", "data-venue-pending", "--out", "out", "--no-link-preview-image", env=on
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("(the link preview image is turned off)", result.stdout)
 
     def test_only_the_example_sets_are_accepted(self):
         for args in (["--set", "private"], ["--set", "../data"], ["--port", "x"], ["--nope"]):

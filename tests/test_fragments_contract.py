@@ -41,7 +41,7 @@ MEDIA_TYPES = _schema.MEDIA_TYPES
 ROOT_FIELDS = (
     "greeting", "form", "ty", "vy", "coupleNames", "rsvpDeadline", "mediaPath",
     "faviconPath", "faviconType", "ogImage", "ogImageType", "ogImageWidth",
-    "ogImageHeight", "themeColor", "primaryEvent", "sections",
+    "ogImageHeight", "themeColor", "siteName", "linkDescription", "primaryEvent", "sections",
 )
 SECTION_FIELDS = {
     "cover": ("id", "type", "domId", "titleId", "eyebrow", "event", "background",
@@ -444,7 +444,7 @@ class PageTree:
             coupleNames=COUPLE_NAMES, rsvpDeadline=RSVP_DEADLINE, mediaPath=MEDIA_PATH,
             faviconPath="/assets/favicon.svg", faviconType="image/svg+xml",
             ogImage="/assets/og.png", ogImageType="image/png", ogImageWidth=1200,
-            ogImageHeight=630, themeColor="#f2efe9", primaryEvent=self.event(self.primary, None),
+            ogImageHeight=630, themeColor="#f2efe9", siteName="", linkDescription="", primaryEvent=self.event(self.primary, None),
             sections=self.sections(),
         )
 
@@ -672,7 +672,7 @@ def harness_root(items: list) -> Strict:
         coupleNames=COUPLE_NAMES, rsvpDeadline=RSVP_DEADLINE, mediaPath=MEDIA_PATH,
         faviconPath="/assets/favicon.svg", faviconType="image/svg+xml",
         ogImage="/assets/og.png", ogImageType="image/png", ogImageWidth=1200,
-        ogImageHeight=630, themeColor="#f2efe9", primaryEvent=bare_event("e", True, True, False), sections=[],
+        ogImageHeight=630, themeColor="#f2efe9", siteName="", linkDescription="", primaryEvent=bare_event("e", True, True, False), sections=[],
         harness=items,
     )
 

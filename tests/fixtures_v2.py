@@ -28,6 +28,17 @@ SITE = {
     "rsvpDeadline": "1 мая 2030",
     "mediaDir": MEDIA_DIR,
     "mainEvent": "dinner",
+    "texts": {
+        "announce": "Мы, {coupleNames}, женимся!",
+        "invite": {
+            "ty": "Ждём тебя {eventDate} в {eventTime}.\n"
+            "Нам очень хочется разделить этот день с тобой.",
+            "vy": "Ждём вас {eventDate} в {eventTime}.\n"
+            "Нам очень хочется разделить этот день с вами.",
+            "all": "Ждём вас {eventDate} в {eventTime}.",
+        },
+    },
+    "linkPreview": {"description": "{text:announce} {text:invite}"},
     "sections": [
         {"id": "cover", "type": "cover", "background": "cover", "backgroundFocus": "center"},
         {
@@ -38,12 +49,7 @@ SITE = {
                 {
                     "type": "text",
                     "variant": "lead",
-                    "text": {
-                        "ty": "Мы, {coupleNames}, приглашаем тебя на наш праздник.\n"
-                        "Нам очень хочется разделить этот день с тобой.",
-                        "vy": "Мы, {coupleNames}, приглашаем вас на наш праздник.\n"
-                        "Нам очень хочется разделить этот день с вами.",
-                    },
+                    "text": "{text:announce}",
                 },
                 {
                     "id": "plus-one",
@@ -60,10 +66,7 @@ SITE = {
                 {
                     "type": "text",
                     "variant": "lead",
-                    "text": {
-                        "ty": "Ждём тебя {eventDate} в {eventTime}.",
-                        "vy": "Ждём вас {eventDate} в {eventTime}.",
-                    },
+                    "text": "{text:invite}",
                 },
             ],
         },

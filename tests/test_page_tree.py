@@ -6,18 +6,20 @@ the facts of the media files come from a stub, no file is read.
 
 from __future__ import annotations
 
+import copy
 import unittest
 from datetime import timedelta
 from unittest import mock
 
 from tests import fixtures_v2 as F
+from tests import support
 from tools import _page, _schema
 from tools._media import MediaInfo
 
 ROOT_FIELDS = {
     "greeting", "form", "ty", "vy", "coupleNames", "rsvpDeadline", "mediaPath",
     "faviconPath", "faviconType", "ogImage", "ogImageType", "ogImageWidth",
-    "ogImageHeight", "themeColor", "primaryEvent", "sections",
+    "ogImageHeight", "themeColor", "siteName", "linkDescription", "primaryEvent", "sections",
 }  # fmt: skip
 SECTION_FIELDS = {
     "id", "type", "domId", "titleId", "title", "titleHidden", "align", "width",
@@ -187,8 +189,8 @@ class PrimaryEventTests(unittest.TestCase):
 
     def test_texts_use_the_primary_event(self):
         pages = build()
-        self.assertEqual(section(pages[2], "invite")["widgets"][-1]["text"], "Ждём тебя 15 июня 2030 в 11:00.")
-        self.assertEqual(section(pages[0], "invite")["widgets"][-1]["text"], "Ждём тебя 15 июня 2030 в 16:00.")
+        self.assertEqual(section(pages[2], "invite")["widgets"][-1]["text"].splitlines()[0], "Ждём тебя 15 июня 2030 в 11:00.")
+        self.assertEqual(section(pages[0], "invite")["widgets"][-1]["text"].splitlines()[0], "Ждём тебя 15 июня 2030 в 16:00.")
 
     def test_other_placeholders(self):
         def change(site, invitations):
@@ -317,8 +319,8 @@ class OverrideTests(unittest.TestCase):
 class TextTests(unittest.TestCase):
     def test_forms_of_address(self):
         pages = build()
-        self.assertIn("приглашаем тебя", section(pages[0], "invite")["widgets"][0]["text"])
-        self.assertIn("приглашаем вас", section(pages[4], "invite")["widgets"][0]["text"])
+        self.assertIn("с тобой", section(pages[0], "invite")["widgets"][-1]["text"])
+        self.assertIn("с вами", section(pages[4], "invite")["widgets"][-1]["text"])
 
     def test_title_with_the_greeting(self):
         pages = build()
@@ -697,6 +699,129 @@ class BuildTests(unittest.TestCase):
         site, invitations = F.site(), F.invitations()
         _page.build_pages(site, invitations, F.settings())
         self.assertEqual((site, invitations), (F.SITE, F.INVITATIONS))
+
+
+def inline_texts(site: dict) -> dict:
+    """The site as it would be written without named texts: the section
+    `invite` holds the texts itself (without the common form)."""
+    texts = site.pop("texts")
+    for widget in site["sections"][1]["widgets"]:
+        text = widget["text"]
+        if isinstance(text, str) and text.startswith("{text:"):
+            value = texts[text[len("{text:") : -1]]
+            widget["text"] = (
+                value if isinstance(value, str) else {form: value[form] for form in ("ty", "vy")}
+            )
+    return site
+
+
+class NamedTextTests(unittest.TestCase):
+    texts = {
+        "announce": "Мы, {coupleNames}, женимся!",
+        "invite": {
+            "ty": "Ждём тебя {eventDate} в {eventTime}. {text:sign}",
+            "vy": "Ждём вас {eventDate} в {eventTime}. {text:sign}",
+            "all": "ALL-FORM {eventDate}",
+        },
+        "sign": "{{{coupleNames}}}",
+    }
+
+    def with_texts(self, site, _invitations):
+        site.pop("linkPreview")
+        site["texts"] = copy.deepcopy(self.texts)
+        widgets = site["sections"][1]["widgets"]
+        widgets[0]["text"] = "{text:announce}"
+        widgets[2]["text"] = "{text:invite}"
+
+    @staticmethod
+    def invite_texts(page) -> list[str]:
+        section = next(item for item in page["sections"] if item["id"] == "invite")
+        return [widget["text"] for widget in section["widgets"]]
+
+    def test_the_form_and_the_primary_event_of_the_guest(self):
+        pages = build(self.with_texts)
+        # invitation #2: ty, the main event; #3: ty, the registration first;
+        # #5: vy, the registration first; #6: vy, the main event
+        self.assertEqual(
+            self.invite_texts(pages[1]),
+            ["Мы, Алиса и Боб, женимся!", "Ждём тебя 15 июня 2030 в 16:00. {Алиса и Боб}"],
+        )
+        self.assertEqual(self.invite_texts(pages[2])[1], "Ждём тебя 15 июня 2030 в 11:00. {Алиса и Боб}")
+        self.assertEqual(self.invite_texts(pages[4])[1], "Ждём вас 15 июня 2030 в 11:00. {Алиса и Боб}")
+        self.assertEqual(self.invite_texts(pages[5])[1], "Ждём вас 15 июня 2030 в 16:00. {Алиса и Боб}")
+
+    def test_the_common_form_is_not_used_on_pages(self):
+        for page in build(self.with_texts):
+            self.assertNotIn("ALL-FORM", repr(page))
+
+    def test_a_note_may_use_a_text(self):
+        def mutate(site, invitations):
+            self.with_texts(site, invitations)
+            invitations[1]["events"]["dinner"]["note"] = "{text:invite}"
+
+        pages = build(mutate)
+        cards = [widget for section in pages[1]["sections"] for widget in section["widgets"]
+                 if widget["type"] == "events"][0]["items"]  # fmt: skip
+        dinner = next(item for item in cards if item["id"] == "dinner")
+        self.assertEqual(dinner["note"], "Ждём тебя 15 июня 2030 в 16:00. {Алиса и Боб}")
+
+    def test_a_greeting_is_not_parsed_for_texts(self):
+        def mutate(site, invitations):
+            self.with_texts(site, invitations)
+            invitations[0]["greeting"] = "{text:announce}"
+
+        page = build(mutate)[0]
+        self.assertEqual(page["sections"][1]["title"], "{text:announce}")
+
+    def test_usage_and_unused_texts(self):
+        site, invitations = F.site(), F.invitations()
+        self.with_texts(site, invitations)
+        site["texts"]["spare"] = "Запасной текст"
+        report = F.Collector()
+        _pages, usage = _page.build_pages(site, invitations, F.settings(), report)
+        self.assertEqual(usage.texts, {"announce", "invite", "sign"})
+        self.assertIn(
+            "site.json: text 'spare' is not shown on any page nor in the link preview",
+            report.warnings,
+        )
+
+    def test_a_text_only_in_a_hidden_widget_is_unused(self):
+        def mutate(site, invitations):
+            self.with_texts(site, invitations)
+            site["texts"]["plus"] = "Со спутником"
+            site["sections"][5]["widgets"][2]["text"] = "{text:plus}"  # hotel-booked
+            invitations[5]["sections"]["travel"]["widgets"]["hotel-booked"]["visible"] = False
+
+        site, invitations = F.site(), F.invitations()
+        mutate(site, invitations)
+        report = F.Collector()
+        _page.build_pages(site, invitations, F.settings(), report)
+        self.assertIn(
+            "site.json: text 'plus' is not shown on any page nor in the link preview",
+            report.warnings,
+        )
+
+
+class NamedTextsChangeNothingTests(unittest.TestCase):
+    """The control case: the same texts written in place or as named texts
+    give the same pages."""
+
+    def render(self, site, invitations) -> list[tuple[str, str]]:
+        report = F.Collector()
+        index = _schema.check_data(site, invitations, report)
+        self.assertTrue(index.ok, report.errors)
+        trees, _usage = _page.build_pages(site, invitations, F.settings(), report)
+        self.assertEqual(report.messages, [])
+        template = support.build.load_template(support.ROOT / support.build.TEMPLATE_FILE)
+        return support.build.render_pages(template, invitations, trees)
+
+    def test_the_pages_are_byte_for_byte_the_same(self):
+        site = F.site()
+        site.pop("linkPreview")  # the description needs the named texts
+        before = self.render(inline_texts(copy.deepcopy(site)), F.invitations())
+        after = self.render(site, F.invitations())
+        self.assertEqual(len(before), len(F.INVITATIONS))
+        self.assertEqual(after, before)
 
 
 if __name__ == "__main__":

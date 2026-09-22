@@ -507,7 +507,9 @@ class ReproducibilityTests(FullBuildTestCase):
         expected = tree_digest(self.out)
         other = self.work / "in-process"
         stats = build.build_site(
-            self.data, self.media, other, code_dir=self.code, log=lambda _line: None
+            self.data, self.media, other, code_dir=self.code, log=lambda _line: None,
+            # the command line of the tests builds without the browser
+            preview=build.PreviewOptions(enabled=False),
         )
         self.assertEqual(tree_digest(other), expected)
         self.assertEqual(stats.files, FILES_IN_TOTAL)

@@ -22,12 +22,21 @@ Standard library only.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import Any, Callable, Mapping, Sequence
 
 from tools import _dates, _maps
-from tools._data import format_path, invitation_label, resolve_text, show_id, substitute
+from tools._data import (
+    COMMON_FORM,
+    TextError,
+    expand_texts,
+    format_path,
+    invitation_label,
+    pick_form,
+    show_id,
+    substitute,
+)
 from tools._mp4 import format_duration
 from tools._schema import (
     COVER_FOCUSES,
@@ -48,8 +57,13 @@ SITE_IMAGE_FIELDS = (
 #: The colour fields of the site at the root of every tree: `themeColor`, the
 #: colour of the browser interface above the page (`<meta name="theme-color">`).
 SITE_COLOR_FIELDS = ("themeColor",)
+#: The name of the site in link previews (`og:site_name`); "" when not set.
+SITE_NAME_FIELDS = ("siteName",)
 #: Everything `PageSettings.site_images` copies to the root of every tree.
-SITE_FIELDS = SITE_IMAGE_FIELDS + SITE_COLOR_FIELDS
+SITE_FIELDS = SITE_IMAGE_FIELDS + SITE_COLOR_FIELDS + SITE_NAME_FIELDS
+#: A link preview description longer than this gets a warning: services show
+#: one or two sentences (WhatsApp: about 80 characters, Telegram: about 170).
+LINK_DESCRIPTION_WARN_LENGTH = 200
 #: Joins the parts of a DOM id.  An id of the data never holds `--`, so the
 #: parts are always told apart: `s-where--w1--e-dinner--l-manor` is the place
 #: `manor` of the event `dinner` in the first widget of the section `where`.
@@ -92,8 +106,8 @@ class PageSettings:
     #: Duration of an event without an end.
     default_duration: timedelta
     #: `faviconPath`, `faviconType`, `ogImage`, `ogImageType`, `ogImageWidth`,
-    #: `ogImageHeight` and `themeColor` (`SITE_FIELDS`): copied to the root of
-    #: every tree; a missing one is "".
+    #: `ogImageHeight`, `themeColor` and `siteName` (`SITE_FIELDS`): copied to
+    #: the root of every tree; a missing one is "".
     site_images: Mapping[str, Any]
     #: File name from the data -> its URL; by default the name under
     #: `mediaPath`.
@@ -120,6 +134,8 @@ class Usage:
     locations: set[str] = field(default_factory=set)
     schedules: set[str] = field(default_factory=set)
     media: set[str] = field(default_factory=set)
+    #: Named texts (`texts`) used on a page or in the link preview.
+    texts: set[str] = field(default_factory=set)
 
 
 # --------------------------------------------------------------------------
@@ -182,43 +198,33 @@ class _Page:
         # default: the cards are ordered by the time they start
         return [item.id for item in self.timeline]
 
-    def _place_name(self, event_id: str) -> str:
-        place = self.site.get("locations", {}).get(self.events[event_id]["location"], {})
-        return _text(place.get("name")) if place.get("ready", True) is not False else ""
-
     def _text_values(self) -> dict[str, str]:
-        primary = self.events[self.primary_id]
-        start = _dates.parse_date_iso(primary["start"])
-        values = {
-            "coupleNames": self.site["coupleNames"],
-            "greeting": self.invitation["greeting"],
-            "eventTitle": primary["title"],
-            "eventDate": _dates.format_date(start),
-            "eventTime": _dates.format_time(start),
-            "eventPlace": self._place_name(self.primary_id),
-        }
-        if _text(self.site.get("rsvpDeadline")):
-            values["rsvpDeadline"] = self.site["rsvpDeadline"]
+        values = text_values(self.site, self.primary_id)
+        values["greeting"] = self.invitation["greeting"]
         return values
+
+    def _expand(self, text: str) -> str:
+        """The named texts of a text in the form of the invitation."""
+        return expand_texts(text, self.form, self.site.get("texts", {}), used=self.usage.texts)
 
     def resolve(self, value: Any, parts: Sequence[Any]) -> str:
         """A text of `site.json` in the form of the invitation."""
         if value is None:
             return ""
-        self._check_place(value, parts)
-        return resolve_text(value, self.form, self.values, PLACEHOLDERS)
+        source = self._expand(pick_form(value, self.form))
+        self._check_place(source, parts)
+        return substitute(source, self.values, PLACEHOLDERS)
 
     def resolve_note(self, value: Any) -> str:
-        """A note of the invitation (placeholders only, no forms)."""
+        """A note of the invitation (placeholders and named texts, no forms)."""
         if not _text(value):
             return ""
-        return substitute(value, self.values, PLACEHOLDERS)
+        return substitute(self._expand(value), self.values, PLACEHOLDERS)
 
-    def _check_place(self, value: Any, parts: Sequence[Any]) -> None:
+    def _check_place(self, text: str, parts: Sequence[Any]) -> None:
         if self.warn is None or self.values["eventPlace"]:
             return
-        texts = value.values() if isinstance(value, dict) else [value]
-        if any(isinstance(text, str) and "{eventPlace}" in text for text in texts):
+        if "{eventPlace}" in text:
             path = format_path(parts)
             key = (path, self.primary_id)
             if key not in self.place_warnings:
@@ -399,6 +405,7 @@ class _Page:
             "coupleNames": self.site["coupleNames"],
             "rsvpDeadline": _text(self.site.get("rsvpDeadline")),
             "mediaPath": self.media_path,
+            "linkDescription": link_description(self.site, self.usage.texts),
             **images,
             "primaryEvent": self.event(self.primary_id, ""),
             "sections": sections,
@@ -568,6 +575,83 @@ def build_page(
     return page.tree()
 
 
+def _place_name(site: dict, event_id: str) -> str:
+    place = site.get("locations", {}).get(site["events"][event_id]["location"], {})
+    return _text(place.get("name")) if place.get("ready", True) is not False else ""
+
+
+def text_values(site: dict, event_id: str) -> dict[str, str]:
+    """The values of the placeholders that do not depend on a guest; the
+    `{event…}` ones are those of `event_id` (`{greeting}` is not among them)."""
+    event = site["events"][event_id]
+    start = _dates.parse_date_iso(event["start"])
+    values = {
+        "coupleNames": site["coupleNames"],
+        "eventTitle": event["title"],
+        "eventDate": _dates.format_date(start),
+        "eventTime": _dates.format_time(start),
+        "eventPlace": _place_name(site, event_id),
+    }
+    if _text(site.get("rsvpDeadline")):
+        values["rsvpDeadline"] = site["rsvpDeadline"]
+    return values
+
+
+def site_eyebrow(site: dict, value: Any) -> str | None:
+    """The eyebrow of the cover without a guest, or None when it depends on
+    one: only a string without forms whose named texts have a common form and
+    that uses no `{greeting}`; the placeholders are those of the site with
+    the main event."""
+    if isinstance(value, dict):
+        return None  # forms of address: it belongs to a guest
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        source = expand_texts(value, COMMON_FORM, site.get("texts", {}))
+        return substitute(source, text_values(site, site["mainEvent"]), PLACEHOLDERS)
+    except TextError:
+        return None  # a form of address or the greeting: it belongs to a guest
+
+
+def site_cover(site: dict, settings: PageSettings) -> dict | None:
+    """The tree of the link preview page: the cover as the site shows it to
+    nobody in particular, or None when the site has no cover.
+
+    The date is that of the main event, the eyebrow only when it does not
+    depend on a guest (`site_eyebrow`); nothing of an invitation is in it.
+    """
+    position = next(
+        (index for index, item in enumerate(site["sections"]) if item.get("type") == "cover"),
+        None,
+    )
+    if position is None:
+        return None
+    # nobody in particular: the main event, the formal form, no greeting
+    nobody = {"greeting": "", "form": "vy"}
+    # the cover links no calendar file
+    settings = replace(settings, calendar_src=lambda _event_id: "")
+    page = _Page(site, nobody, settings, Usage(), None, "", set())
+    section = dict(site["sections"][position])
+    eyebrow = site_eyebrow(site, section.pop("eyebrow", None))
+    cover = page.section(section, position)
+    cover["eyebrow"] = eyebrow or ""
+    return {"coupleNames": site["coupleNames"], "cover": cover}
+
+
+def link_description(site: dict, used: set[str] | None = None) -> str:
+    """`linkPreview.description` filled in: the named texts in their common
+    form, the placeholders of the site with the `{event…}` of the main event,
+    all white space as single spaces; "" without the field.  The same for
+    every invitation: nothing of a guest is in it."""
+    preview = site.get("linkPreview")
+    text = preview.get("description") if isinstance(preview, dict) else None
+    if not _text(text):
+        return ""
+    source = expand_texts(text, COMMON_FORM, site.get("texts", {}), used=used)
+    filled = substitute(source, text_values(site, site["mainEvent"]), PLACEHOLDERS)
+    return " ".join(filled.split())
+
+
 def seen_events(site: dict, invitation: dict) -> set[str]:
     """The ids of the events an invitation sees."""
     overrides = invitation.get("events", {})
@@ -662,6 +746,14 @@ def build_pages(
             )
         pages.append(tree)
     if report is not None:
+        description = link_description(site, usage.texts)
+        if len(description) > LINK_DESCRIPTION_WARN_LENGTH:
+            warn(
+                f"{SITE_FILE}: field 'linkPreview.description' is {len(description)} "
+                f"characters long once filled in (more than {LINK_DESCRIPTION_WARN_LENGTH}); "
+                "link previews show one or two sentences - put the main thing into the "
+                "first 80 characters"
+            )
         warn_unused(site, usage, report)
     return pages, usage
 
@@ -701,12 +793,16 @@ def warn_unused(site: dict, usage: Usage, report: Any) -> None:
         ("locations", "location", usage.locations),
         ("schedules", "schedule", usage.schedules),
         ("media", "media item", usage.media),
+        ("texts", "text", usage.texts),
     )
     for registry, what, shown in registries:
         for entry_id in site.get(registry, {}):
             if entry_id in shown:
                 continue
-            tail = " and its files are not published" if registry == "media" else ""
+            tail = {
+                "media": " and its files are not published",
+                "texts": " nor in the link preview",
+            }.get(registry, "")
             warn(f"{SITE_FILE}: {what} {show_id(entry_id)} is not shown on any page{tail}")
 
 

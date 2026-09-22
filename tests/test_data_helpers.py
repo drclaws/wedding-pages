@@ -569,6 +569,178 @@ class SubstitutionTests(unittest.TestCase):
             data_tools.resolve_text(value, "you", self.values, KNOWN)
 
 
+class NamedTextTests(unittest.TestCase):
+    """`{text:<id>}`: named texts of the registry `texts`."""
+
+    texts = {
+        "announce": "Мы, {coupleNames}, женимся!",
+        "invite": {
+            "ty": "Ждём тебя. {text:sign}",
+            "vy": "Ждём вас. {text:sign}",
+            "all": "Ждём вас.",
+        },
+        "sign": "{{с любовью}}",
+        "both": "{text:announce} {text:invite}",
+    }
+
+    def expand(self, text, form="ty", texts=None, **options):
+        return data_tools.expand_texts(text, form, self.texts if texts is None else texts, **options)
+
+    def assertExpandError(self, text, expected, form="ty", texts=None, **options):
+        with self.assertRaises(data_tools.TextError) as caught:
+            self.expand(text, form, texts, **options)
+        self.assertEqual(str(caught.exception), expected)
+
+    def test_parts(self):
+        self.assertEqual(
+            data_tools.parse_text("А {text:announce} {greeting}"),
+            ["А ", data_tools.TextRef("announce", 3), " ", data_tools.Placeholder("greeting", 19)],
+        )
+        self.assertEqual(data_tools.text_refs("{text:a}{text:b-1}"), [
+            data_tools.TextRef("a", 1), data_tools.TextRef("b-1", 9)
+        ])
+
+    def test_doubled_braces_are_literal(self):
+        self.assertEqual(data_tools.parse_text("{{text:x}}"), ["{text:x}"])
+        self.assertEqual(self.expand("{{text:announce}}"), "{{text:announce}}")
+
+    def test_malformed_references(self):
+        for text in ("{text:}", "{text:Bad}", "{text:a--b}", "{text: a}", f"{{text:{SECRET}}}"):
+            with self.subTest(text=text):
+                with self.assertRaises(data_tools.TextError) as caught:
+                    data_tools.parse_text(text)
+                message = str(caught.exception)
+                self.assertTrue(message.startswith("has a malformed text reference at character 1"))
+                self.assertNotIn(SECRET, message)
+
+    def test_a_placeholder_named_text_is_still_malformed(self):
+        # `text` alone is an ordinary (unknown) placeholder name, `text:` is not
+        self.assertEqual(data_tools.parse_text("{text}"), [data_tools.Placeholder("text", 1)])
+
+    def test_expansion_keeps_the_source_of_the_rest(self):
+        self.assertEqual(self.expand("{text:announce}"), "Мы, {coupleNames}, женимся!")
+        self.assertEqual(self.expand("{text:sign} {{x}}"), "{{с любовью}} {{x}}")
+
+    def test_the_form_of_the_field_picks_the_variant(self):
+        self.assertEqual(self.expand("{text:invite}", "ty"), "Ждём тебя. {{с любовью}}")
+        self.assertEqual(self.expand("{text:invite}", "vy"), "Ждём вас. {{с любовью}}")
+        self.assertEqual(self.expand("{text:invite}", "all"), "Ждём вас.")
+
+    def test_nested_texts(self):
+        used = set()
+        self.assertEqual(
+            self.expand("{text:both}", "vy", used=used),
+            "Мы, {coupleNames}, женимся! Ждём вас. {{с любовью}}",
+        )
+        self.assertEqual(used, {"both", "announce", "invite", "sign"})
+
+    def test_a_string_serves_every_form(self):
+        self.assertEqual(self.expand("{text:announce}", "all"), "Мы, {coupleNames}, женимся!")
+
+    def test_a_text_without_the_common_form(self):
+        texts = {"a": {"ty": "x", "vy": "y"}, "outer": "{text:a}"}
+        self.assertExpandError(
+            "{text:outer}",
+            "uses the text 'a' (through 'outer'), which has forms of address but no common "
+            "form 'all'; add \"all\" to 'texts.a' - the variant for everybody",
+            "all",
+            texts,
+        )
+
+    def test_unknown_text(self):
+        self.assertExpandError(
+            "Привет {text:anounce}",
+            "refers to an unknown text 'anounce' at character 8 (did you mean 'announce'?); "
+            "known: announce, invite, sign, both",
+        )
+        self.assertExpandError(
+            "{text:ivan}",
+            "refers to an unknown text at character 1; known: announce, invite, sign, both",
+            show_unknown=False,
+        )
+        self.assertExpandError(
+            "{text:x}", "refers to an unknown text 'x' at character 1; there are no texts "
+            "(declare them in 'texts')", texts={},
+        )
+
+    def test_cycles(self):
+        self.assertExpandError(
+            "{text:a}", "uses texts in a cycle: 'a' -> 'a'", texts={"a": "x {text:a}"}
+        )
+        self.assertExpandError(
+            "{text:a}",
+            "uses texts in a cycle: 'a' -> 'b' -> 'a'",
+            texts={"a": "{text:b}", "b": {"ty": "{text:a}", "vy": "-"}},
+        )
+        # the other form has no cycle
+        self.assertEqual(
+            self.expand("{text:a}", "vy", {"a": "{text:b}", "b": {"ty": "{text:a}", "vy": "-"}}),
+            "-",
+        )
+
+    def test_depth(self):
+        chain = {f"t{n}": f"{{text:t{n + 1}}}" for n in range(1, 9)}
+        chain["t9"] = "конец"
+        # t1 ... t8 are 8 levels of nesting below the field
+        self.assertEqual(self.expand("{text:t2}", texts=chain), "конец")
+        with self.assertRaises(data_tools.TextError) as caught:
+            self.expand("{text:t1}", texts=chain)
+        self.assertTrue(str(caught.exception).startswith("nests texts deeper than 8 levels: 't1'"))
+
+    def test_a_text_that_grows_too_long_is_an_error_and_fast(self):
+        import time
+
+        # eight levels of ten references each: 10**8 insertions without a limit
+        texts = {f"t{n}": f"{{text:t{n + 1}}}" * 10 for n in range(1, 8)}
+        texts["t8"] = "слово "
+        started = time.monotonic()
+        with self.assertRaises(data_tools.TextError) as caught:
+            self.expand("{text:t1}", texts=texts)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertTrue(
+            str(caught.exception).startswith("is longer than 10000 characters once its texts")
+        )
+
+    def test_a_text_used_many_times_is_expanded_once(self):
+        import time
+
+        texts = {f"t{n}": f"{{text:t{n + 1}}}" * 40 for n in range(1, 8)}
+        texts["t8"] = ""
+        used = set()
+        started = time.monotonic()
+        self.assertEqual(self.expand("{text:t1}", texts=texts, used=used), "")
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(used, set(texts))
+
+    def test_a_reused_text_still_counts_its_depth(self):
+        chain = {f"t{n}": f"{{text:t{n + 1}}}" for n in range(1, 9)}
+        chain["t9"] = "конец"
+        # t2 first (8 levels, fine), then t1 reaches the cached t2 one level deeper
+        with self.assertRaises(data_tools.TextError) as caught:
+            self.expand("{text:t2} {text:t1}", texts=chain)
+        self.assertTrue(str(caught.exception).startswith("nests texts deeper than 8 levels"))
+
+    def test_values_of_placeholders_are_not_parsed_for_texts(self):
+        values = {"greeting": "{text:announce}", "coupleNames": "Алиса и Боб"}
+        self.assertEqual(
+            data_tools.resolve_text("{greeting} {text:announce}", "ty", values, KNOWN, self.texts),
+            "{text:announce} Мы, Алиса и Боб, женимся!",
+        )
+
+    def test_substitute_refuses_a_reference_that_was_not_expanded(self):
+        with self.assertRaises(data_tools.TextError):
+            data_tools.substitute("{text:announce}", {}, KNOWN)
+
+    def test_placeholder_checks_leave_references_to_the_caller(self):
+        self.assertEqual(data_tools.placeholder_problems("{text:x} {greeting}", KNOWN), [])
+
+    def test_the_common_form_is_not_a_form_of_a_field(self):
+        problems = data_tools.text_value_problems({"ty": "a", "vy": "b", "all": "c"}, ("text",))
+        self.assertEqual(
+            problems, ["unknown field 'text.all' (the common form 'all' is allowed in 'texts' only)"]
+        )
+
+
 def with_repeated_place_name(site: dict) -> str:
     """`site.json` text whose place `manor` has the key `name` twice."""
     text = json.dumps(site, ensure_ascii=False, indent=2)

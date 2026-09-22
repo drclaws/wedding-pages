@@ -399,8 +399,13 @@ def make_code_dir(
         )
     (code_dir / "template.html").write_text(template, encoding="utf-8")
     (code_dir / "stub.html").write_text(stub, encoding="utf-8")
+    shutil.copy2(ROOT / build.PREVIEW_TEMPLATE_FILE, code_dir / build.PREVIEW_TEMPLATE_FILE)
     if assets:
         write_assets(code_dir / "assets")
+        shutil.copy2(
+            ROOT / "assets" / build.PREVIEW_STYLESHEET,
+            code_dir / "assets" / build.PREVIEW_STYLESHEET,
+        )
     return code_dir
 
 
@@ -412,6 +417,8 @@ def run_cli(code_dir: Path, *args: str, cwd: Path, env: dict | None = None):
         environ.pop(name, None)
     environ["PYTHONIOENCODING"] = "utf-8"
     environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    # no browser in a subprocess: the neutral picture, unless a test asks
+    environ[build.LINK_PREVIEW_VARIABLE] = "off"
     if env:
         environ.update(env)
     return subprocess.run(
