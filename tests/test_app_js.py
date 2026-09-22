@@ -601,7 +601,7 @@ class CoverBarTest(unittest.TestCase):
         self.assertEqual(backgrounds, ["html.invitation"])
         first = {}
         for selector, body in rules:
-            first.setdefault(selector, body)  # the rules outside @media screen come first
+            first.setdefault(selector, body)  # the rules outside the touch-screen block come first
         self.assertEqual(first["html.invitation"].strip(), "background-color: var(--color-cover-veil);")
         # with a background of <html> the one of body no longer reaches the
         # canvas: body is at least as tall as the window, so a short page shows
@@ -616,12 +616,16 @@ class CoverBarTest(unittest.TestCase):
                 self.assertNotIn("invitation", re.search(r"<html[^>]*>", (ROOT / other).read_text(
                     encoding="utf-8")).group(0))
 
-    def test_on_screen_the_invitation_page_scrolls_body_within_the_window(self):
+    def test_on_a_touch_screen_the_invitation_page_scrolls_body_within_the_window(self):
         # WebKit (the in-app browser of Telegram on iOS, Safari on iOS 26)
         # paints the scrolled document above the layout viewport, under the
         # translucent top bar: body as tall as the window scrolls instead, so
-        # its content is clipped at its edge and only the canvas shows above
-        blocks = re.findall(r"@media screen\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}", self.css)
+        # its content is clipped at its edge and only the canvas shows above.
+        # Touch screens only: on the desktop the document keeps scrolling (the
+        # keyboard scrolls it right after loading)
+        media = r"@media screen and \(pointer: coarse\)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}"
+        self.assertNotRegex(self.css, r"@media screen\s*\{")
+        blocks = re.findall(media, self.css)
         self.assertEqual(len(blocks), 1)
         rules = {" ".join(selector.split()): " ".join(body.split())
                  for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", blocks[0])}
@@ -634,7 +638,7 @@ class CoverBarTest(unittest.TestCase):
             "html.invitation.is-lightbox-open body": "overflow: hidden;",
         })
         # nothing else scrolls the page on screen, print keeps the document
-        self.assertNotRegex(re.sub(r"@media screen\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}", "", self.css),
+        self.assertNotRegex(re.sub(media, "", self.css),
                             r"html\.invitation[^{}]*\{[^{}]*overflow")
         self.assertNotRegex(self.css, r"@media print\s*\{[^@]*html\.invitation")
 

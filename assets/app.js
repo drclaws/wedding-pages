@@ -187,9 +187,9 @@
 
     /* Сначала маркер: без него панель скрыта и её высоту не измерить.
        Подписка до первого расчёта: при ошибке stop() её же и снимет.
-       Прокрутку на странице приглашения ведёт body (app.css, секция 3), а
-       scroll элемента до window не всплывает — слушатель ловит его на фазе
-       перехвата, прокрутку документа тоже. */
+       На сенсорном экране страницу приглашения прокручивает body (app.css,
+       секция 3), а scroll элемента до window не всплывает — слушатель ловит
+       его на фазе перехвата, прокрутку документа (десктоп) тоже. */
     root.classList.add('cover-bar-on');
     window.addEventListener('scroll', onChange, { passive: true, capture: true });
     window.addEventListener('resize', onChange);
@@ -723,8 +723,8 @@
         observer.observe(element);
       });
       doc.addEventListener('focusin', onFocusIn);
-      /* Перехват: прокрутка body (страница приглашения) до window не
-         всплывает. */
+      /* Перехват: прокрутка body (страница приглашения на сенсорном экране)
+         до window не всплывает. */
       window.addEventListener('scroll', onViewportChange, { passive: true, capture: true });
       window.addEventListener('resize', onViewportChange);
       window.addEventListener('orientationchange', onViewportChange);
@@ -1038,7 +1038,8 @@
       if (on) {
         /* Место исчезнувшей полосы прокрутки занимает отступ: страница под
            окном не сдвигается. Полоса — у окна или у body, если прокручивает
-           он (страница приглашения, app.css секция 3); рамки у body нет. */
+           он (страница приглашения на сенсорном экране, app.css секция 3);
+           рамки у body нет. */
         var body = doc.body;
         var gap = window.innerWidth - root.clientWidth +
           (body ? body.offsetWidth - body.clientWidth : 0);
