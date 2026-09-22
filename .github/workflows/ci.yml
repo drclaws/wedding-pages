@@ -84,6 +84,16 @@ jobs:
           fi
           ffmpeg -version | sed -n 1p
 
+      - name: Ensure Chrome is available
+        run: |
+          set -euo pipefail
+          # the build renders the link preview image with the browser of the runner
+          if ! command -v google-chrome >/dev/null 2>&1; then
+            echo "Chrome is not installed on the runner" >&2
+            exit 1
+          fi
+          google-chrome --version
+
       - name: Generate example media
         run: |
           set -euo pipefail
@@ -113,15 +123,25 @@ jobs:
           pages = sorted(out.glob("i/*/index.html"))
           assert pages, "no invitation page was built"
           meta = re.compile(r'<meta (?:property|name)="([^"]+)" content="([^"]*)"')
+          images = set()
           for page in pages:
               tags = dict(meta.findall(page.read_text(encoding="utf-8")))
-              assert tags.get("og:image", "").startswith("/assets/"), "og:image is not a path from the site root"
+              assert re.fullmatch(r"/assets/[A-Za-z0-9_-]+/[0-9a-f]{16}\.jpg", tags.get("og:image", "")), "og:image is not the rendered cover in the media directory"
+              images.add(tags["og:image"])
               assert "og:url" not in tags, "og:url must not be written"
               assert tags.get("og:site_name") == "Example", "og:site_name is not the SITE_NAME of the build"
               assert tags.get("og:title", "").startswith("Приглашение · "), "og:title has no names"
               assert tags.get("og:description"), "no og:description"
               for key, value in tags.items():
                   assert "://" not in value, f"an absolute URL in <meta {key}>"
+          assert len(images) == 1, "the pages refer to different link preview images"
+          image = (out / images.pop().lstrip("/")).read_bytes()
+          assert image[:3] == b"\xff\xd8\xff", "the link preview image is not a JPEG"
+          assert len(image) <= 300 * 1024, "the link preview image is larger than 300 KB"
+          sof = image.find(b"\xff\xc0")
+          size = (int.from_bytes(image[sof + 7:sof + 9], "big"), int.from_bytes(image[sof + 5:sof + 7], "big"))
+          assert size == (1200, 630), f"the link preview image is {size[0]}x{size[1]}"
+          assert not list(out.glob("assets/og.*")), "a link preview image at /assets/og.*"
           for stub in ("index.html", "404.html"):
               assert "og:" not in (out / stub).read_text(encoding="utf-8"), f"{stub} has link preview tags"
           print(f"OK: link preview tags of {len(pages)} page(s), none in the stub")
@@ -139,7 +159,7 @@ jobs:
                 return 1
               fi
             done
-            extra="$(find "$out" \( -iname '*.json' -o -iname '*.map' -o -iname 'styleguide*' \) -print)"
+            extra="$(find "$out" \( -iname '*.json' -o -iname '*.map' -o -iname 'styleguide*' -o -iname 'preview.*' \) -print)"
             if [ -n "$extra" ]; then
               echo "Files that must not be published:" >&2
               echo "$extra" >&2

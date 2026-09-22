@@ -22,13 +22,14 @@ Standard library only.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import Any, Callable, Mapping, Sequence
 
 from tools import _dates, _maps
 from tools._data import (
     COMMON_FORM,
+    TextError,
     expand_texts,
     format_path,
     invitation_label,
@@ -594,6 +595,47 @@ def text_values(site: dict, event_id: str) -> dict[str, str]:
     if _text(site.get("rsvpDeadline")):
         values["rsvpDeadline"] = site["rsvpDeadline"]
     return values
+
+
+def site_eyebrow(site: dict, value: Any) -> str | None:
+    """The eyebrow of the cover without a guest, or None when it depends on
+    one: only a string without forms whose named texts have a common form and
+    that uses no `{greeting}`; the placeholders are those of the site with
+    the main event."""
+    if isinstance(value, dict):
+        return None  # forms of address: it belongs to a guest
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        source = expand_texts(value, COMMON_FORM, site.get("texts", {}))
+        return substitute(source, text_values(site, site["mainEvent"]), PLACEHOLDERS)
+    except TextError:
+        return None  # a form of address or the greeting: it belongs to a guest
+
+
+def site_cover(site: dict, settings: PageSettings) -> dict | None:
+    """The tree of the link preview page: the cover as the site shows it to
+    nobody in particular, or None when the site has no cover.
+
+    The date is that of the main event, the eyebrow only when it does not
+    depend on a guest (`site_eyebrow`); nothing of an invitation is in it.
+    """
+    position = next(
+        (index for index, item in enumerate(site["sections"]) if item.get("type") == "cover"),
+        None,
+    )
+    if position is None:
+        return None
+    # nobody in particular: the main event, the formal form, no greeting
+    nobody = {"greeting": "", "form": "vy"}
+    # the cover links no calendar file
+    settings = replace(settings, calendar_src=lambda _event_id: "")
+    page = _Page(site, nobody, settings, Usage(), None, "", set())
+    section = dict(site["sections"][position])
+    eyebrow = site_eyebrow(site, section.pop("eyebrow", None))
+    cover = page.section(section, position)
+    cover["eyebrow"] = eyebrow or ""
+    return {"coupleNames": site["coupleNames"], "cover": cover}
 
 
 def link_description(site: dict, used: set[str] | None = None) -> str:

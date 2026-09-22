@@ -1,7 +1,8 @@
 """Build the example data sets of the repository with one command.
 
     python3 tools/build_examples.py [--set data|data-venue-pending|all]
-                                    [--out DIR] [--port N]
+                                    [--out DIR] [--port N] [--chrome PATH]
+                                    [--no-link-preview-image]
 
 For every set it generates the placeholder media (the main set only, with
 ``tools/gen_example_media.py`` into ``examples/media/``, which git ignores),
@@ -16,7 +17,10 @@ build`` and ``build.py links``.  The main set shows videos, so it needs
 ``ffmpeg``; without it the set is not built (one line says why), the other
 set is built all the same and the exit code is 1.  The exit codes of the
 tools are passed on; 2 means a bad command line.  Nothing is written outside
-``--out`` and ``examples/media/``.
+``--out`` and ``examples/media/``.  The link preview image is rendered by
+``build.py`` with Chrome or Chromium; ``--chrome`` and
+``--no-link-preview-image`` are passed on (without a browser the build fails
+with a hint, as ``build.py build`` does).
 
 Standard library only.
 """
@@ -78,7 +82,7 @@ def pages(data: Path) -> list[tuple[str, str]]:
     return [(item["token"], " ".join(item["greeting"].split())) for item in invitations]
 
 
-def build_set(name: str, out: Path, port: int) -> int:
+def build_set(name: str, out: Path, port: int, extra: list[str] | None = None) -> int:
     data = EXAMPLES / name
     media = SETS[name]
     print(f"== {name}", flush=True)
@@ -96,6 +100,7 @@ def build_set(name: str, out: Path, port: int) -> int:
             return code
     target = out / name
     args = [str(BUILD), "build", "--data", str(data), "--media", str(media), "--out", str(target)]
+    args += extra or []
     code = run(args)
     if code != 0:
         return code
@@ -134,11 +139,24 @@ def main(argv: list[str] | None = None) -> int:
         metavar="N",
         help="port of the addresses that are printed (default: 8000)",
     )
+    parser.add_argument(
+        "--chrome",
+        metavar="PATH",
+        help="Chrome or Chromium for the link preview image, passed on to build.py",
+    )
+    parser.add_argument(
+        "--no-link-preview-image",
+        action="store_true",
+        help="build without rendering the link preview image (passed on to build.py)",
+    )
     args = parser.parse_args(argv)
+    extra = (["--chrome", args.chrome] if args.chrome else []) + (
+        ["--no-link-preview-image"] if args.no_link_preview_image else []
+    )
     names = list(SETS) if args.set == "all" else [args.set]
     failed = 0
     for name in names:
-        code = build_set(name, Path(args.out), args.port)
+        code = build_set(name, Path(args.out), args.port, extra)
         failed = failed or code
     return failed
 

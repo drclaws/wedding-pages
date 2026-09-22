@@ -2,6 +2,7 @@
 """Static builder for personal invitation pages.
 
     python build.py build    [--data DIR] [--media DIR] [--out DIR] [--site-name NAME]
+                             [--chrome PATH] [--no-link-preview-image]
     python build.py validate [--data DIR] [--media DIR]
     python build.py token    [--prefix NAME]
     python build.py links    --base URL [--data DIR]
@@ -17,8 +18,10 @@ template and its fragments.
 and `404.html`), `assets/` (including `assets/<mediaDir>/` with the media files
 that at least one page shows and one calendar file for every event that at
 least one invitation sees, all published under the hash of their contents, and
-the icon and the link preview image, which are generated from the design
-tokens of `assets/app.css` unless the media directory provides them),
+the icon, generated from the design tokens of `assets/app.css` unless the
+media directory provides it, and the link preview image: the cover of the
+pages rendered by headless Chrome and published in the media directory under
+the hash of its contents; see `link_preview`),
 `_headers` and `robots.txt`, and then checks the finished output: nothing but
 the expected files, no external resources, no inline scripts, every local link
 resolves, no file above the hosting size limit.
@@ -68,6 +71,7 @@ from tools import _data as data_tools  # noqa: E402
 from tools import _media as media_tools  # noqa: E402
 from tools import _page as page_tools  # noqa: E402
 from tools import _png as png_tools  # noqa: E402
+from tools import _preview as preview_tools  # noqa: E402
 from tools import _schema as schema  # noqa: E402
 from tools import gen_assets  # noqa: E402
 from tools._data import (  # noqa: E402
@@ -94,6 +98,10 @@ from tools._maps import _url_component, media_url  # noqa: E402
 CODE_DIR = Path(__file__).resolve().parent
 
 TEMPLATE_FILE = "template.html"
+#: The page the link preview image is rendered from, and its own style sheet
+#: in `assets/`; neither is published.
+PREVIEW_TEMPLATE_FILE = "preview.html"
+PREVIEW_STYLESHEET = "preview.css"
 STUB_FILE = "stub.html"
 ASSETS_DIRNAME = "assets"
 SITE_FILE = "site.json"
@@ -130,6 +138,11 @@ SITE_IMAGE_TYPES = {
 #: (`og:site_name`, `--site-name`); without either there is no such tag.
 SITE_NAME_VARIABLE = "SITE_NAME"
 MAX_SITE_NAME_LENGTH = 80
+#: `LINK_PREVIEW_IMAGE=off` builds without rendering the cover
+#: (`--no-link-preview-image`): the neutral picture of the tokens is used.
+LINK_PREVIEW_VARIABLE = "LINK_PREVIEW_IMAGE"
+_OFF_VALUES = frozenset({"off", "0", "false", "no"})
+_ON_VALUES = frozenset({"", "on", "1", "true", "yes"})
 
 #: Defaults relative to CODE_DIR.
 DEFAULT_DATA_DIR = Path("examples") / "data"
@@ -3028,13 +3041,20 @@ def check_reserved_asset_names(assets_dir: Path) -> None:
 
 
 def write_site_images(
-    images: SiteImages, destination: Path, palette: "gen_assets.Palette | None"
+    images: SiteImages,
+    destination: Path,
+    palette: "gen_assets.Palette | None",
+    neutral_og: bool = True,
 ) -> int:
-    """Write the icon and the link preview image into `assets/`; returns how
-    many of them came from the media directory (the rest is generated)."""
+    """Write the icon and, with `neutral_og`, the neutral link preview image
+    into `assets/`; returns how many of them came from the media directory
+    (the rest is generated).  A link preview image of one's own is published
+    in the media directory instead (`link_preview`)."""
     generators = {"favicon": gen_assets.favicon_svg, "og": gen_assets.og_png}
     copied = 0
     for role, image in images._asdict().items():
+        if role == "og" and not neutral_og:
+            continue
         target = destination / image.name
         if image.source is None:
             if palette is None:  # pragma: no cover - the caller loads it when needed
@@ -3055,6 +3075,194 @@ def write_site_images(
             ) from None
         copied += 1
     return copied
+
+
+# --------------------------------------------------------------------------
+# The link preview image
+# --------------------------------------------------------------------------
+
+
+class PreviewOptions(NamedTuple):
+    """Whether the cover is rendered as the link preview image, and by which
+    browser (`--chrome`; None: `CHROME` or the usual places)."""
+
+    enabled: bool = True
+    chrome: str | None = None
+
+
+class LinkPreview(NamedTuple):
+    """The link preview image the pages refer to."""
+
+    #: `ogImage`, `ogImageType`, `ogImageWidth`, `ogImageHeight`.
+    fields: dict
+    #: Its published name in the media directory; "" for `assets/og.png`.
+    name: str = ""
+    #: The contents written under `name`.
+    content: bytes = b""
+    #: True: the neutral picture of the tokens, `assets/og.png`.
+    neutral: bool = False
+    #: The line of the log (sizes and versions, never data).
+    log: str = ""
+
+
+def is_unpublished_asset(relative: str) -> bool:
+    """The style guide and the style sheet of the preview page stay out of
+    the output."""
+    return is_styleguide_asset(relative) or relative == PREVIEW_STYLESHEET
+
+
+def write_media_file(destination: Path, name: str, content: bytes) -> None:
+    """Write a file of the media directory that the build made itself."""
+    target = destination / name
+    if target.exists():
+        if target.read_bytes() == content:
+            return  # a media file with the same contents: one name, one file
+        raise BuildError(f"{_media_path(name)} has the name of another file of the media directory")
+    _write_file(target, content)
+
+
+def preview_page(
+    data: Data, code_dir: Path, media_dir: Path | str, settings: page_tools.PageSettings
+) -> tuple[str, dict[str, Path]] | None:
+    """The preview page (`preview.html` with the cover of the site) and its
+    files by URL path; None when the site has no cover."""
+    tree = page_tools.site_cover(data.site, settings)
+    if tree is None:
+        return None
+    fragments = load_fragments(code_dir / FRAGMENTS_DIRNAME)
+    template = parse_template(
+        _read_source(code_dir / PREVIEW_TEMPLATE_FILE, "preview page"),
+        PREVIEW_TEMPLATE_FILE,
+        fragments,
+    )
+    page = strip_html_comments(template.render(tree), PREVIEW_TEMPLATE_FILE)
+    assets = code_dir / ASSETS_DIRNAME
+    files: dict[str, Path] = {
+        f"/{ASSETS_DIRNAME}/{TOKENS_FILE}": assets / TOKENS_FILE,
+        f"/{ASSETS_DIRNAME}/{PREVIEW_STYLESHEET}": assets / PREVIEW_STYLESHEET,
+    }
+    fonts = assets / "fonts"
+    if fonts.is_dir():
+        for path in sorted(fonts.rglob("*")):
+            relative = path.relative_to(assets).as_posix()
+            if path.is_file() and not path.is_symlink() and not any(
+                part.startswith(".") for part in relative.split("/")
+            ):
+                files[f"/{ASSETS_DIRNAME}/{relative}"] = path
+    background = tree["cover"]["background"]
+    if background:
+        media_path = f"/{ASSETS_DIRNAME}/{data.site['mediaDir']}"
+        for entry in data.media.values():
+            if media_url(media_path, entry.published) == background["src"]:
+                files[background["src"]] = Path(media_dir) / entry.name
+    return page, files
+
+
+def link_preview(
+    data: Data,
+    images: SiteImages,
+    code_dir: Path,
+    media_dir: Path | str,
+    options: PreviewOptions,
+    report: Report,
+) -> LinkPreview:
+    """The link preview image of the pages, in this order:
+
+    1. a picture of one's own (`og.png` / `og.jpg` in the media directory),
+       published in the media directory under the hash of its contents;
+    2. the cover of the site rendered by headless Chrome (`tools._preview`),
+       a JPEG published the same way;
+    3. the neutral picture of the tokens, `assets/og.png`: when the site has
+       no cover or the rendering is turned off.
+
+    No browser for the second case is an error with a hint, never a quiet
+    fallback.  Nothing of a guest is on the picture: the cover tree is that
+    of the site (`tools._page.site_cover`).
+    """
+    media_path = f"/{ASSETS_DIRNAME}/{data.site['mediaDir']}"
+    own = images.og
+    if own.source is not None:
+        try:
+            content = own.source.read_bytes()
+        except OSError as exc:
+            raise BuildError(
+                f"cannot read {display_path(own.source)}: {exc.strerror or type(exc).__name__}"
+            ) from None
+        name = media_tools.hashed_name(content, own.name)
+        return LinkPreview(
+            fields={
+                "ogImage": media_url(media_path, name),
+                "ogImageType": own.mime,
+                "ogImageWidth": own.width,
+                "ogImageHeight": own.height,
+            },
+            name=name,
+            content=content,
+            log=f"link preview image: {own.name} of the media directory, published in "
+            f"{ASSETS_DIRNAME}/<mediaDir>/ under the hash of its contents",
+        )
+    neutral = DEFAULT_SITE_IMAGES.og
+    neutral_fields = {
+        "ogImage": f"/{ASSETS_DIRNAME}/{neutral.name}",
+        "ogImageType": neutral.mime,
+        "ogImageWidth": neutral.width,
+        "ogImageHeight": neutral.height,
+    }
+    settings = page_settings(data.site, None, data.media)
+    if not options.enabled:
+        return LinkPreview(
+            neutral_fields,
+            neutral=True,
+            log=f"{ASSETS_DIRNAME}/{neutral.name} generated from the design tokens (the "
+            "link preview image is turned off)",
+        )
+    prepared = preview_page(data, code_dir, media_dir, settings)
+    if prepared is None:
+        return LinkPreview(
+            neutral_fields,
+            neutral=True,
+            log=f"{ASSETS_DIRNAME}/{neutral.name} generated from the design tokens (the site "
+            "has no cover to show in link previews)",
+        )
+    page, files = prepared
+    try:
+        image = preview_tools.link_preview_image(page, files, options.chrome)
+    except preview_tools.PreviewError as exc:
+        raise BuildError(f"link preview image: {exc}") from None
+    if not image.fits:
+        report.warn(
+            f"the link preview image is {format_size(len(image.content))} even at JPEG "
+            f"quality {image.quality}, more than {format_size(preview_tools.MAX_IMAGE_BYTES)}: "
+            "some messengers may show the link without it; a calmer cover photo helps"
+        )
+    name = media_tools.hashed_name(image.content, "preview.jpg")
+    return LinkPreview(
+        fields={
+            "ogImage": media_url(media_path, name),
+            "ogImageType": SITE_IMAGE_TYPES[".jpg"],
+            "ogImageWidth": image.width,
+            "ogImageHeight": image.height,
+        },
+        name=name,
+        content=image.content,
+        log=f"link preview image: the cover, {image.width}x{image.height} JPEG, "
+        f"{format_size(len(image.content))}, quality {image.quality}, CSS window "
+        f"{image.viewport[0]}x{image.viewport[1]}, rendered by {image.browser}; published in "
+        f"{ASSETS_DIRNAME}/<mediaDir>/ under the hash of its contents",
+    )
+
+
+def cover_eyebrow_note(site: dict) -> str | None:
+    """A line for `validate` when the eyebrow of the cover depends on a guest
+    and is therefore left out of the link preview image."""
+    for section in site.get("sections", []):
+        if section.get("type") == "cover" and section.get("eyebrow") is not None:
+            if page_tools.site_eyebrow(site, section["eyebrow"]) is None:
+                return (
+                    "the eyebrow of the cover depends on the guest (forms of address or "
+                    "{greeting}), so the link preview image shows the cover without it"
+                )
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -3269,6 +3477,7 @@ def build_site(
     report: Report | None = None,
     log: Callable[[str], None] = print,
     site_name: str = "",
+    preview: "PreviewOptions | None" = None,
 ) -> OutputStats:
     """Validate the data, write the output directory and check the result.
 
@@ -3277,7 +3486,9 @@ def build_site(
     never data.
 
     `site_name` is the name of the site in link previews (`og:site_name`,
-    see `check_site_name`); "" writes no such tag.
+    see `check_site_name`); "" writes no such tag.  `preview` says whether
+    the link preview image is rendered and with which browser
+    (`link_preview`).
     """
     report = report if report is not None else Report()
     assets_dir = code_dir / ASSETS_DIRNAME
@@ -3297,8 +3508,10 @@ def build_site(
     # the pages always need the palette (their theme colour), the images only
     # when they are generated
     palette = load_palette(assets_dir)
+    og = link_preview(data, images, code_dir, media_dir, preview or PreviewOptions(), report)
     site_fields = {
         **site_images_context(images),
+        **og.fields,
         **site_colors_context(palette),
         "siteName": site_name,
     }
@@ -3311,22 +3524,25 @@ def build_site(
     pages = render_pages(template, data.invitations, trees)
     media_name = data.site["mediaDir"]
     published = {entry.published for entry in data.media.values()}
+    in_media = {og.name} if og.name else set()
 
     with _StagedOutput(out_dir, warn=report.warn) as stage:
         written = write_pages(stage, pages)
         for name in STUB_OUTPUTS:
             _write_file(stage / name, stub)
-        assets = copy_assets(assets_dir, stage / ASSETS_DIRNAME, ignore=is_styleguide_asset)
-        write_site_images(images, stage / ASSETS_DIRNAME, palette)
+        assets = copy_assets(assets_dir, stage / ASSETS_DIRNAME, ignore=is_unpublished_asset)
+        write_site_images(images, stage / ASSETS_DIRNAME, palette, neutral_og=og.neutral)
         media = copy_media(data.media, media_dir, stage / ASSETS_DIRNAME / media_name)
         events = write_calendars(stage / ASSETS_DIRNAME / media_name, calendars, published)
+        if og.name:
+            write_media_file(stage / ASSETS_DIRNAME / media_name, og.name, og.content)
         _write_file(stage / HEADERS_FILE, HEADERS_TEXT.encode("utf-8"))
         _write_file(stage / ROBOTS_FILE, ROBOTS_TEXT.encode("utf-8"))
         stats = check_output(
             stage,
             [invitation["token"] for invitation in data.invitations],
             media_dir=media_name,
-            media=published,
+            media=published | in_media,
             calendars=[entry.name for entry in calendars.values()],
         )
 
@@ -3344,11 +3560,16 @@ def build_site(
         f"under the hash of their contents to {out_shown}/{ASSETS_DIRNAME}/<mediaDir>/"
     )
     log(f"build: link preview site name: {'set' if site_name else 'not set'}")
-    for image in images:
-        origin = "generated from the design tokens" if image.source is None else (
-            f"copied from {display_path(media_dir)}"
+    favicon = images.favicon
+    log(
+        f"build: {ASSETS_DIRNAME}/{favicon.name} "
+        + (
+            "generated from the design tokens"
+            if favicon.source is None
+            else f"copied from {display_path(media_dir)}"
         )
-        log(f"build: {ASSETS_DIRNAME}/{image.name} {origin}")
+    )
+    log(f"build: {og.log}")
     log(
         f"build: OK -> {out_shown} ({written} page(s), {media} media file(s), "
         f"{stats.files} file(s) in total, {format_size(stats.size)})"
@@ -3415,9 +3636,20 @@ def site_name_setting(args: argparse.Namespace, environ: Any = None) -> str:
         raise BuildError(f"{SITE_NAME_VARIABLE}: {exc}") from None
 
 
+def link_preview_setting(args: argparse.Namespace, environ: Any = None) -> "PreviewOptions":
+    """`--no-link-preview-image` or `LINK_PREVIEW_IMAGE=off`; `--chrome`."""
+    environ = os.environ if environ is None else environ
+    value = environ.get(LINK_PREVIEW_VARIABLE, "").strip().lower()
+    if value not in _OFF_VALUES | _ON_VALUES:
+        raise BuildError(f"{LINK_PREVIEW_VARIABLE}: must be 'on' or 'off'")
+    enabled = not getattr(args, "no_link_preview_image", False) and value not in _OFF_VALUES
+    return PreviewOptions(enabled=enabled, chrome=getattr(args, "chrome", None))
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     code_dir = CODE_DIR
     site_name = site_name_setting(args)
+    preview = link_preview_setting(args)
     build_site(
         _data_dir(args, code_dir),
         _media_dir(args, code_dir),
@@ -3428,6 +3660,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         # point at a directory named like a token (`dist/i/<token>`)
         log=lambda message: _stdout(_redact_paths(message)),
         site_name=site_name,
+        preview=preview,
     )
     return EXIT_OK
 
@@ -3449,6 +3682,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
     summary = short_token_summary(data.invitations)
     if summary:
         _stdout(f"validate: {summary}")
+    note = cover_eyebrow_note(data.site)
+    if note:
+        _stdout(f"validate: {note}")
     return EXIT_OK
 
 
@@ -3576,6 +3812,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="name of the site in link previews (og:site_name), one line of at most "
         f"{MAX_SITE_NAME_LENGTH} characters (default: the {SITE_NAME_VARIABLE} environment "
         "variable; without either there is no such tag)",
+    )
+    build_cmd.add_argument(
+        "--chrome",
+        metavar="PATH",
+        help="Chrome or Chromium that renders the link preview image (default: the "
+        f"{preview_tools.CHROME_VARIABLE} environment variable, else the usual places)",
+    )
+    build_cmd.add_argument(
+        "--no-link-preview-image",
+        action="store_true",
+        help="do not render the cover as the link preview image, use the neutral picture "
+        f"of the design tokens ({LINK_PREVIEW_VARIABLE}=off does the same)",
     )
     build_cmd.set_defaults(func=cmd_build)
 

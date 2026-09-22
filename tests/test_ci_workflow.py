@@ -142,9 +142,17 @@ class CiWorkflowTest(unittest.TestCase):
         self.assertEqual(len(blocks), 1)
         block = blocks[0]
         self.assertIn('"$RUNNER_TEMP/dist"', block)
-        for text in ('startswith("/assets/")', '"og:url" not in tags', '"://" not in value',
-                     '("index.html", "404.html")'):  # fmt: skip
+        for text in (r'"/assets/[A-Za-z0-9_-]+/[0-9a-f]{16}\.jpg"', '"og:url" not in tags',
+                     '"://" not in value', '("index.html", "404.html")', "300 * 1024",
+                     "(1200, 630)", '"assets/og.*"', '"Example"'):  # fmt: skip
             self.assertIn(text, block)
+
+    def test_chrome_is_checked_and_the_site_name_is_set(self):
+        blocks = [block for block in self.runs if "google-chrome --version" in block]
+        self.assertEqual(len(blocks), 1)
+        self.assertIn("exit 1", blocks[0])
+        self.assertEqual(self.raw.count("SITE_NAME: Example"), 2)
+        self.assertNotIn("LINK_PREVIEW_IMAGE", self.raw)
 
     def test_build_output_goes_to_runner_temp(self):
         outs = re.findall(r"--out\s+(\S+)", "\n".join(self.runs))
