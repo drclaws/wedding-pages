@@ -176,10 +176,16 @@ STYLEGUIDE_PREFIX = "styleguide."
 #: `_headers` (Cloudflare Pages syntax) and `robots.txt`, written verbatim.
 #:
 #: A request that matches several patterns inherits the headers of all of them,
-#: and a header of a wider rule is taken away by repeating its name after `! `.
-#: That is why `X-Robots-Tag` stays on `/*` (the stub of the root and of every
-#: wrong path keeps it) and is detached on `/i/*`: the pages of the invitations
-#: are the ones whose link previews the messengers have to be able to build.
+#: and a header is taken away by repeating its name after `! `. That is why
+#: `X-Robots-Tag` stays on `/*` (the root and a wrong path outside `/i/` keep
+#: it) and is detached on `/i/*`: the pages of the invitations are the ones
+#: whose link previews the messengers have to be able to build.
+#:
+#: **The order of the blocks matters.** The rules are applied as they follow in
+#: the file, so `! ` takes away only what a rule ABOVE it has already added: the
+#: block of `/*` has to stay above the block of `/i/*`. Swapped, the detach runs
+#: before the header it names is set, and every page silently gets `noindex`
+#: back. A test pins the order.
 HEADERS_TEXT = """\
 /*
   X-Robots-Tag: noindex, nofollow
