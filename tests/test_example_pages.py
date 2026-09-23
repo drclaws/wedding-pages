@@ -423,5 +423,42 @@ class MarkupTests(ExamplePagesTestCase):
         self.assertEqual(fragments.names("media"), sorted(build.schema.MEDIA_TYPES))
 
 
+class IndexingTests(ExamplePagesTestCase):
+    """Who is kept out of the search engines — in the sources and in the pages.
+
+    A page of an invitation carries no `robots` meta tag on purpose: a bot that
+    is given `noindex` builds no link preview of it.  The stub, which the root
+    and every wrong path get, keeps the tag, and so does the style guide, which
+    is not published at all.  The checks read the files of the repository, so
+    that putting the tag back into `template.html` breaks a test.
+    """
+
+    #: The start of the tag, whatever its content.
+    META = '<meta name="robots"'
+    #: The tag as the files that keep it spell it.
+    META_FULL = '<meta name="robots" content="noindex, nofollow">'
+
+    def source(self, name: str) -> str:
+        return (ROOT / name).read_text(encoding="utf-8")
+
+    def test_the_template_of_a_page_carries_no_robots_meta_tag(self):
+        self.assertNotIn(self.META, self.source("template.html"))
+
+    def test_the_stub_and_the_style_guide_keep_the_robots_meta_tag(self):
+        for name in ("stub.html", "styleguide.html"):
+            with self.subTest(file=name):
+                self.assertIn(self.META_FULL, self.source(name))
+
+    def test_the_built_pages_follow_their_sources(self):
+        for name, _site, invitations, files in self.sets():
+            for invitation in invitations:
+                page = files[f"i/{invitation['token']}/index.html"]
+                with self.subTest(data=name, token=invitation["token"][:4]):
+                    self.assertNotIn(self.META, page)
+            for stub in ("index.html", "404.html"):
+                with self.subTest(data=name, file=stub):
+                    self.assertIn(self.META_FULL, files[stub])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
