@@ -174,6 +174,12 @@ FORBIDDEN_OUTPUT_EXTENSIONS = frozenset({".json", ".map", ".py", ".md"})
 STYLEGUIDE_PREFIX = "styleguide."
 
 #: `_headers` (Cloudflare Pages syntax) and `robots.txt`, written verbatim.
+#:
+#: A request that matches several patterns inherits the headers of all of them,
+#: and a header of a wider rule is taken away by repeating its name after `! `.
+#: That is why `X-Robots-Tag` stays on `/*` (the stub of the root and of every
+#: wrong path keeps it) and is detached on `/i/*`: the pages of the invitations
+#: are the ones whose link previews the messengers have to be able to build.
 HEADERS_TEXT = """\
 /*
   X-Robots-Tag: noindex, nofollow
@@ -182,9 +188,30 @@ HEADERS_TEXT = """\
   X-Frame-Options: DENY
   Content-Security-Policy: default-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
 /i/*
+  ! X-Robots-Tag
   Cache-Control: private, no-cache
 """
-ROBOTS_TEXT = "User-agent: *\nDisallow: /\n"
+#: A crawler obeys exactly one group of `robots.txt` — the one whose user agent
+#: name matches it most closely — and a named group is never combined with the
+#: group of `*`, so the bots listed below do not inherit the `Disallow: /` that
+#: keeps the search engines out. Several `User-agent` lines in a row make one
+#: group; the names are matched without regard to case. No address is disclosed:
+#: `Allow: /` names no path of an invitation.
+ROBOTS_TEXT = """\
+User-agent: TelegramBot
+User-agent: TwitterBot
+User-agent: facebookexternalhit
+User-agent: WhatsApp
+User-agent: Discordbot
+User-agent: Slackbot
+User-agent: Slackbot-LinkExpanding
+User-agent: ViberBot
+User-agent: SkypeUriPreview
+Allow: /
+
+User-agent: *
+Disallow: /
+"""
 
 #: How long an event without an end lasts (in its calendar file and for the
 #: past/now marks of the page); `site.json` gets a warning for such an event.

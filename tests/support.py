@@ -210,7 +210,6 @@ TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="theme-color" content="{{themeColor}}">
-<meta name="robots" content="noindex, nofollow">
 <title>Приглашение</title>
 <meta property="og:image" content="{{ogImage}}">
 <meta property="og:image:type" content="{{ogImageType}}">

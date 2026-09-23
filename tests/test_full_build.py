@@ -31,8 +31,61 @@ EXPECTED_HEADERS = """/*
   X-Frame-Options: DENY
   Content-Security-Policy: default-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
 /i/*
+  ! X-Robots-Tag
   Cache-Control: private, no-cache
 """
+
+EXPECTED_ROBOTS = """User-agent: TelegramBot
+User-agent: TwitterBot
+User-agent: facebookexternalhit
+User-agent: WhatsApp
+User-agent: Discordbot
+User-agent: Slackbot
+User-agent: Slackbot-LinkExpanding
+User-agent: ViberBot
+User-agent: SkypeUriPreview
+Allow: /
+
+User-agent: *
+Disallow: /
+"""
+
+#: The tag that keeps a page out of the search engines.
+ROBOTS_META = '<meta name="robots"'
+
+
+def header_rules(text: str) -> dict[str, list[str]]:
+    """`_headers` as `{url pattern: [line of the rule, …]}`."""
+    rules: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        if line.startswith(" "):
+            rules[pattern].append(line.strip())
+        else:
+            pattern = line
+            rules[pattern] = []
+    return rules
+
+
+def robots_groups(text: str) -> dict[tuple[str, ...], list[str]]:
+    """`robots.txt` as `{(user agent, …): [rule, …]}`; one entry per group."""
+    groups: dict[tuple[str, ...], list[str]] = {}
+    agents: list[str] = []
+    rules: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        name, _, value = line.partition(":")
+        if name.strip().lower() == "user-agent":
+            if rules:  # a name after a rule starts a group of its own
+                groups[tuple(agents)] = rules
+                agents, rules = [], []
+            agents.append(value.strip())
+        else:
+            rules.append(line.strip())
+    if agents:
+        groups[tuple(agents)] = rules
+    return groups
+
 
 #: Every file of the fixture build.
 FILES_IN_TOTAL = 18
@@ -140,10 +193,47 @@ class OutputContentsTests(FullBuildTestCase):
     def test_headers_and_robots(self):
         self.build()
         self.assertEqual((self.out / "_headers").read_bytes(), EXPECTED_HEADERS.encode())
-        self.assertEqual(
-            (self.out / "robots.txt").read_bytes(), b"User-agent: *\nDisallow: /\n"
-        )
+        self.assertEqual((self.out / "robots.txt").read_bytes(), EXPECTED_ROBOTS.encode())
         self.assertEqual(list(self.out.rglob("sitemap*")), [])
+
+    def test_the_headers_take_noindex_off_the_pages_and_leave_the_rest(self):
+        self.build()
+        rules = header_rules((self.out / "_headers").read_text(encoding="utf-8"))
+        self.assertEqual(list(rules), ["/*", "/i/*"])
+        # everything a wrong path and the root still get
+        self.assertIn("X-Robots-Tag: noindex, nofollow", rules["/*"])
+        self.assertIn("Referrer-Policy: no-referrer", rules["/*"])
+        self.assertIn("X-Content-Type-Options: nosniff", rules["/*"])
+        self.assertIn("X-Frame-Options: DENY", rules["/*"])
+        policy = [line for line in rules["/*"] if line.startswith("Content-Security-Policy:")]
+        self.assertEqual(len(policy), 1)
+        self.assertIn("default-src 'self'", policy[0])
+        # the pages of the invitations: the ban is detached, the rest is untouched
+        self.assertIn("! X-Robots-Tag", rules["/i/*"])
+        self.assertIn("Cache-Control: private, no-cache", rules["/i/*"])
+        self.assertEqual([line for line in rules["/i/*"] if line.startswith("X-Robots-Tag")], [])
+
+    def test_robots_lets_the_preview_bots_in_and_nobody_else(self):
+        self.build()
+        text = (self.out / "robots.txt").read_text(encoding="utf-8")
+        groups = robots_groups(text)
+        self.assertEqual(len(groups), 2)
+        [allowed] = [names for names in groups if "*" not in names]
+        self.assertIn("TelegramBot", allowed)
+        self.assertEqual(groups[allowed], ["Allow: /"])
+        # the group of the named bots is not the group of everybody else
+        self.assertEqual(groups[("*",)], ["Disallow: /"])
+        # and no address of an invitation is disclosed by the file
+        for token in TOKENS:
+            self.assertNotIn(token, text)
+        self.assertNotIn("/i/", text)
+
+    def test_the_pages_carry_no_robots_meta_tag_and_the_stub_does(self):
+        self.build()
+        for token in TOKENS:
+            self.assertNotIn(ROBOTS_META, self.page(token))
+        for name in ("index.html", "404.html"):
+            self.assertIn(ROBOTS_META, (self.out / name).read_text(encoding="utf-8"))
 
     def test_one_calendar_file_per_event_in_the_media_directory(self):
         self.build()
