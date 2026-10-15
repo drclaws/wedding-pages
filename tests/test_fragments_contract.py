@@ -163,7 +163,7 @@ LOCATIONS = {
               "geo": {"lat": 12.345678, "lng": 23.456789},
               "maps": {"googlePlaceId": "EXAMPLE-not-a-real-place-id"},
               "photos": ["venue-1", "venue-2", "walk", "venue-3"],
-              "directions": "directions", "directionsCredit": "© Картографическая служба Энска"},
+              "directions": "directions", "directionsCredit": "© Картографическая служба Энска"},
     "terrace": {"ready": False},
     "hotel": {"name": "Гостиница «Пример»", "address": "г. Энск, Вокзальная ул., д. 5",
               "geo": {"lat": 12.35, "lng": 23.46}},

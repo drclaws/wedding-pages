@@ -789,8 +789,10 @@ class LocationTests(SchemaTestCase):
         return run(lambda s, i: s["locations"]["manor"].update(directionsCredit=value))
 
     def test_credit_of_the_directions(self):
-        # any line, written as it is: braces are text, not a placeholder
-        for value in ("© Картографическая служба Энска", "Схема: {coupleNames} & <Ко>"):
+        # any line, written as it is: braces are text, not a placeholder, and a
+        # no-break space is not a control character
+        for value in ("© Картографическая служба Энска", "© Картографическая служба Энска",
+                      "Схема: {coupleNames} & <Ко>"):
             with self.subTest(value=value):
                 self.assertMessages(self.credit_report(value))
 

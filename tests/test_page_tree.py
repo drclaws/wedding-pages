@@ -628,7 +628,7 @@ class PlaceTests(unittest.TestCase):
             return build(mutate)[0]["primaryEvent"]["location"]
 
         # written as it is: the build adds nothing to it
-        self.assertEqual(place()["directionsCredit"], "© Картографическая служба Энска")
+        self.assertEqual(place()["directionsCredit"], "© Картографическая служба Энска")
         self.assertEqual(place(lambda s, i: s["locations"]["manor"].pop("directionsCredit"))
                          ["directionsCredit"], "")
         # the credit goes with the scheme: without one there is nothing to sign

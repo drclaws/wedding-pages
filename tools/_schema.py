@@ -777,7 +777,7 @@ def _check_locations(check: _Checker, site: dict, index: SiteIndex) -> dict | No
 
 
 def _plain_line(check: _Checker, obj: dict, key: str, parts: Sequence[PathPart]) -> Any:
-    """An optional line shown as it is: not empty, one line, no control characters."""
+    """An optional plain line: not empty, one line, no control characters."""
     where = (*parts, key)
     if key in obj and isinstance(obj[key], str) and not obj[key].strip():
         check.error(where, "must not be empty (remove the field instead)")
