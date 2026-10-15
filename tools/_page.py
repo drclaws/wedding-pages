@@ -312,6 +312,7 @@ class _Page:
             "hasMapLinks": False,
             "photos": [],
             "directions": None,
+            "directionsCredit": "",
             "compact": compact,
             "nested": nested,
         }
@@ -319,6 +320,7 @@ class _Page:
             return tree
         name, address = _text(place.get("name")), _text(place.get("address"))
         links = _maps.map_links(name, address, place.get("geo"), place.get("maps"))
+        directions = _text(place.get("directions"))
         tree.update(
             name=name,
             address=address,
@@ -328,7 +330,9 @@ class _Page:
             mapLinks=links,
             hasMapLinks=_maps.has_map_links(links),
             photos=[self.media(media_id) for media_id in place.get("photos", [])],
-            directions=self.media(place["directions"]) if _text(place.get("directions")) else None,
+            directions=self.media(directions) if directions else None,
+            # the credit goes with the scheme: without one it is not shown
+            directionsCredit=_text(place.get("directionsCredit")) if directions else "",
         )
         return tree
 

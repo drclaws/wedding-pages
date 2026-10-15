@@ -581,7 +581,9 @@
         <p class="sg-note">
           Полная карточка на десктопе стоит в две колонки (<code>.grid</code>,
           <code>.venue__*</code>): название, адрес, описание, кнопки карт и
-          схема проезда слева, лента фото и видео справа. Компактная —
+          схема проезда слева, лента фото и видео справа. Под схемой —
+          подпись «Схема проезда» и, если оно задано, авторство схемы
+          (<code>.venue__scheme-credit</code>) через «·». Компактная —
           только название, адрес и кнопки карт. Пока место не объявлено —
           «Подробности появятся на этой странице позже.». В отдельном
           виджете название — h3, внутри карточки события — h4. Кнопки карт
@@ -603,7 +605,7 @@
               </ul>
               <figure class="venue__scheme">
                 <div class="media media--scheme sg-plate"></div>
-                <figcaption class="gallery__caption">Схема проезда</figcaption>
+                <figcaption class="gallery__caption">Схема проезда <span class="venue__scheme-credit">·&nbsp;© Картографическая служба Энска</span></figcaption>
               </figure>
             </div>
             <ul class="gallery gallery--ribbon venue__gallery" role="list">

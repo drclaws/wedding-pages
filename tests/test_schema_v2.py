@@ -785,6 +785,78 @@ class LocationTests(SchemaTestCase):
             "'directions' with the id of a media item",
         )
 
+    def credit_report(self, value):
+        return run(lambda s, i: s["locations"]["manor"].update(directionsCredit=value))
+
+    def test_credit_of_the_directions(self):
+        # any line, written as it is: braces are text, not a placeholder
+        for value in ("© Картографическая служба Энска", "Схема: {coupleNames} & <Ко>"):
+            with self.subTest(value=value):
+                self.assertMessages(self.credit_report(value))
+
+    def test_bad_credits_of_the_directions(self):
+        where = "site.json: field 'locations.manor.directionsCredit'"
+        cases = {
+            "": "must not be empty (remove the field instead)",
+            "   ": "must not be empty (remove the field instead)",
+            "© Энск\nКарты": "must be a single line (no line breaks)",
+            "© Энск\rКарты": "must be a single line (no line breaks)",
+            "© Энск\tКарты": "must not contain control characters",
+            "© Энск\x00": "must not contain control characters",
+            "© Энск\x7f": "must not contain control characters",
+            5: "must be a string, got a number",
+            None: "must be a string, got null",
+            True: "must be a string, got a boolean",
+        }
+        for value, problem in cases.items():
+            with self.subTest(value=value):
+                self.assertOneError(self.credit_report(value), f"{where} {problem}")
+        # a plain line: no forms of address
+        with self.subTest(value="forms"):
+            self.assertOneError(
+                self.credit_report({"ty": "© Энск", "vy": "© Энск"}),
+                f"{where} must be a string, got an object",
+            )
+
+    def test_credits_are_not_quoted_in_messages(self):
+        report = self.credit_report(f"{SECRET}\n© Энск")
+        self.assertTrue(report.errors)
+        self.assertNoPrivateData(report, SECRET)
+
+    def test_a_credit_without_directions_is_a_warning(self):
+        def change(site, invitations):
+            site["locations"]["hotel"]["directionsCredit"] = "© Картографическая служба Энска"
+
+        self.assertMessages(
+            run(change),
+            warnings=[
+                "site.json: field 'locations.hotel.directionsCredit' has no effect without "
+                "'directions'"
+            ],
+        )
+
+        # a broken credit is one error, not a warning on top of it
+        def broken(site, invitations):
+            site["locations"]["hotel"]["directionsCredit"] = ""
+
+        self.assertMessages(
+            run(broken),
+            errors=[
+                "site.json: field 'locations.hotel.directionsCredit' must not be empty "
+                "(remove the field instead)"
+            ],
+        )
+
+    def test_credit_is_spelt_out(self):
+        for typo in ("directionCredit", "directionsCredits", "directionscredit"):
+            with self.subTest(typo=typo):
+                report = run(lambda s, i: s["locations"]["manor"].update({typo: "© Энск"}))
+                self.assertOneError(
+                    report,
+                    f"site.json: unknown field 'locations.manor.{typo}' "
+                    "(did you mean 'directionsCredit'?)",
+                )
+
 
 class ScheduleTests(SchemaTestCase):
     def test_empty_programme_is_a_warning(self):

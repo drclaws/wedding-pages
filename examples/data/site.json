@@ -193,7 +193,8 @@
         "venue-3",
         "venue-4"
       ],
-      "directions": "directions"
+      "directions": "directions",
+      "directionsCredit": "© Картографическая служба Энска"
     },
     "terrace": {
       "ready": false

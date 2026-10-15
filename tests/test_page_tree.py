@@ -41,7 +41,7 @@ EVENT_FIELDS = {
 PROGRAM_FIELDS = {"domId", "items", "nested"}
 LOCATION_FIELDS = {
     "id", "domId", "ready", "name", "address", "description", "mapLinks",
-    "hasMapLinks", "photos", "directions", "compact", "nested",
+    "hasMapLinks", "photos", "directions", "directionsCredit", "compact", "nested",
 }  # fmt: skip
 MEDIA_FIELDS = {
     "id", "type", "isVideo", "src", "posterSrc", "thumbSrc", "width", "height",
@@ -622,6 +622,21 @@ class PlaceTests(unittest.TestCase):
         self.assertEqual(dinner["program"]["items"][2], {"time": "17:00", "title": "Фотосессия", "text": ""})
         ceremony = events_widget(build()[0])["items"][0]
         self.assertIsNone(ceremony["program"])
+
+    def test_credit_of_the_directions(self):
+        def place(mutate=None):
+            return build(mutate)[0]["primaryEvent"]["location"]
+
+        # written as it is: the build adds nothing to it
+        self.assertEqual(place()["directionsCredit"], "© Картографическая служба Энска")
+        self.assertEqual(place(lambda s, i: s["locations"]["manor"].pop("directionsCredit"))
+                         ["directionsCredit"], "")
+        # the credit goes with the scheme: without one there is nothing to sign
+        bare = place(lambda s, i: s["locations"]["manor"].pop("directions"))
+        self.assertEqual((bare["directions"], bare["directionsCredit"]), (None, ""))
+        # a place that is not announced yet shows none of its fields
+        pending = place(lambda s, i: s["locations"]["manor"].update(ready=False))
+        self.assertEqual((pending["directions"], pending["directionsCredit"]), (None, ""))
 
     def test_set_without_places(self):
         page = build(site=F.pending_site(), invitations=F.pending_invitations())[0]

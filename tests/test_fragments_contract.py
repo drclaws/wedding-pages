@@ -68,7 +68,7 @@ EVENT_FIELDS = (
 PRIMARY_EVENT_FIELDS = EVENT_FIELDS
 LOCATION_FIELDS = (
     "id", "domId", "ready", "name", "address", "description", "mapLinks", "hasMapLinks",
-    "photos", "directions", "compact", "nested",
+    "photos", "directions", "directionsCredit", "compact", "nested",
 )
 MAP_LINK_FIELDS = ("google", "yandex", "apple")
 MEDIA_FIELDS = (
@@ -163,7 +163,7 @@ LOCATIONS = {
               "geo": {"lat": 12.345678, "lng": 23.456789},
               "maps": {"googlePlaceId": "EXAMPLE-not-a-real-place-id"},
               "photos": ["venue-1", "venue-2", "walk", "venue-3"],
-              "directions": "directions"},
+              "directions": "directions", "directionsCredit": "© Картографическая служба Энска"},
     "terrace": {"ready": False},
     "hotel": {"name": "Гостиница «Пример»", "address": "г. Энск, Вокзальная ул., д. 5",
               "geo": {"lat": 12.35, "lng": 23.46}},
@@ -314,6 +314,7 @@ def location_node(location_id: str, dom_id: str, compact: bool, nested: bool,
         mapLinks=node(MAP_LINK_FIELDS, **links), hasMapLinks=any(links.values()),
         photos=[media_node(media_id, url) for media_id in item.get("photos", [])],
         directions=media_node(directions, url) if directions else None,
+        directionsCredit=item.get("directionsCredit", "") if directions else "",
         compact=compact, nested=nested,
     )
 
@@ -575,7 +576,7 @@ def bare_media(kind: str = "image", sized: bool = True, duration: str = "0:20") 
 
 
 def bare_location(full: bool, ready: bool = True, compact: bool = False,
-                  nested: bool = False) -> Strict:
+                  nested: bool = False, credit: str = "© Картограф") -> Strict:
     links = {"google": "https://www.google.com/maps/search/?api=1&query=1,2",
              "yandex": "https://yandex.ru/maps/?pt=2,1&z=16",
              "apple": "https://maps.apple.com/?ll=1,2"} if full else dict.fromkeys(MAP_LINK_FIELDS, "")
@@ -584,7 +585,8 @@ def bare_location(full: bool, ready: bool = True, compact: bool = False,
         address="Энск" if full else "", description="Описание" if full else "",
         mapLinks=node(MAP_LINK_FIELDS, **links), hasMapLinks=full,
         photos=[bare_media("image"), bare_media("video", sized=False, duration="")] if full else [],
-        directions=bare_media("image") if full else None, compact=compact, nested=nested,
+        directions=bare_media("image") if full else None,
+        directionsCredit=credit if full else "", compact=compact, nested=nested,
     )
 
 
@@ -878,6 +880,40 @@ class FragmentContractTests(unittest.TestCase):
         self.assertIn("Подробности появятся на этой странице позже.", pending)
         self.assertNotIn("venue__name", pending)
         self.assertNotIn("venue__maps", pending)
+
+    def test_the_caption_of_the_directions(self):
+        def scheme(credit: str) -> str:
+            document = self.render("widgets", [bare_widget("location", location=bare_location(
+                True, credit=credit))])
+            found = re.findall(r'<figure class="venue__scheme">.*?</figure>', document, re.DOTALL)
+            self.assertEqual(len(found), 1)
+            return found[0]
+
+        def caption(credit: str) -> str:
+            return re.search(r"<figcaption[^>]*>.*?</figcaption>", scheme(credit), re.DOTALL).group(0)
+
+        # without a credit: the caption as it always was
+        self.assertEqual(caption(""), '<figcaption class="gallery__caption">Схема проезда</figcaption>')
+        # with one: right after "Схема проезда", in an element of its own; the
+        # separator is inside it, bound by a no-break space, so it never ends a line
+        self.assertEqual(
+            caption("© Картограф"),
+            '<figcaption class="gallery__caption">Схема проезда '
+            '<span class="venue__scheme-credit">·&nbsp;© Картограф</span></figcaption>',
+        )
+        # the credit is text: markup in it is escaped
+        self.assertEqual(
+            caption('<b>"Карты" & Ко</b>'),
+            '<figcaption class="gallery__caption">Схема проезда '
+            '<span class="venue__scheme-credit">·&nbsp;&lt;b&gt;&quot;Карты&quot; &amp; '
+            "Ко&lt;/b&gt;</span></figcaption>",
+        )
+        # the picture keeps its link for the lightbox, the caption follows it
+        for credit in ("", "© Картограф"):
+            with self.subTest(credit=credit):
+                self.assertRegex(scheme(credit), r'^<figure class="venue__scheme">\s*'
+                                                 r'<a class="media media--scheme" href="/assets/m/a\.png" '
+                                                 r"data-lightbox>\s*<img [^>]*>\s*</a>\s*<figcaption ")
 
     def test_the_date_widget(self):
         on = self.render("widgets", [bare_widget(
