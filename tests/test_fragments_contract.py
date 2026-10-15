@@ -894,18 +894,18 @@ class FragmentContractTests(unittest.TestCase):
 
         # without a credit: the caption as it always was
         self.assertEqual(caption(""), '<figcaption class="gallery__caption">Схема проезда</figcaption>')
-        # with one: right after "Схема проезда", in an element of its own; the
-        # separator is inside it, bound by a no-break space, so it never ends a line
+        # with one: right after "Схема проезда" and a plain space, in an element
+        # of its own, with no separator between them
         self.assertEqual(
             caption("© Картограф"),
             '<figcaption class="gallery__caption">Схема проезда '
-            '<span class="venue__scheme-credit">·&nbsp;© Картограф</span></figcaption>',
+            '<span class="venue__scheme-credit">© Картограф</span></figcaption>',
         )
         # the credit is text: markup in it is escaped
         self.assertEqual(
             caption('<b>"Карты" & Ко</b>'),
             '<figcaption class="gallery__caption">Схема проезда '
-            '<span class="venue__scheme-credit">·&nbsp;&lt;b&gt;&quot;Карты&quot; &amp; '
+            '<span class="venue__scheme-credit">&lt;b&gt;&quot;Карты&quot; &amp; '
             "Ко&lt;/b&gt;</span></figcaption>",
         )
         # the picture keeps its link for the lightbox, the caption follows it

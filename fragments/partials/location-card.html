@@ -1,6 +1,6 @@
 <!-- Карточка места; ожидает в `.` место: ready, name, address, description, mapLinks, hasMapLinks, photos[], directions (медиа или null), directionsCredit, compact, nested.
      compact — только название, адрес и кнопки карт; nested — место внутри карточки события: название h4 вместо h3, без собственной рамки.
-     Подпись схемы: «Схема проезда», за ней авторство (directionsCredit) — разделитель внутри элемента авторства и привязан к нему неразрывным пробелом, поэтому при переносе он не остаётся в конце строки. -->
+     Подпись схемы: «Схема проезда», за ней через пробел, без разделителя, авторство (directionsCredit) в своём элементе. -->
 <!-- if:.ready -->
 <!-- if:.compact -->
 <div class="card stack location-card location-card--compact">
@@ -39,7 +39,7 @@
       <!-- with:.directions --><a class="media media--scheme" href="{{.src}}" data-lightbox>
         <img src="{{.thumbSrc}}" alt="{{.alt}}" loading="lazy" decoding="async">
       </a><!-- endwith -->
-      <figcaption class="gallery__caption">Схема проезда<!-- if:.directionsCredit --> <span class="venue__scheme-credit">·&nbsp;{{.directionsCredit}}</span><!-- endif --></figcaption>
+      <figcaption class="gallery__caption">Схема проезда<!-- if:.directionsCredit --> <span class="venue__scheme-credit">{{.directionsCredit}}</span><!-- endif --></figcaption>
     </figure>
     <!-- endif -->
   </div>
