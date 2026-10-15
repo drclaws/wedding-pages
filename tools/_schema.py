@@ -140,6 +140,7 @@ LOCATION_FIELDS = (
     "maps",
     "photos",
     "directions",
+    "directionsCredit",
 )
 V1_LOCATION_HINTS = {"directionsImage": "use 'directions' with the id of a media item"}
 GEO_FIELDS = ("lat", "lng")
@@ -767,7 +768,25 @@ def _check_locations(check: _Checker, site: dict, index: SiteIndex) -> dict | No
                     (*parts, "directions"),
                     f"must be an image, but {show_id(found)} is a {kind}",
                 )
+        # default: the credit of the scheme is a plain line, as 'name' and
+        # 'address': no forms of address and no placeholders
+        credit = _plain_line(check, place, "directionsCredit", parts)
+        if credit is not MISSING and "directions" not in place:
+            check.warning((*parts, "directionsCredit"), "has no effect without 'directions'")
     return locations
+
+
+def _plain_line(check: _Checker, obj: dict, key: str, parts: Sequence[PathPart]) -> Any:
+    """An optional plain line: not empty, one line, no control characters."""
+    where = (*parts, key)
+    if key in obj and isinstance(obj[key], str) and not obj[key].strip():
+        check.error(where, "must not be empty (remove the field instead)")
+        return MISSING
+    value = check.value(obj, key, "string", parts, single_line=True)
+    if value is not MISSING and any(unicodedata.category(char) == "Cc" for char in value):
+        check.error(where, "must not contain control characters")
+        return MISSING
+    return value
 
 
 def _check_maps(check: _Checker, maps: dict, parts: Sequence[PathPart]) -> None:
@@ -778,17 +797,9 @@ def _check_maps(check: _Checker, maps: dict, parts: Sequence[PathPart]) -> None:
         if value is not MISSING and not set(value.strip()) <= allowed:
             check.error((*parts, key), f"{rule} (use the identifier, not a link)")
     for key in MAP_QUERY_FIELDS:
-        where = (*parts, key)
-        if key in maps and isinstance(maps[key], str) and not maps[key].strip():
-            check.error(where, "must not be empty (remove the field instead)")
-            continue
-        value = check.value(maps, key, "string", parts, single_line=True)
-        if value is MISSING:
-            continue
-        if any(unicodedata.category(char) == "Cc" for char in value):
-            check.error(where, "must not contain control characters")
-        elif len(value) > MAP_QUERY_MAX_LENGTH:
-            check.error(where, f"is longer than {MAP_QUERY_MAX_LENGTH} characters")
+        value = _plain_line(check, maps, key, parts)
+        if value is not MISSING and len(value) > MAP_QUERY_MAX_LENGTH:
+            check.error((*parts, key), f"is longer than {MAP_QUERY_MAX_LENGTH} characters")
     both = ("yandexOrgId", "yandexGeoId")
     if all(isinstance(maps.get(key), str) and maps[key].strip() for key in both):
         check.error(

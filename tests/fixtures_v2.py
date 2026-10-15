@@ -177,6 +177,7 @@ SITE = {
             },
             "photos": ["venue-1", "venue-2", "walk", "venue-3", "venue-4"],
             "directions": "directions",
+            "directionsCredit": "© Картографическая служба Энска",
         },
         "terrace": {"ready": False},
         "hotel": {
