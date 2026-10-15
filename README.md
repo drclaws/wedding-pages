@@ -2503,8 +2503,8 @@ CSP работает потому, что страница по построен
 | Шаг CI | Локально |
 |---|---|
 | гигиена репозитория: под контролем версий нет медиа (проверяются все файлы, без исключений), нет результатов сборки, в именах файлов нет переводов строк | `git -c core.quotePath=false ls-files \| grep -Ei '\.(png\|jpe?g\|webp\|gif\|avif\|mp4\|mov\|webm\|ico\|svg)$'` |
+| Chrome есть на раннере и запускается headless от обычного пользователя, с песочницей, как его запускает сборка (печать версии, пустая страница; нет или не запустился — ошибка с выводом Chrome): им сборка рисует картинку превью, и тесты с настоящим браузером идут после этого шага, а не пропускаются | `google-chrome --version && google-chrome --headless=new --disable-gpu --dump-dom about:blank` |
 | тесты | `python3 -m unittest` |
-| Chrome есть на раннере (печать версии; нет — ошибка): им сборка рисует картинку превью | `google-chrome --version` |
 | генерация медиа-заглушек (при необходимости ставится `ffmpeg`) | `python3 tools/gen_example_media.py` |
 | проверка и сборка основного примера (с `SITE_NAME=Example`) | `python3 build.py validate && SITE_NAME=Example python3 build.py build --out /tmp/dist` |
 | проверка и сборка примера без площадки и медиа | `python3 build.py build --data examples/data-venue-pending --media examples/media-none --out /tmp/dist-pending` |
@@ -2512,6 +2512,13 @@ CSP работает потому, что страница по построен
 | проверка результата: `index.html` = `404.html`, есть `_headers` и `robots.txt`, нет `*.json`, `*.map`, файлов витрины и страницы-превью, число страниц равно числу приглашений | `cmp /tmp/dist/index.html /tmp/dist/404.html` |
 | воспроизводимость: две сборки подряд дают одинаковые контрольные суммы | собрать дважды в разные каталоги и сравнить `sha256` файлов |
 | рабочее дерево осталось чистым | `git status --porcelain` |
+
+Chrome на `ubuntu-24.04` — уже установленный на раннере `google-chrome` (пакет
+Google в `/opt/google/chrome/`): профиль AppArmor Ubuntu разрешает ему user
+namespaces, так что песочница работает без `--no-sandbox` и правки `sysctl`
+(Chrome for Testing или контейнер без user namespaces так не запустятся). Какое
+окно титульника вмещает длинные имена, зависит от системного шрифта (на раннере —
+DejaVu Sans, шире шрифта macOS), поэтому тест проверяет безопасную зону, а не окно.
 
 Последний прогон на `main` — успешный на всех четырёх версиях Python; текущее
 состояние видно во вкладке Actions репозитория.
