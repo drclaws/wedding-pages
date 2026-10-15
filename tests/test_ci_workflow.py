@@ -154,6 +154,17 @@ class CiWorkflowTest(unittest.TestCase):
         self.assertEqual(self.raw.count("SITE_NAME: Example"), 2)
         self.assertNotIn("LINK_PREVIEW_IMAGE", self.raw)
 
+    def test_chrome_starts_before_the_unit_tests(self):
+        """The tests with a real browser run in CI, never skipped for want of one."""
+        chrome = [i for i, block in enumerate(self.runs) if "google-chrome --version" in block]
+        tests = [i for i, block in enumerate(self.runs) if "python -m unittest" in block]
+        self.assertEqual(len(tests), 1)
+        self.assertLess(chrome[0], tests[0])
+        block = self.runs[chrome[0]]
+        self.assertIn("google-chrome --headless=new", block)
+        # the sandbox stays on, as in the build
+        self.assertNotIn("--no-sandbox", self.raw)
+
     def test_build_output_goes_to_runner_temp(self):
         outs = re.findall(r"--out\s+(\S+)", "\n".join(self.runs))
         self.assertGreaterEqual(len(outs), 3)

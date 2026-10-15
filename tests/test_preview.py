@@ -442,8 +442,11 @@ class RealBrowserTests(support.TempDirTestCase):
         self.assertLessEqual(right, 915)
         self.assertGreaterEqual(top, 0)
         self.assertLessEqual(bottom, 630)
-        # the layout of a phone, with the largest text, still fits
-        self.assertEqual(image.viewport, (600, 315))
+        # long names never need the widest window; which of the narrower ones
+        # they fit into depends on the system font: the phone window with the
+        # font of macOS, the next one with the wider DejaVu Sans of Ubuntu
+        self.assertTrue(image.window_fits)
+        self.assertIn(image.viewport, _preview.VIEWPORTS[:-1])
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -70,6 +70,34 @@ jobs:
           fi
           echo "OK: no tracked media or build output"
 
+      - name: Ensure Chrome is available
+        run: |
+          set -euo pipefail
+          # the build renders the link preview image with the browser of the runner,
+          # and the unit tests with a real browser use it too: it must start headless
+          # as this user, with its sandbox, as the build starts it
+          if ! command -v google-chrome >/dev/null 2>&1; then
+            echo "Chrome is not installed on the runner" >&2
+            exit 1
+          fi
+          google-chrome --version
+          profile="$(mktemp -d "$RUNNER_TEMP/chrome-profile.XXXXXX")"
+          status=0
+          timeout 60 google-chrome --headless=new --disable-gpu --no-first-run \
+            --user-data-dir="$profile" --dump-dom about:blank >/dev/null 2>"$RUNNER_TEMP/chrome.log" \
+            || status=$?
+          if [ "$status" -ne 0 ]; then
+            if [ "$status" -eq 124 ]; then
+              echo "Chrome did not answer within 60 s (a hang, not a crash):" >&2
+            else
+              echo "Chrome does not start headless (exit code $status):" >&2
+            fi
+            tail -n 20 "$RUNNER_TEMP/chrome.log" >&2
+            exit 1
+          fi
+          rm -rf "$profile"
+          echo "OK: Chrome starts headless"
+
       - name: Unit tests
         run: |
           set -euo pipefail
@@ -83,16 +111,6 @@ jobs:
             sudo apt-get install -y --no-install-recommends ffmpeg
           fi
           ffmpeg -version | sed -n 1p
-
-      - name: Ensure Chrome is available
-        run: |
-          set -euo pipefail
-          # the build renders the link preview image with the browser of the runner
-          if ! command -v google-chrome >/dev/null 2>&1; then
-            echo "Chrome is not installed on the runner" >&2
-            exit 1
-          fi
-          google-chrome --version
 
       - name: Generate example media
         run: |
