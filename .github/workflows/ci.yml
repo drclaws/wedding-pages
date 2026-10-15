@@ -82,9 +82,16 @@ jobs:
           fi
           google-chrome --version
           profile="$(mktemp -d "$RUNNER_TEMP/chrome-profile.XXXXXX")"
-          if ! timeout 60 google-chrome --headless=new --disable-gpu --no-first-run \
-              --user-data-dir="$profile" --dump-dom about:blank >/dev/null 2>"$RUNNER_TEMP/chrome.log"; then
-            echo "Chrome does not start headless:" >&2
+          status=0
+          timeout 60 google-chrome --headless=new --disable-gpu --no-first-run \
+            --user-data-dir="$profile" --dump-dom about:blank >/dev/null 2>"$RUNNER_TEMP/chrome.log" \
+            || status=$?
+          if [ "$status" -ne 0 ]; then
+            if [ "$status" -eq 124 ]; then
+              echo "Chrome did not answer within 60 s (a hang, not a crash):" >&2
+            else
+              echo "Chrome does not start headless (exit code $status):" >&2
+            fi
             tail -n 20 "$RUNNER_TEMP/chrome.log" >&2
             exit 1
           fi
