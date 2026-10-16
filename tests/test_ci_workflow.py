@@ -141,17 +141,41 @@ class CiWorkflowTest(unittest.TestCase):
         blocks = [block for block in self.runs if "Link preview tags" in block or "og:url" in block]
         self.assertEqual(len(blocks), 1)
         block = blocks[0]
-        self.assertIn('"$RUNNER_TEMP/dist"', block)
-        for text in (r'"/assets/[A-Za-z0-9_-]+/[0-9a-f]{16}\.jpg"', '"og:url" not in tags',
-                     '"://" not in value', '("index.html", "404.html")', "300 * 1024",
-                     "(1200, 630)", '"assets/og.*"', '"Example"'):  # fmt: skip
+        # the build at the root and the one under a base path
+        self.assertIn('"$RUNNER_TEMP/dist" / "$RUNNER_TEMP/site/invite" /invite', block)
+        for text in (r're.escape(prefix) + r"/assets/[A-Za-z0-9_-]+/[0-9a-f]{16}\.jpg"',
+                     '"og:url" not in tags', '"://" not in value', "300 * 1024",
+                     "(1200, 630)", '"assets/og.*"', '"Example"',
+                     'out.glob("*/index.html")', "images.pop()[len(prefix) + 1:]"):  # fmt: skip
             self.assertIn(text, block)
+        self.assertNotIn("stub", block)
+        self.assertNotIn('"i/', block)
+
+    def test_a_build_under_a_base_path(self):
+        """The layout a real site uses: the invitations in a directory of it."""
+        builds = [block for block in self.runs if "--base-path" in block]
+        self.assertEqual(len(builds), 1)
+        self.assertIn('python build.py build --base-path /invite --out "$RUNNER_TEMP/site/invite"',
+                      builds[0])
+        checks = [block for block in self.runs if "check_out()" in block]
+        self.assertEqual(len(checks), 1)
+        block = checks[0]
+        for text in ('check_out examples/data "$RUNNER_TEMP/dist"',
+                     'check_out examples/data-venue-pending "$RUNNER_TEMP/dist-pending"',
+                     'check_out examples/data "$RUNNER_TEMP/site/invite"',
+                     "for name in index.html 404.html _headers robots.txt; do",
+                     '-not -path "$out/assets/*"', "-iname 'styleguide*'", "-iname 'preview.*'",
+                     "-iname '*.json'", "-iname '*.map'"):  # fmt: skip
+            self.assertIn(text, block)
+        # the layout of the pages is not written into the workflow
+        self.assertNotIn('"$out/i"', self.raw)
+        self.assertNotIn("i/*", self.raw)
 
     def test_chrome_is_checked_and_the_site_name_is_set(self):
         blocks = [block for block in self.runs if "google-chrome --version" in block]
         self.assertEqual(len(blocks), 1)
         self.assertIn("exit 1", blocks[0])
-        self.assertEqual(self.raw.count("SITE_NAME: Example"), 2)
+        self.assertEqual(self.raw.count("SITE_NAME: Example"), 3)
         self.assertNotIn("LINK_PREVIEW_IMAGE", self.raw)
 
     def test_chrome_starts_before_the_unit_tests(self):
