@@ -60,6 +60,7 @@ class FailingBuildTestCase(CliTestCase):
         )
         (self.out / "assets").mkdir()
         (self.out / "assets" / "app.css").write_text("previous styles", encoding="utf-8")
+        (self.out / "assets" / "app.js").write_text("previous script", encoding="utf-8")
         self.previous = tree_digest(self.out)
 
     def add_to_template(self, snippet: str) -> None:

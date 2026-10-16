@@ -351,6 +351,8 @@ def write_assets(directory: Path) -> Path:
     (directory / "fonts").mkdir(parents=True, exist_ok=True)
     (directory / ".hidden").mkdir(parents=True, exist_ok=True)
     (directory / "app.css").write_text(tokens_css(), encoding="utf-8")
+    # every build copies the script of the pages: a previous build has it
+    (directory / "app.js").write_text("// fixture\n", encoding="utf-8")
     (directory / "fonts" / "sans.woff2").write_bytes(b"wOF2 fixture")
     (directory / "fonts" / ".gitkeep").write_text("", encoding="utf-8")
     (directory / ".gitkeep").write_text("", encoding="utf-8")

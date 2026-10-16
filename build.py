@@ -79,7 +79,6 @@ from tools import _schema as schema  # noqa: E402
 from tools import gen_assets  # noqa: E402
 from tools._data import (  # noqa: E402
     IMAGE_EXTENSIONS,
-    MIN_TOKEN_LENGTH,
     _extension_list,
     check_token_prefix,
     format_size,
@@ -2726,36 +2725,53 @@ def check_output(
 
 
 def display_path(path: Path | str) -> str:
-    """Path for logs: relative to the working directory when possible."""
+    """Path for logs: relative to the working directory when possible.
+
+    A path of one component gets `./` in front (`./dist`): every path a
+    message shows has a separator, which tells it from the words around it
+    (`redact_tokens`)."""
     path = Path(path)
     try:
-        return str(path.absolute().relative_to(Path.cwd())) or "."
+        shown = str(path.absolute().relative_to(Path.cwd())) or "."
     except ValueError:
         return str(path)
+    if shown != "." and os.sep not in shown and "/" not in shown:
+        shown = os.path.join(os.curdir, shown)
+    return shown
 
 
 #: A run of the characters of a token (`redact_tokens`).
 _TOKEN_RUN_RE = re.compile(r"[A-Za-z0-9_-]+")
-#: A directory entry that may be a token or a media directory: token
-#: characters only (no dot, so not a file name), at least as long as a token.
-_TOKEN_LIKE_RE = re.compile(rf"[A-Za-z0-9_-]{{{MIN_TOKEN_LENGTH},}}\Z")
+#: A path in a message: a word with at least one separator in it.
+_PATH_WORD_RE = re.compile(r"[^\s/\\]*(?:[/\\][^\s/\\]*)+")
 #: What takes the place of a hidden name.
 NAME_MASK = "…"
 
 
 def redact_tokens(text: Any, tokens: Collection[str]) -> str:
-    """`text` with every token of `tokens` (lower case) hidden: a whole run of
-    token characters that is one of them, in any letter case (on a file
-    system that ignores it, `EVE-xxxx/` is the directory of `eve-xxxx`),
-    becomes `…`.  Whatever path a message shows - `--out`, a temporary
-    directory next to it, the file of an error - the directory of a page
-    never reveals its token."""
+    """`text` with the tokens of `tokens` (lower case) hidden in its paths.
+
+    A path is a word of the message with a separator in it (`display_path`
+    always gives one).  Inside it a whole run of token characters that is one
+    of the tokens, in any letter case (on a file system that ignores it,
+    `EVE-xxxx/` is the directory of `eve-xxxx`), becomes `…`: a component
+    (`dist/<token>/`), or a name with a dot (`.<token>.tmp-…`,
+    `<token>.zip`).  A token inside a longer name (`<token>_old`) is not a
+    component and stays; the words of the message stay as they are, so the
+    mask never tells that a token equals one of them.  Whatever path a
+    message shows - `--out`, a temporary directory next to it, the file of
+    an error - the directory of a page does not reveal its token."""
     text = str(text)
     if not tokens:
         return text
-    return _TOKEN_RUN_RE.sub(
-        lambda match: NAME_MASK if match.group(0).lower() in tokens else match.group(0), text
-    )
+
+    def hide(path: re.Match) -> str:
+        return _TOKEN_RUN_RE.sub(
+            lambda run: NAME_MASK if run.group(0).lower() in tokens else run.group(0),
+            path.group(0),
+        )
+
+    return _PATH_WORD_RE.sub(hide, text)
 
 
 def _output_path(relative: str) -> str:
@@ -2769,17 +2785,6 @@ def _output_path(relative: str) -> str:
     if top != ASSETS_DIRNAME and "." not in top:
         top = NAME_MASK
     return f"{top}{sep}{rest}"
-
-
-def _mask_name(name: str) -> str:
-    """A directory entry for an error message.
-
-    Any name made of token characters only (no dot: not a file) may be a token
-    or a media directory, so it is hidden completely.
-    """
-    if _TOKEN_LIKE_RE.match(name):
-        return NAME_MASK
-    return _shorten(name, 40)
 
 
 def _same_path(first: Path, second: Path) -> bool:
@@ -2809,12 +2814,24 @@ def check_out_dir(
     trees that are copied into the output.  An existing directory is replaced
     only when it is empty or looks like the output of a previous build.
 
-    The messages call the directory `--out` and never repeat its path: it may
-    point inside a previous build by mistake, at the directory of a page.
+    The messages call the directory `--out` and never repeat its path nor
+    the name of anything in it: it may point inside a previous build by
+    mistake, at the directory of a page, and the data is not read yet, so no
+    token is known to hide.  An error of the file system is reported by its
+    reason alone, without the file it happened on.
 
     Extension point: later build steps may pass further protected directories
     through the same checks.
     """
+    try:
+        _check_out_dir(Path(out_dir), Path(code_dir), Path(data_dir), Path(media_dir))
+    except OSError as exc:
+        raise BuildError(
+            f"cannot inspect --out: {exc.strerror or type(exc).__name__}"
+        ) from None
+
+
+def _check_out_dir(out_dir: Path, code_dir: Path, data_dir: Path, media_dir: Path) -> None:
     out = Path(out_dir).absolute()
     resolved = Path(os.path.realpath(out))
 
@@ -2885,6 +2902,34 @@ def _is_page_directory(entry: os.DirEntry) -> bool:
     )
 
 
+#: What every build writes into `assets/`: a previous build has them.
+BUILD_MARKER_ASSETS = ("app.css", "app.js")
+
+
+def _is_built_assets(entry: os.DirEntry) -> bool:
+    """`assets/` as a build writes it: a real directory with `app.css` and
+    `app.js` as regular files."""
+    if not entry.is_dir(follow_symlinks=False):
+        return False
+    inside = _directory_entries(entry.path)
+    return inside is not None and all(
+        name in inside and inside[name].is_file(follow_symlinks=False)
+        for name in BUILD_MARKER_ASSETS
+    )
+
+
+def _count_entries(entries: Sequence[os.DirEntry]) -> str:
+    """`2 directories and 1 other entry`: what is there, without a name."""
+    directories = sum(1 for entry in entries if entry.is_dir(follow_symlinks=False))
+    others = len(entries) - directories
+    parts = []
+    if directories:
+        parts.append(f"{directories} director{'y' if directories == 1 else 'ies'}")
+    if others:
+        parts.append(f"{others} other entr{'y' if others == 1 else 'ies'}")
+    return " and ".join(parts)
+
+
 def _holds_pages(entry: os.DirEntry) -> bool:
     """A real directory with a directory of a page inside: the pages one
     level below the top, as the build laid them out while it wrote the site."""
@@ -2898,21 +2943,30 @@ def check_replaceable(out_dir: Path | str) -> None:
     """Allow replacing an existing directory only if it is a previous build.
 
     A directory qualifies when it is empty or holds what a build writes:
-    `assets` is a real directory, every other entry a real directory with
-    `index.html` (a regular file) alone, nothing is a symbolic link (files
-    created by the operating system are ignored).  No marker file is written
-    into the output: its contents stay limited to what the pages need.
+    `assets/`, a real directory with `app.css` and `app.js` (every build
+    writes them), and at least one directory of a page - a real directory
+    named like a token with `index.html` (a regular file) alone; nothing else
+    (files created by the operating system are ignored).  No marker file is
+    written into the output: its contents stay limited to what the pages need.
+    Anything else is somebody's directory and is never replaced: pages without
+    `assets/` (the pages directory of a whole site), `assets/` alone, a site
+    of the old layout (`index.html`, `404.html`, `_headers` or `robots.txt` at
+    the top, the pages one directory deeper), the directory of a single page.
 
-    A site of the old layout - `index.html`, `404.html`, `_headers` or
-    `robots.txt` at the top, the pages one directory deeper - is refused with
-    a hint: the build writes the invitations only, so it would replace the
-    whole site with them.  So is the directory of a single page.
-
-    The messages never repeat the path of `--out` nor show a name that may be
-    a token or a media directory: every name of 5 or more token characters
-    without a dot is shown as `…` (see `_mask_name`).
+    The messages never repeat the path of `--out` nor the name of anything
+    in it - at most they count the entries: the data is not read yet, so no
+    token is known, and `--out` may hold the pages of a previous build.  An
+    error of the file system names no file either.
     """
-    out = Path(out_dir)
+    try:
+        _check_replaceable(Path(out_dir))
+    except OSError as exc:
+        raise BuildError(
+            f"cannot inspect --out: {exc.strerror or type(exc).__name__}"
+        ) from None
+
+
+def _check_replaceable(out: Path) -> None:
     try:
         with os.scandir(out) as iterator:
             entries = sorted(iterator, key=lambda entry: entry.name)
@@ -2923,37 +2977,46 @@ def check_replaceable(out_dir: Path | str) -> None:
     entries = [entry for entry in entries if entry.name not in OS_JUNK_FILES]
     if not entries:
         return
+    refuse = "refusing to replace --out"
     advice = "remove it manually or choose another --out"
     names = [entry.name for entry in entries]
     if names == [PAGE_FILE]:
         raise BuildError(
-            f"refusing to replace --out: it holds {PAGE_FILE} alone, like the directory of "
-            f"one page; point --out at the directory with the pages and {ASSETS_DIRNAME}/"
+            f"{refuse}: it holds {PAGE_FILE} alone, like the directory of one page; point "
+            f"--out at the directory with the pages and {ASSETS_DIRNAME}/"
         )
     others = [entry for entry in entries if entry.name != ASSETS_DIRNAME]
     if OLD_LAYOUT_FILES.intersection(names) or any(
         not _is_page_directory(entry) and _holds_pages(entry) for entry in others
     ):
         raise BuildError(
-            "refusing to replace --out: it looks like a whole site (index.html, 404.html, "
-            "_headers or robots.txt at the top, or the pages one directory deeper); the "
-            "build now writes the invitations only, straight into --out - remove the "
-            "directory or choose another --out (e.g. a directory inside the site, "
-            "see README 5)"
+            f"{refuse}: it looks like a whole site (index.html, 404.html, _headers or "
+            "robots.txt at the top, or the pages one directory deeper); the build now "
+            "writes the invitations only, straight into --out - remove the directory or "
+            "choose another --out (e.g. a directory inside the site, see README 5)"
         )
-    for entry in entries:
-        if entry.name == ASSETS_DIRNAME and not entry.is_dir(follow_symlinks=False):
-            raise BuildError(
-                "refusing to replace --out: it does not look like a previous build output "
-                f"('{ASSETS_DIRNAME}' is not a directory); {advice}"
-            )
-    unexpected = [entry.name for entry in others if not _is_page_directory(entry)]
+    unexpected = [
+        entry
+        for entry in others
+        if data_tools.check_token(entry.name) is not None or not _is_page_directory(entry)
+    ]
     if unexpected:
-        listed = ", ".join(f"'{_mask_name(name)}'" for name in unexpected[:3])
-        more = f" and {len(unexpected) - 3} more" if len(unexpected) > 3 else ""
         raise BuildError(
-            "refusing to replace --out: it does not look like a previous build output "
-            f"(unexpected: {listed}{more}); {advice}"
+            f"{refuse}: it does not look like a previous build output (unexpected at the "
+            f"top: {_count_entries(unexpected)}; their names are not shown, they may be "
+            f"tokens); {advice}"
+        )
+    assets = next((entry for entry in entries if entry.name == ASSETS_DIRNAME), None)
+    if assets is None or not _is_built_assets(assets):
+        raise BuildError(
+            f"{refuse}: it does not look like a previous build output (no {ASSETS_DIRNAME}/ "
+            f"with {' and '.join(BUILD_MARKER_ASSETS)}, which every build writes; the pages "
+            f"alone are not replaced either); {advice}"
+        )
+    if not others:
+        raise BuildError(
+            f"{refuse}: it holds {ASSETS_DIRNAME}/ alone, without the pages of a previous "
+            f"build; {advice}"
         )
 
 
@@ -4062,7 +4125,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         _stderr(f"{command}: failed")
         return EXIT_ERROR
     except OSError as exc:
-        where = f": {display_path(exc.filename)}" if exc.filename else ""
+        # before the data is read no token is known to hide: the file is not
+        # named then (it may lie in the directory of a page)
+        where = f": {display_path(exc.filename)}" if exc.filename and report.tokens else ""
         _stderr(f"error: {report.redact(f'{exc.strerror or type(exc).__name__}{where}')}")
         _stderr(f"{command}: failed")
         return EXIT_ERROR

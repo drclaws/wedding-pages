@@ -113,6 +113,8 @@ class ReplaceableOutputTests(TempDirTestCase):
         """What a build writes, plus the files of the operating system."""
         out = self.tmp / "dist"
         (out / "assets" / "m3d1a-f1xtur3-dir").mkdir(parents=True)
+        for name in ("app.css", "app.js"):
+            (out / "assets" / name).write_text("x", encoding="utf-8")
         for token in self.TOKENS:
             (out / token).mkdir()
             (out / token / "index.html").write_text("x", encoding="utf-8")
@@ -126,62 +128,110 @@ class ReplaceableOutputTests(TempDirTestCase):
             build.check_replaceable(out)
         message = str(caught.exception)
         self.assertTrue(message.startswith("refusing to replace --out: "), message)
-        # the path of --out is never repeated: it may lead through a page directory
+        # the path of --out is never repeated, no name in it is shown
         self.assertNotIn(str(out), message)
-        self.assertNotIn(out.name, message)
+        self.assertNotIn("'", message.replace("'assets' is not", ""))
         for token in self.TOKENS:
             self.assertNotIn(token[:4], message)
         return message
 
+    UNEXPECTED = "(unexpected at the top: {}; their names are not shown, they may be tokens)"
+    NO_ASSETS = "(no assets/ with app.css and app.js, which every build writes"
+
     def test_a_previous_build_is_accepted(self):
         build.check_replaceable(self.make_previous_build())
-        # without assets/ (the pages a site of the old layout kept one level down)
-        only_pages = self.tmp / "only-pages"
-        (only_pages / "quokka").mkdir(parents=True)
-        (only_pages / "quokka" / "index.html").write_text("x", encoding="utf-8")
-        build.check_replaceable(only_pages)
-        # with assets/ alone
-        (self.tmp / "only-assets" / "assets").mkdir(parents=True)
-        build.check_replaceable(self.tmp / "only-assets")
+
+    def test_pages_without_assets_are_refused(self):
+        # somebody's site of plain pages, or the pages directory of a whole
+        # site of the old layout: never replaced, even with page-like names
+        site = self.tmp / "site"
+        for name in ("about", "contact"):
+            (site / name).mkdir(parents=True)
+            (site / name / "index.html").write_text("x", encoding="utf-8")
+        self.assertIn(self.NO_ASSETS, self.refusal(site))
+        out = self.make_previous_build()
+        shutil.rmtree(out / "assets")
+        self.assertIn(self.NO_ASSETS, self.refusal(out))
+
+    def test_assets_must_be_those_of_a_build(self):
+        out = self.make_previous_build()
+        (out / "assets" / "app.js").unlink()
+        self.assertIn(self.NO_ASSETS, self.refusal(out))
+        (out / "assets" / "app.js").mkdir()
+        self.assertIn(self.NO_ASSETS, self.refusal(out))
+        shutil.rmtree(out / "assets")
+        (out / "assets").write_text("not a directory", encoding="utf-8")
+        self.assertIn(self.NO_ASSETS, self.refusal(out))
+
+    def test_assets_alone_are_refused(self):
+        out = self.make_previous_build()
+        for token in self.TOKENS:
+            shutil.rmtree(out / token)
+        self.assertEqual(
+            self.refusal(out),
+            "refusing to replace --out: it holds assets/ alone, without the pages of a "
+            "previous build; remove it manually or choose another --out",
+        )
+        # assets/ of somebody else
+        other = self.tmp / "other"
+        (other / "assets" / "photos").mkdir(parents=True)
+        (other / "assets" / "thesis.docx").write_text("x", encoding="utf-8")
+        self.assertIn(self.NO_ASSETS, self.refusal(other))
 
     def test_the_entries_must_have_the_expected_type(self):
         out = self.make_previous_build()
-        shutil.rmtree(out / "assets")
-        (out / "assets").write_text("not a directory", encoding="utf-8")
-        self.assertIn("('assets' is not a directory)", self.refusal(out))
-
-        shutil.rmtree(out)
-        out = self.make_previous_build()
         (out / self.TOKENS[1] / "index.html").unlink()
         (out / self.TOKENS[1] / "index.html").mkdir()
-        self.assertIn("(unexpected: '…')", self.refusal(out))
+        self.assertIn(self.UNEXPECTED.format("1 directory"), self.refusal(out))
 
     def test_a_page_directory_holds_its_page_alone(self):
         out = self.make_previous_build()
         (out / self.TOKENS[2] / "notes.txt").write_text("x", encoding="utf-8")
-        self.assertIn("(unexpected: '…')", self.refusal(out))
+        self.assertIn(self.UNEXPECTED.format("1 directory"), self.refusal(out))
         (out / self.TOKENS[2] / "notes.txt").unlink()
         (out / self.TOKENS[2] / "index.html").unlink()
-        self.assertIn("(unexpected: '…')", self.refusal(out))  # an empty directory
+        # an empty directory
+        self.assertIn(self.UNEXPECTED.format("1 directory"), self.refusal(out))
+
+    def test_a_page_directory_is_named_like_a_token(self):
+        out = self.make_previous_build()
+        for name in ("abc", "a.b-cdefg", "x" * 201, "with space"):
+            with self.subTest(name=name[:10]):
+                (out / name).mkdir()
+                (out / name / "index.html").write_text("x", encoding="utf-8")
+                self.assertIn(self.UNEXPECTED.format("1 directory"), self.refusal(out))
+                shutil.rmtree(out / name)
 
     def test_symlinks_are_refused(self):
         target = self.tmp / "elsewhere"
-        target.mkdir()
+        (target / "quokka").mkdir(parents=True)
         (target / "index.html").write_text("precious", encoding="utf-8")
-        out = self.tmp / "dist"
-        out.mkdir()
+        for name in ("app.css", "app.js"):
+            (target / name).write_text("precious", encoding="utf-8")
+        out = self.make_previous_build()
+        shutil.rmtree(out / "assets")
         try:
             os.symlink(target, out / "assets", target_is_directory=True)
         except (OSError, NotImplementedError) as exc:
             self.skipTest(f"symbolic links are not available: {exc}")
-        self.assertIn("('assets' is not a directory)", self.refusal(out))
+        self.assertIn(self.NO_ASSETS, self.refusal(out))
         os.remove(out / "assets")
-        os.symlink(target, out / "quokka", target_is_directory=True)
-        self.assertIn("(unexpected: '…')", self.refusal(out))
-        os.remove(out / "quokka")
-        (out / "quokka").mkdir()
-        os.symlink(target / "index.html", out / "quokka" / "index.html")
-        self.assertIn("(unexpected: '…')", self.refusal(out))
+        out = self.tmp / "second"
+        shutil.copytree(self.tmp / "dist", out, symlinks=True)
+        os.mkdir(out / "assets")
+        for name in ("app.css", "app.js"):
+            (out / "assets" / name).write_text("x", encoding="utf-8")
+        os.symlink(target, out / "KumquatToken", target_is_directory=True)
+        self.assertIn(self.UNEXPECTED.format("1 other entry"), self.refusal(out))
+        os.remove(out / "KumquatToken")
+        (out / "KumquatToken").mkdir()
+        os.symlink(target / "index.html", out / "KumquatToken" / "index.html")
+        self.assertIn(self.UNEXPECTED.format("1 directory"), self.refusal(out))
+        os.remove(out / "KumquatToken" / "index.html")
+        (out / "assets" / "app.css").unlink()
+        os.symlink(target / "app.css", out / "assets" / "app.css")
+        (out / "KumquatToken" / "index.html").write_text("x", encoding="utf-8")
+        self.assertIn(self.NO_ASSETS, self.refusal(out))
         self.assertEqual((target / "index.html").read_text(encoding="utf-8"), "precious")
 
     OLD_LAYOUT = (
@@ -212,28 +262,27 @@ class ReplaceableOutputTests(TempDirTestCase):
             "page; point --out at the directory with the pages and assets/",
         )
 
-    def test_names_that_look_like_tokens_are_masked(self):
+    def test_no_name_is_shown(self):
+        """The data is not read yet: any name at the top of --out may hold a
+        token, so the entries are only counted."""
+        out = self.make_previous_build()
+        for name in (f"{self.TOKENS[0]}.zip", f"{self.TOKENS[1]}~", "quokka.bak", "todo.txt"):
+            (out / name).write_text("x", encoding="utf-8")
+        (out / f"{self.TOKENS[0]} copy").mkdir()
+        (out / f"{self.TOKENS[0]} copy" / "index.html").write_text("x", encoding="utf-8")
+        (out / "abcd").mkdir()
+        message = self.refusal(out)
+        self.assertIn(self.UNEXPECTED.format("2 directories and 4 other entries"), message)
+        for text in ("zip", "copy", "todo", "abcd", "bak", "~"):
+            self.assertNotIn(text, message)
         # --out pointing inside a previous build by mistake: <out>/assets
         # holds the media directory
+        shutil.rmtree(out)
         assets = self.make_previous_build() / "assets"
-        (assets / "app.css").write_text("x", encoding="utf-8")
         message = self.refusal(assets)
-        self.assertIn("'…'", message)
-        self.assertIn("'app.css'", message)
+        self.assertIn(self.UNEXPECTED.format("1 directory and 2 other entries"), message)
         self.assertNotIn("m3d1", message)
-        # names of token characters are hidden, file names and names too
-        # short for a token are shown
-        other = self.tmp / "notes"
-        for name in ("quokka", "otter_king", "abcd"):
-            (other / name / "sub").mkdir(parents=True)
-        (other / "todo.txt").write_text("x", encoding="utf-8")
-        message = self.refusal(other)
-        self.assertIn("(unexpected: 'abcd', '…', '…' and 1 more)", message)
-        self.assertNotIn("quo", message)
-        self.assertNotIn("ott", message)
-        (self.tmp / "notes-files").mkdir()
-        (self.tmp / "notes-files" / "todo.txt").write_text("x", encoding="utf-8")
-        self.assertIn("'todo.txt'", self.refusal(self.tmp / "notes-files"))
+        self.assertNotIn("app.", message)
 
     def test_an_unreadable_directory(self):
         with mock.patch.object(build.os, "scandir", side_effect=PermissionError(13, "Permission denied")):
@@ -241,17 +290,20 @@ class ReplaceableOutputTests(TempDirTestCase):
                 build.check_replaceable(self.tmp / "QuokkaToken")
         self.assertEqual(str(caught.exception), "cannot read --out: Permission denied")
 
-    def test_unexpected_entries_are_listed_but_capped(self):
-        out = self.tmp / "dist"
-        out.mkdir()
-        for index in range(5):
-            (out / f"file-{index}.txt").write_text("x", encoding="utf-8")
-        with self.assertRaises(build.BuildError) as caught:
-            build.check_replaceable(out)
-        message = str(caught.exception)
-        self.assertIn("'file-0.txt'", message)
-        self.assertIn("and 2 more", message)
-        self.assertNotIn("file-4.txt", message)
+    def test_other_errors_of_the_file_system_name_no_file(self):
+        out = self.make_previous_build()
+        failure = PermissionError(13, "Permission denied", str(out / self.TOKENS[0]))
+        with mock.patch.object(build, "_is_page_directory", side_effect=failure):
+            with self.assertRaises(build.BuildError) as caught:
+                build.check_replaceable(out)
+        self.assertEqual(str(caught.exception), "cannot inspect --out: Permission denied")
+        with mock.patch.object(build.Path, "exists", side_effect=failure):
+            with self.assertRaises(build.BuildError) as caught:
+                build.check_out_dir(
+                    out / self.TOKENS[0], code_dir=self.tmp / "code", data_dir=self.tmp / "data",
+                    media_dir=self.tmp / "media",
+                )  # fmt: skip
+        self.assertEqual(str(caught.exception), "cannot inspect --out: Permission denied")
 
 
 class CopyAssetsTests(TempDirTestCase):
@@ -261,7 +313,7 @@ class CopyAssetsTests(TempDirTestCase):
         copied = build.copy_assets(
             source, self.tmp / "out" / "assets", ignore=lambda name: name == "styleguide.js"
         )
-        self.assertEqual(copied, 2)
+        self.assertEqual(copied, 3)
         self.assertFalse((self.tmp / "out" / "assets" / "styleguide.js").exists())
         self.assertTrue((self.tmp / "out" / "assets" / "app.css").is_file())
         self.assertFalse((self.tmp / "out" / "assets" / ".gitkeep").exists())
@@ -271,7 +323,7 @@ class CopyAssetsTests(TempDirTestCase):
         copied = build.copy_assets(
             source, self.tmp / "out" / "assets", ignore=lambda name: name == "fonts"
         )
-        self.assertEqual(copied, 1)
+        self.assertEqual(copied, 2)
         self.assertFalse((self.tmp / "out" / "assets" / "fonts").exists())
 
     def test_ignore_receives_the_relative_path(self):
@@ -285,9 +337,10 @@ class CopyAssetsTests(TempDirTestCase):
             return relative == "fonts/sans.woff2"
 
         copied = build.copy_assets(source, self.tmp / "out" / "assets", ignore=ignore)
-        self.assertEqual(copied, 2)
+        self.assertEqual(copied, 3)
         self.assertEqual(
-            sorted(seen), ["app.css", "fonts", "fonts/deep", "fonts/deep/lib.js", "fonts/sans.woff2"]
+            sorted(seen),
+            ["app.css", "app.js", "fonts", "fonts/deep", "fonts/deep/lib.js", "fonts/sans.woff2"],
         )
         self.assertFalse((self.tmp / "out" / "assets" / "fonts" / "sans.woff2").exists())
         self.assertTrue((self.tmp / "out" / "assets" / "fonts" / "deep" / "lib.js").is_file())
@@ -305,7 +358,7 @@ class CopyAssetsTests(TempDirTestCase):
         build.copy_assets(source, destination)
         self.assertEqual(
             sorted(p.relative_to(destination).as_posix() for p in destination.rglob("*")),
-            ["app.css", "fonts", "fonts/sans.woff2"],
+            ["app.css", "app.js", "fonts", "fonts/sans.woff2"],
         )
 
     def test_empty_assets_directory(self):
@@ -338,7 +391,7 @@ class CopyAssetsTests(TempDirTestCase):
         copied = build.copy_assets(
             source, self.tmp / "out" / "assets", ignore=build.is_styleguide_asset
         )
-        self.assertEqual(copied, 2)
+        self.assertEqual(copied, 3)
 
     def test_assets_directory_that_is_a_symlink(self):
         source = write_assets(self.tmp / "real-assets")

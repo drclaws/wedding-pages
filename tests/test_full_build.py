@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import unittest
 from pathlib import Path
@@ -30,7 +32,7 @@ ROBOTS_META = '<meta name="robots"'
 SITE_FILES = ("index.html", "404.html", "_headers", "robots.txt")
 
 #: Every file of the fixture build.
-FILES_IN_TOTAL = 14
+FILES_IN_TOTAL = 15
 
 
 def pending_site() -> dict:
@@ -83,6 +85,7 @@ class OutputContentsTests(FullBuildTestCase):
             sorted(
                 [
                     "assets/app.css",
+                    "assets/app.js",
                     "assets/favicon.svg",
                     "assets/og.png",
                     "assets/fonts/sans.woff2",
@@ -103,6 +106,7 @@ class OutputContentsTests(FullBuildTestCase):
             sorted(
                 [
                     "assets/app.css",
+                    "assets/app.js",
                     "assets/favicon.svg",
                     "assets/og.png",
                     "assets/fonts/sans.woff2",
@@ -348,18 +352,18 @@ class OutputContentsTests(FullBuildTestCase):
     def test_log_has_counters_and_no_data(self):
         result = self.build()
         self.assertIn("3 invitation(s), 5 media file(s) validated", result.stdout)
-        self.assertIn("wrote 3 page(s) to dist/<token>/", result.stdout)
+        self.assertIn(f"wrote 3 page(s) to {os.path.join('.', 'dist')}/<token>/", result.stdout)
         self.assertIn(
             "build: base path /: the pages are at /<token>/, the shared files at /assets/",
             result.stdout,
         )
         self.assertIn("wrote 2 calendar file(s), one per event", result.stdout)
-        self.assertIn("2 asset file(s)", result.stdout)
+        self.assertIn("3 asset file(s)", result.stdout)
         self.assertIn("copied 5 media file(s) under the hash of their contents", result.stdout)
         last = result.stdout.strip().splitlines()[-1]
         self.assertRegex(
             last,
-            r"\Abuild: OK -> dist \(3 page\(s\), 5 media file\(s\), "
+            rf"\Abuild: OK -> {re.escape(os.path.join('.', 'dist'))} \(3 page\(s\), 5 media file\(s\), "
             rf"{FILES_IN_TOTAL} file\(s\) in total, \d+(\.\d)? (B|KiB|MiB)\)\Z",
         )
         self.assertEqual(result.stderr, "")
