@@ -217,29 +217,12 @@ TEMPLATE = """<!doctype html>
 <meta property="og:image:height" content="{{ogImageHeight}}">
 <link rel="icon" href="{{faviconPath}}" type="{{faviconType}}">
 <!-- a note for whoever edits the template: never published -->
-<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="{{assetsPath}}/app.css">
 </head>
 <body>
 <main class="page">
 <!-- include:partials/sections -->
 </main>
-</body>
-</html>
-"""
-
-#: Fixture stub: neutral, the same for every wrong address.
-STUB = """<!doctype html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<meta name="robots" content="noindex, nofollow">
-<title>Страница не найдена</title>
-<link rel="icon" href="{{faviconPath}}" type="{{faviconType}}">
-<!-- a note for whoever edits the stub: never published -->
-<link rel="stylesheet" href="/assets/app.css">
-</head>
-<body>
-<p>Такой страницы нет.</p>
 </body>
 </html>
 """
@@ -368,6 +351,8 @@ def write_assets(directory: Path) -> Path:
     (directory / "fonts").mkdir(parents=True, exist_ok=True)
     (directory / ".hidden").mkdir(parents=True, exist_ok=True)
     (directory / "app.css").write_text(tokens_css(), encoding="utf-8")
+    # every build copies the script of the pages: a previous build has it
+    (directory / "app.js").write_text("// fixture\n", encoding="utf-8")
     (directory / "fonts" / "sans.woff2").write_bytes(b"wOF2 fixture")
     (directory / "fonts" / ".gitkeep").write_text("", encoding="utf-8")
     (directory / ".gitkeep").write_text("", encoding="utf-8")
@@ -376,10 +361,8 @@ def write_assets(directory: Path) -> Path:
     return directory
 
 
-def make_code_dir(
-    parent: Path, template: str = TEMPLATE, assets: bool = True, stub: str = STUB
-) -> Path:
-    """A throwaway copy of `build.py` with its own template, stub and assets.
+def make_code_dir(parent: Path, template: str = TEMPLATE, assets: bool = True) -> Path:
+    """A throwaway copy of `build.py` with its own template and assets.
 
     The fragments of the template (`fragments/`) are copied as they are, if
     the code has any: the build reads them together with every template.
@@ -397,7 +380,6 @@ def make_code_dir(
             fragments, code_dir / build.FRAGMENTS_DIRNAME, symlinks=True, dirs_exist_ok=True
         )
     (code_dir / "template.html").write_text(template, encoding="utf-8")
-    (code_dir / "stub.html").write_text(stub, encoding="utf-8")
     shutil.copy2(ROOT / build.PREVIEW_TEMPLATE_FILE, code_dir / build.PREVIEW_TEMPLATE_FILE)
     if assets:
         write_assets(code_dir / "assets")

@@ -6,11 +6,12 @@
 
 For every set it generates the placeholder media (the main set only, with
 ``tools/gen_example_media.py`` into ``examples/media/``, which git ignores),
-builds the site into ``<out>/<set>/`` with ``build.py build`` and prints
-where the site is, how to look at it and the address of every page with its
-greeting (the data of the examples is fictional).  In CI (``CI`` or
-``GITHUB_ACTIONS`` set) the pages and greetings are not printed, as with
-``build.py links``.
+builds the invitations into ``<out>/<set>/`` with ``build.py build
+--base-path /`` and prints where they are, how to look at them and the
+address of every page with its greeting (the data of the examples is
+fictional).  The directory of a set is the root to serve: the pages are
+``/<token>/``.  In CI (``CI`` or ``GITHUB_ACTIONS`` set) the pages and
+greetings are not printed, as with ``build.py links``.
 
 Only the sets in ``examples/`` are accepted: for real data use ``build.py
 build`` and ``build.py links``.  The main set shows videos, so it needs
@@ -47,6 +48,9 @@ SETS = {
 }
 #: The sets that show videos: their media are generated with ffmpeg.
 NEEDS_FFMPEG = ("data",)
+#: A set is built for the root of a local server: `<out>/<set>/` is served
+#: as it is.
+BASE_PATH = "/"
 CI_ENVIRONMENT_VARIABLES = ("CI", "GITHUB_ACTIONS")
 
 
@@ -99,18 +103,21 @@ def build_set(name: str, out: Path, port: int, extra: list[str] | None = None) -
         if code != 0:
             return code
     target = out / name
-    args = [str(BUILD), "build", "--data", str(data), "--media", str(media), "--out", str(target)]
+    args = [
+        str(BUILD), "build", "--data", str(data), "--media", str(media), "--out", str(target),
+        "--base-path", BASE_PATH,
+    ]  # fmt: skip
     args += extra or []
     code = run(args)
     if code != 0:
         return code
-    print(f"site: {target}")
-    print(f"look at it: python3 -m http.server -d {target} {port}")
+    print(f"invitations: {target}")
+    print(f"look at them: python3 -m http.server -d {target} {port}")
     if running_in_ci():
         print("pages: not printed in CI")
     else:
         for token, greeting in pages(data):
-            print(f"  http://localhost:{port}/i/{token}/  {greeting}")
+            print(f"  http://localhost:{port}/{token}/  {greeting}")
     sys.stdout.flush()
     return 0
 

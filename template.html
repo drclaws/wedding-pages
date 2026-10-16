@@ -21,8 +21,8 @@
   <meta property="og:image:alt" content="Приглашение · {{coupleNames}}">
   <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" href="{{faviconPath}}" type="{{faviconType}}">
-  <link rel="stylesheet" href="/assets/app.css">
-  <script src="/assets/app.js" defer></script>
+  <link rel="stylesheet" href="{{assetsPath}}/app.css">
+  <script src="{{assetsPath}}/app.js" defer></script>
 </head>
 <body>
 
@@ -37,7 +37,9 @@
      пары» — в <title>, og:title и og:image:alt; описание (linkDescription) —
      linkPreview.description из site.json в общей форме, без данных гостя;
      og:site_name — только если сборке задано имя сайта (SITE_NAME). Все ссылки
-     в мета-тегах — пути от корня: адреса сайта сборка не знает, og:url нет.
+     — пути от корня сайта под --base-path: стили, скрипт, иконка и картинка
+     превью лежат в assetsPath (<base-path>/assets); адреса сайта сборка не
+     знает, og:url нет.
      Условия стоят в строках разметки: без поля не остаётся пустой строки. -->
 <main class="page">
 <!-- include:partials/sections -->

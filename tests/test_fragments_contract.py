@@ -39,7 +39,7 @@ MEDIA_TYPES = _schema.MEDIA_TYPES
 # --- the contract: the fields of every node of the page tree ----------------
 
 ROOT_FIELDS = (
-    "greeting", "form", "ty", "vy", "coupleNames", "rsvpDeadline", "mediaPath",
+    "greeting", "form", "ty", "vy", "coupleNames", "rsvpDeadline", "assetsPath", "mediaPath",
     "faviconPath", "faviconType", "ogImage", "ogImageType", "ogImageWidth",
     "ogImageHeight", "themeColor", "siteName", "linkDescription", "primaryEvent", "sections",
 )
@@ -442,8 +442,8 @@ class PageTree:
         return node(
             ROOT_FIELDS, greeting=self.guest["greeting"], form=self.guest["form"],
             ty=self.guest["form"] == "ty", vy=self.guest["form"] == "vy",
-            coupleNames=COUPLE_NAMES, rsvpDeadline=RSVP_DEADLINE, mediaPath=MEDIA_PATH,
-            faviconPath="/assets/favicon.svg", faviconType="image/svg+xml",
+            coupleNames=COUPLE_NAMES, rsvpDeadline=RSVP_DEADLINE, assetsPath="/assets",
+            mediaPath=MEDIA_PATH, faviconPath="/assets/favicon.svg", faviconType="image/svg+xml",
             ogImage="/assets/og.png", ogImageType="image/png", ogImageWidth=1200,
             ogImageHeight=630, themeColor="#f2efe9", siteName="", linkDescription="", primaryEvent=self.event(self.primary, None),
             sections=self.sections(),
@@ -671,8 +671,8 @@ def harness_root(items: list) -> Strict:
     """The root of the page plus `harness`: the list the stub frame goes over."""
     return node(
         ROOT_FIELDS + ("harness",), greeting="Дорогая Ева!", form="ty", ty=True, vy=False,
-        coupleNames=COUPLE_NAMES, rsvpDeadline=RSVP_DEADLINE, mediaPath=MEDIA_PATH,
-        faviconPath="/assets/favicon.svg", faviconType="image/svg+xml",
+        coupleNames=COUPLE_NAMES, rsvpDeadline=RSVP_DEADLINE, assetsPath="/assets",
+        mediaPath=MEDIA_PATH, faviconPath="/assets/favicon.svg", faviconType="image/svg+xml",
         ogImage="/assets/og.png", ogImageType="image/png", ogImageWidth=1200,
         ogImageHeight=630, themeColor="#f2efe9", siteName="", linkDescription="", primaryEvent=bare_event("e", True, True, False), sections=[],
         harness=items,

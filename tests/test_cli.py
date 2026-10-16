@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import shutil
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -198,6 +199,28 @@ class ValidateCommandTests(CliTestCase):
         self.assertIn("invitation #1: 'token' is too long", result.stderr)
         self.assertNotIn("Z" * 10, result.stderr)
 
+    def test_the_name_of_the_shared_directory_is_not_a_token(self):
+        # the page would be the directory of the files the pages share
+        for token in ("assets", "Assets", "ASSETS"):
+            with self.subTest(token=token):
+                invitations = invitations_data()
+                invitations[1]["token"] = token
+                write_data(self.data, invitations=invitations)
+                for result in (self.run_validate(), self.build_in_process()):
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn(
+                        "error: invitation #2: 'token' is a reserved name: the directory of the "
+                        "page would be the directory of the files the pages share (letter case "
+                        "aside); choose another token\n",
+                        result.stderr,
+                    )
+                    self.assertNotIn("ssets", result.stderr)
+                    self.assertNotIn("SSETS", result.stderr)
+                self.assertFalse(self.out.exists())
+        self.assertEqual(data_tools.RESERVED_TOKENS, {build.ASSETS_DIRNAME})
+        self.assertIsNone(data_tools.check_token("assets-x"))
+        self.assertIsNone(data_tools.check_token("my-assets"))
+
     def test_repeated_ids_of_the_markup_stop_the_build(self):
         # a safeguard: the ids are unique by construction, unless joined ambiguously
         site = site_data()
@@ -268,9 +291,9 @@ class BuildCommandTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
         for invitation in invitations_data():
-            page = self.out / "i" / invitation["token"] / "index.html"
+            page = self.out / invitation["token"] / "index.html"
             self.assertTrue(page.is_file(), page)
-        page = (self.out / "i" / support.TOKEN_A / "index.html").read_text(encoding="utf-8")
+        page = (self.out / support.TOKEN_A / "index.html").read_text(encoding="utf-8")
         self.assertIn(support.GREETING_TY, page)
         self.assertIn(support.NOTE, page)
         self.assertNotIn(support.GREETING_VY, page)
@@ -288,39 +311,77 @@ class BuildCommandTests(CliTestCase):
         self.assertFalse([name for name in copied if name.startswith(".")], copied)
 
         self.assertIn("3 page(s)", result.stdout)
-        self.assertIn("2 asset file(s)", result.stdout)
+        self.assertIn("3 asset file(s)", result.stdout)
         self.assertNoPrivateData(result.stdout, result.stderr)
 
     def test_paragraphs_in_multiline_fields(self):
         self.run_build()
-        page = (self.out / "i" / support.TOKEN_C / "index.html").read_text(encoding="utf-8")
+        page = (self.out / support.TOKEN_C / "index.html").read_text(encoding="utf-8")
         self.assertIn("</p><p>", page)
 
     def test_previous_build_output_is_replaced(self):
-        # every name a build may create, plus a file left by the OS
+        # what a build creates, plus files left by the OS
         self.out.mkdir(parents=True)
-        for name in ("index.html", "404.html", "_headers", "robots.txt", ".DS_Store"):
-            (self.out / name).write_text("old", encoding="utf-8")
+        (self.out / ".DS_Store").write_text("old", encoding="utf-8")
         (self.out / "assets").mkdir()
-        (self.out / "assets" / "stale.css").write_text("old", encoding="utf-8")
-        stale_page = self.out / "i" / "StaleToken-000000000000" / "index.html"
+        for name in ("app.css", "app.js", "stale.css"):
+            (self.out / "assets" / name).write_text("old", encoding="utf-8")
+        stale_page = self.out / "StaleToken-000000000000" / "index.html"
         stale_page.parent.mkdir(parents=True)
         stale_page.write_text("old", encoding="utf-8")
+        (stale_page.parent / "Thumbs.db").write_text("old", encoding="utf-8")
+        own_page = self.out / support.TOKEN_A / "index.html"
+        own_page.parent.mkdir()
+        own_page.write_text("old", encoding="utf-8")
 
         result = self.run_build()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(stale_page.parent.exists())
         self.assertFalse((self.out / "assets" / "stale.css").exists())
-        for name in ("index.html", "404.html", "_headers", "robots.txt"):
-            self.assertNotEqual((self.out / name).read_text(encoding="utf-8"), "old", name)
         self.assertFalse((self.out / ".DS_Store").exists())
-        self.assertTrue((self.out / "i" / support.TOKEN_A / "index.html").is_file())
+        self.assertNotEqual(own_page.read_text(encoding="utf-8"), "old")
+
+    def test_pages_without_assets_are_not_replaced(self):
+        # e.g. the pages directory of a whole site of the old layout, or
+        # somebody's site of plain pages: removing it is never undone
+        for name in ("about", "contact", "OldToken-0123456789"):
+            (self.out / name).mkdir(parents=True)
+            (self.out / name / "index.html").write_text("precious", encoding="utf-8")
+        result = run_cli(self.code, *self.build_args(), cwd=self.work)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "error: refusing to replace --out: it does not look like a previous build output "
+            "(no assets/ with app.css and app.js, which every build writes; the pages alone "
+            "are not replaced either); remove it manually or choose another --out\n",
+            result.stderr,
+        )
+        self.assertEqual((self.out / "about" / "index.html").read_text(encoding="utf-8"), "precious")
+        self.assertNotIn("about", result.stderr)
+
+    def test_assets_of_somebody_else_are_not_replaced(self):
+        assets = self.out / "assets"
+        (assets / "photos").mkdir(parents=True)
+        (assets / "notes.md").write_text("precious", encoding="utf-8")
+        result = run_cli(self.code, *self.build_args(), cwd=self.work)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no assets/ with app.css and app.js", result.stderr)
+        self.assertEqual((assets / "notes.md").read_text(encoding="utf-8"), "precious")
+
+    def test_a_build_of_no_invitation_is_built_again(self):
+        # no pages, only assets/ as a build writes it: built over again
+        write_data(self.data, invitations=[])
+        for _attempt in range(2):
+            result = run_cli(self.code, *self.build_args(), cwd=self.work)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("(0 page(s), ", result.stdout)
+        self.assertEqual(sorted(path.name for path in self.out.iterdir()), ["assets"])
+        self.assertTrue((self.out / "assets" / "app.js").is_file())
 
     def test_empty_output_directory_is_replaced(self):
         self.out.mkdir(parents=True)
         result = self.run_build()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue((self.out / "i" / support.TOKEN_A / "index.html").is_file())
+        self.assertTrue((self.out / support.TOKEN_A / "index.html").is_file())
 
     def test_no_temporary_directories_are_left_behind(self):
         self.run_build()
@@ -329,7 +390,7 @@ class BuildCommandTests(CliTestCase):
 
     def test_invalid_data_keeps_the_previous_output(self):
         self.run_build()
-        marker = self.out / "robots.txt"  # a name that belongs to a build output
+        marker = self.out / "assets" / "app.css"  # a name that belongs to a build output
         marker.write_text("keep", encoding="utf-8")
         invitations = invitations_data()
         del invitations[0]["greeting"]
@@ -381,8 +442,8 @@ class BuildCommandTests(CliTestCase):
         stale_old = self.work / ".dist.old-ba9876543210"
         unrelated = self.work / ".dist.tmp-notes"
         for directory in (stale_new, stale_old, unrelated):
-            (directory / "i" / "SomeToken").mkdir(parents=True)
-            (directory / "i" / "SomeToken" / "index.html").write_text("x", encoding="utf-8")
+            (directory / "SomeToken").mkdir(parents=True)
+            (directory / "SomeToken" / "index.html").write_text("x", encoding="utf-8")
 
         result = self.run_build()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -406,8 +467,6 @@ class BuildCommandTests(CliTestCase):
         self.assertIn("template not found", result.stderr)
 
     def test_missing_assets_directory(self):
-        import shutil
-
         shutil.rmtree(self.code / "assets")
         result = self.run_build()
         self.assertEqual(result.returncode, 1)
@@ -419,7 +478,7 @@ class BuildCommandTests(CliTestCase):
         write_media(self.code / "examples" / "media")
         result = run_cli(self.code, "build", cwd=self.work)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue((self.work / "dist" / "i" / support.TOKEN_A / "index.html").is_file())
+        self.assertTrue((self.work / "dist" / support.TOKEN_A / "index.html").is_file())
 
     def test_relative_arguments_are_relative_to_the_working_directory(self):
         result = run_cli(
@@ -434,7 +493,32 @@ class BuildCommandTests(CliTestCase):
             cwd=self.work,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue((self.work / "output" / "i" / support.TOKEN_A).is_dir())
+        self.assertTrue((self.work / "output" / support.TOKEN_A).is_dir())
+
+    def test_base_path(self):
+        result = self.run_build("--base-path", "/invite/")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        page = (self.out / support.TOKEN_A / "index.html").read_text(encoding="utf-8")
+        self.assertIn('href="/invite/assets/app.css"', page)
+        self.assertIn(
+            "build: base path /invite: the pages are at /invite/<token>/, the shared files "
+            "at /invite/assets/",
+            result.stdout,
+        )
+        self.assertNoPrivateData(result.stdout, result.stderr)
+
+    def test_invalid_base_path_is_a_usage_error(self):
+        for value in ("invite", "/invite//x", "/../x", "/a b", "/%69", "https://example.invalid/x",
+                      "/x?y", "/" + "x" * 200, ""):  # fmt: skip
+            with self.subTest(value=value[:12]):
+                result = run_main(self.code, *self.build_args("--base-path", value))
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("argument --base-path: must be", result.stderr)
+                self.assertFalse(self.out.exists())
+        # a value that starts with a dash is read as an option: still a usage error
+        result = run_main(self.code, *self.build_args("--base-path=-x"))
+        self.assertEqual(result.returncode, 2, result.stderr)
 
 
 class OutputDirectoryGuardTests(CliTestCase):
@@ -480,7 +564,7 @@ class OutputDirectoryGuardTests(CliTestCase):
         after = sorted(str(p.relative_to(self.code)) for p in (self.code / "assets").rglob("*"))
         self.assertEqual(before, after)
         self.assertTrue((self.code / "assets" / ".gitkeep").is_file())
-        self.assertFalse((self.code / "assets" / "i").exists())
+        self.assertFalse((self.code / "assets" / support.TOKEN_A).exists())
 
     def test_unrelated_directory_is_not_replaced(self):
         for directory in (self.code / "tests", self.work / "notes"):
@@ -488,19 +572,92 @@ class OutputDirectoryGuardTests(CliTestCase):
             keep = directory / "test_something.py"
             keep.write_text("# keep me\n", encoding="utf-8")
             result = self.assertRefused(
-                directory, fragment="does not look like a previous build output"
+                directory,
+                fragment="error: refusing to replace --out: it does not look like a previous "
+                "build output (unexpected at the top: 1 other entry; their names are not "
+                "shown, they may be tokens); remove it manually or choose another --out\n",
             )
-            self.assertIn("test_something.py", result.stderr)
-            self.assertIn("remove it manually or choose another --out", result.stderr)
+            self.assertNotIn("test_something", result.stderr)
             self.assertEqual(keep.read_text(encoding="utf-8"), "# keep me\n")
 
     def test_mixed_directory_is_not_replaced(self):
         # known names do not help when something else lives there as well
         self.out.mkdir()
-        (self.out / "index.html").write_text("old", encoding="utf-8")
+        (self.out / "assets").mkdir()
+        for name in ("app.css", "app.js"):
+            (self.out / "assets" / name).write_text("x", encoding="utf-8")
         (self.out / "thesis.txt").write_text("precious", encoding="utf-8")
-        self.assertRefused(self.out, fragment="'thesis.txt'")
+        (self.out / "drafts").mkdir()
+        self.assertRefused(self.out, fragment="(unexpected at the top: 1 directory and 1 other entry;")
         self.assertEqual((self.out / "thesis.txt").read_text(encoding="utf-8"), "precious")
+
+    def test_an_unreadable_parent_of_out(self):
+        """Before the data is read no file of an error is named."""
+        locked = self.work / "locked"
+        (locked / "zyzzyva-token").mkdir(parents=True)
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o700)
+        if os.access(locked, os.R_OK):  # pragma: no cover - e.g. run as root
+            self.skipTest("permissions are not enforced")
+        # "cannot inspect --out" or, where Path.exists() swallows the error,
+        # "cannot read --out"
+        result = self.assertRefused(locked / "zyzzyva-token", fragment="--out: Permission denied\n")
+        self.assertRegex(result.stderr, r"error: cannot (inspect|read) --out: Permission denied\n")
+        self.assertNotIn("zyzzyva", result.stderr)
+        self.assertNotIn("locked", result.stderr)
+
+    OLD_LAYOUT = (
+        "error: refusing to replace --out: it looks like a whole site (index.html, 404.html, "
+        "_headers or robots.txt at the top, or the pages one directory deeper); the build "
+        "now writes the invitations only, straight into --out - remove the directory or "
+        "choose another --out (e.g. a directory inside the site, see README 5)\n"
+    )
+
+    def make_old_site(self, pages: str = "pages") -> dict[str, str]:
+        """A whole site as the build wrote it before: the files of the site at
+        the top, the pages one directory deeper."""
+        self.out.mkdir()
+        for name in ("index.html", "404.html", "_headers", "robots.txt"):
+            (self.out / name).write_text("old", encoding="utf-8")
+        (self.out / "assets").mkdir()
+        for token in (support.TOKEN_A, support.TOKEN_B):
+            (self.out / pages / token).mkdir(parents=True)
+            (self.out / pages / token / "index.html").write_text("old", encoding="utf-8")
+        return {path.relative_to(self.out).as_posix(): "old" for path in self.out.rglob("*")}
+
+    def test_a_site_of_the_old_layout_is_not_replaced(self):
+        before = self.make_old_site()
+        result = self.assertRefused(self.out, fragment=self.OLD_LAYOUT)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            {path.relative_to(self.out).as_posix(): "old" for path in self.out.rglob("*")}, before
+        )
+        self.assertNoPrivateData(result.stdout, result.stderr)
+
+    def test_old_layout_without_the_files_of_the_site(self):
+        # the pages one directory deeper are enough to tell the layout
+        self.make_old_site(pages="x")
+        for name in ("index.html", "404.html", "_headers", "robots.txt"):
+            (self.out / name).unlink()
+        self.assertRefused(self.out, fragment=self.OLD_LAYOUT)
+        # and one file of the site is enough as well
+        (self.out / "x").rename(self.tmp / "moved")
+        (self.out / "robots.txt").write_text("old", encoding="utf-8")
+        self.assertRefused(self.out, fragment=self.OLD_LAYOUT)
+
+    def test_the_directory_of_a_page_is_not_replaced(self):
+        self.make_old_site()
+        page = self.out / "pages" / support.TOKEN_A
+        result = self.assertRefused(
+            page,
+            fragment="error: refusing to replace --out: it holds index.html alone, like the "
+            "directory of one page; point --out at the directory with the pages and assets/\n",
+        )
+        self.assertNoPrivateData(result.stdout, result.stderr)
+        self.assertEqual((page / "index.html").read_text(encoding="utf-8"), "old")
+        # the page itself
+        result = self.assertRefused(page / "index.html", fragment="--out exists and is not a directory\n")
+        self.assertNoPrivateData(result.stdout, result.stderr)
 
     def symlink(self, link: Path, target: Path) -> None:
         try:
@@ -563,8 +720,10 @@ class ExitCodeTests(CliTestCase):
         for command in ("build", "validate", "token", "links"):
             self.assertIn(command, result.stdout)
 
-    def test_links_requires_base(self):
-        self.assertEqual(run_cli(self.code, "links", cwd=self.work).returncode, 2)
+    def test_links_requires_url(self):
+        result = run_cli(self.code, "links", cwd=self.work)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--url", result.stderr)
 
 
 class NoPersonalDataInLogsTests(CliTestCase):
@@ -599,6 +758,7 @@ class NoPersonalDataInLogsTests(CliTestCase):
         for output in outputs:
             # the random name of the temporary directory is not a token
             output = output.replace(str(self.tmp), "<tmp>")
+            output = output.replace(build.display_path(self.tmp), "<tmp>")
             for token in self.SHORT_TOKENS:
                 for start in range(len(token) - 2):
                     self.assertNotIn(token[start : start + 3], output, token)
@@ -630,7 +790,7 @@ class NoPersonalDataInLogsTests(CliTestCase):
         self.assertIn("error: invitation #3: duplicate token (same as invitation #1;", result.stderr)
         cases.append(result)
 
-        # a problem of the finished output in the pages i/<token>/
+        # a problem of the finished output in the pages <token>/
         self.write_short_tokens()
         (self.code / "template.html").write_text(
             support.TEMPLATE.replace(
@@ -641,7 +801,7 @@ class NoPersonalDataInLogsTests(CliTestCase):
         result = self.run_build()
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("3 files: ", result.stderr)
-        self.assertIn("first: i/…/index.html line ", result.stderr)
+        self.assertIn("first: …/index.html line ", result.stderr)
         cases.append(result)
 
         for result in cases:
@@ -649,30 +809,113 @@ class NoPersonalDataInLogsTests(CliTestCase):
             self.assertNoPrivateData(result.stdout, result.stderr)
 
     def test_paths_in_warnings_are_redacted(self):
-        # e.g. a leftover directory next to an --out inside a pages directory
+        # e.g. a leftover directory next to an --out inside a page directory
         stderr = io.StringIO()
+        report = build._cli_report()
+        report.remember_tokens([{"token": "zyzzyva"}, {"token": "kumquat_jx"}, {"token": "abc"}])
         with contextlib.redirect_stderr(stderr):
-            build._cli_report().warn(
-                "could not remove dist/i/zyzzyva/.old; delete dist/I/kumquat_jx by hand"
+            report.warn(
+                "could not remove dist/zyzzyva/.old; delete pages\\KUMQUAT_JX and "
+                "dist/.zyzzyva.tmp-0123 by hand; zyzzyva-x, zyzzyva and abc stay"
             )
+        # paths only: a word of the message that equals a token stays, so the
+        # mask never tells which word the token is
         self.assertEqual(
             stderr.getvalue(),
-            "warning: could not remove dist/i/…/.old; delete dist/I/… by hand\n",
+            "warning: could not remove dist/…/.old; delete pages\\… and dist/.….tmp-0123 by "
+            "hand; zyzzyva-x, zyzzyva and abc stay\n",
         )
+
+    def test_redaction_helpers(self):
+        tokens = {"zyzzyva", "kumquat_jx"}
+        self.assertEqual(build.redact_tokens("a/ZyZzYvA/b", tokens), "a/…/b")
+        self.assertEqual(build.redact_tokens("./zyzzyva (3 pages)", tokens), "./… (3 pages)")
+        self.assertEqual(build.redact_tokens("'a/zyzzyva.zip'", tokens), "'a/….zip'")
+        self.assertEqual(build.redact_tokens("C:\\x\\Kumquat_JX\\y", tokens), "C:\\x\\…\\y")
+        # a word, a longer name: not a component of a path that is a token
+        self.assertEqual(build.redact_tokens("zyzzyva: OK", tokens), "zyzzyva: OK")
+        self.assertEqual(build.redact_tokens("x/zyzzyva_old", tokens), "x/zyzzyva_old")
+        self.assertEqual(build.redact_tokens("xzyzzyva/zyzzyvax", tokens), "xzyzzyva/zyzzyvax")
+        self.assertEqual(build.redact_tokens("nothing", set()), "nothing")
+        # a path of one component still has a separator
+        self.assertEqual(build.display_path(Path.cwd() / "zyzzyva"), os.path.join(".", "zyzzyva"))
+        self.assertEqual(build.display_path(Path.cwd()), ".")
+        self.assertEqual(build._output_path("zyzzyva/index.html"), "…/index.html")
+        self.assertEqual(build._output_path("assets/app.css"), "assets/app.css")
+        self.assertEqual(build._output_path("robots.txt"), "robots.txt")
+        self.assertEqual(build._output_path("quokka"), "…")
+        # only valid tokens are remembered: a short value would hide words
+        report = build.Report()
+        report.remember_tokens([{"token": "a"}, {"token": "assets"}, "x", {"token": 5}])
+        report.remember_tokens("not a list")
+        self.assertEqual(report.tokens, frozenset())
 
     def test_output_directory_named_like_a_token_stays_out_of_the_log(self):
         self.write_short_tokens()
-        self.out = self.work / "fresh" / "i" / "zyzzyva"
+        self.out = self.work / "fresh" / "pages" / "zyzzyva"
         result = self.run_build()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"to {Path('fresh', 'i', '…', 'i')}{os.sep}", result.stdout)
-        self.assertIn(f"build: OK -> {Path('fresh', 'i', '…')} ", result.stdout)
+        self.assertIn(f"to {Path('fresh', 'pages', '…')}/<token>/", result.stdout)
+        self.assertIn(f"build: OK -> {Path('fresh', 'pages', '…')} ", result.stdout)
         self.assertNoPieceOfTheTokens(result.stdout, result.stderr)
         result = run_cli(
             self.code, "validate", "--data", str(self.data), "--media",
-            str(self.work / "media" / "i" / "kumquat_jx"), cwd=self.work,
+            str(self.work / "media" / "pages" / "kumquat_jx"), cwd=self.work,
         )  # fmt: skip
         self.assertNoPieceOfTheTokens(result.stdout, result.stderr)
+
+    def test_failures_around_a_previous_build_stay_out_of_the_log(self):
+        """`--out` with any name: the refusals and the errors name no token."""
+        self.write_short_tokens()
+        pages = self.work / "pages"
+
+        def build_into(out: Path):
+            return run_cli(self.code, *self.build_args()[:-1], str(out), cwd=self.work)
+
+        self.assertEqual(build_into(pages).returncode, 0)
+        cases = []
+        # a file next to a page of the previous build
+        (pages / "zyzzyva" / "notes.txt").write_text("x", encoding="utf-8")
+        cases.append(build_into(pages))
+        self.assertIn("(unexpected at the top: 1 directory;", cases[-1].stderr)
+        (pages / "zyzzyva" / "notes.txt").unlink()
+        # copies of a page or of its directory next to the pages: an archive,
+        # the backup of an editor, the copy of a file manager, a short token
+        # with a dot; the data is not read yet, so no name is shown at all
+        extras = [pages / "zyzzyva.zip", pages / "zyzzyva~", pages / "kumquat_jx.bak"]
+        for path in extras:
+            path.write_text("x", encoding="utf-8")
+        (pages / "zyzzyva copy").mkdir()
+        (pages / "zyzzyva copy" / "index.html").write_text("x", encoding="utf-8")
+        (pages / "zyzzyva copy" / "notes.txt").write_text("x", encoding="utf-8")
+        cases.append(build_into(pages))
+        self.assertIn(
+            "error: refusing to replace --out: it does not look like a previous build output "
+            "(unexpected at the top: 1 directory and 3 other entries; their names are not "
+            "shown, they may be tokens); remove it manually or choose another --out\n",
+            cases[-1].stderr,
+        )
+        for path in extras:
+            path.unlink()
+        shutil.rmtree(pages / "zyzzyva copy")
+        # --out at the directory of a page and at a page
+        for out in (pages / "kumquat_jx", pages / "kumquat_jx" / "index.html"):
+            cases.append(build_into(out))
+            self.assertEqual(cases[-1].returncode, 1)
+        # an error while a page is written: the file of the error is a page
+        failure = PermissionError(13, "Permission denied", str(pages / "zyzzyva" / "index.html"))
+        with mock.patch.object(build, "write_pages", side_effect=failure):
+            cases.append(run_main(self.code, *self.build_args()[:-1], str(pages)))
+        self.assertEqual(cases[-1].returncode, 1)
+        self.assertIn("error: Permission denied: ", cases[-1].stderr)
+        self.assertIn(f"{os.sep}{Path('pages', '…', 'index.html')}\n", cases[-1].stderr)
+        # --out below a page, in another letter case
+        cases.append(build_into(pages / "Kumquat_JX" / "sub"))
+        self.assertEqual(cases[-1].returncode, 0, cases[-1].stderr)
+        self.assertIn(f"build: OK -> {Path('pages', '…', 'sub')} ", cases[-1].stdout)
+        for result in cases:
+            self.assertNoPieceOfTheTokens(result.stdout, result.stderr)
+            self.assertNoPrivateData(result.stdout, result.stderr)
 
     def test_successful_runs_with_short_tokens_stay_clean(self):
         self.write_short_tokens()

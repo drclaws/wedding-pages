@@ -18,7 +18,7 @@ from tests.support import ROOT, TempDirTestCase
 
 FFMPEG = shutil.which("ffmpeg")
 #: What the script needs of the repository.
-PARTS = ("build.py", "template.html", "stub.html", "preview.html", "tools", "fragments", "assets",
+PARTS = ("build.py", "template.html", "preview.html", "tools", "fragments", "assets",
          "examples/data", "examples/data-venue-pending")  # fmt: skip
 
 
@@ -60,7 +60,7 @@ class BuildExamplesTests(TempDirTestCase):
         )
 
     def pages(self, name: str) -> list[Path]:
-        return sorted((self.work / "out" / name / "i").glob("*/index.html"))
+        return sorted((self.work / "out" / name).glob("*/index.html"))
 
     def assertOnlyOutputAndMedia(self) -> None:
         new = self.listing() - self.before
@@ -77,7 +77,16 @@ class BuildExamplesTests(TempDirTestCase):
         self.assertIn("build: OK -> ", result.stdout)
         self.assertIn(f"python3 -m http.server -d {Path('out') / 'data-venue-pending'} 8123", result.stdout)
         for token, greeting in tokens("data-venue-pending"):
-            self.assertIn(f"  http://localhost:8123/i/{token}/  {greeting}", result.stdout)
+            self.assertIn(f"  http://localhost:8123/{token}/  {greeting}", result.stdout)
+        # the directory of a set is the root to serve: the pages and assets/ only
+        out = self.work / "out" / "data-venue-pending"
+        self.assertEqual(
+            sorted(path.name for path in out.iterdir()),
+            sorted(["assets", *(token for token, _greeting in tokens("data-venue-pending"))]),
+        )
+        page = self.pages("data-venue-pending")[0].read_text(encoding="utf-8")
+        self.assertIn('href="/assets/app.css"', page)
+        self.assertIn("build: base path /: the pages are at /<token>/", result.stdout)
         self.assertFalse((self.repo / "examples" / "media").exists())
         self.assertOnlyOutputAndMedia()
 
@@ -134,11 +143,13 @@ class BuildExamplesTests(TempDirTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(self.pages("data")), 8)
         # one calendar file per event, in the media directory; none next to the pages
-        self.assertEqual(list((self.work / "out" / "data" / "i").rglob("*.ics")), [])
-        self.assertEqual(len(list((self.work / "out" / "data" / "assets").rglob("*.ics"))), 3)
+        out = self.work / "out" / "data"
+        self.assertEqual(list(out.glob("*/*.ics")), [])
+        self.assertEqual(len(list((out / "assets").rglob("*.ics"))), 3)
+        self.assertEqual(len(list(out.rglob("*.ics"))), 3)
         self.assertTrue((self.repo / "examples" / "media" / "walk.mp4").is_file())
         for token, greeting in tokens("data"):
-            self.assertIn(f"  http://localhost:8000/i/{token}/  {greeting}", result.stdout)
+            self.assertIn(f"  http://localhost:8000/{token}/  {greeting}", result.stdout)
         self.assertOnlyOutputAndMedia()
 
 

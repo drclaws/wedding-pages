@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Static builder for personal invitation pages.
 
-    python build.py build    [--data DIR] [--media DIR] [--out DIR] [--site-name NAME]
-                             [--chrome PATH] [--no-link-preview-image]
+    python build.py build    [--data DIR] [--media DIR] [--out DIR] [--base-path PATH]
+                             [--site-name NAME] [--chrome PATH] [--no-link-preview-image]
     python build.py validate [--data DIR] [--media DIR]
     python build.py token    [--prefix NAME]
-    python build.py links    --base URL [--data DIR]
+    python build.py links    --url URL [--data DIR]
 
 Only the Python 3 standard library is used (Python >= 3.10).
 
@@ -14,17 +14,20 @@ The data is in the format 2 (`site.json` with `"schemaVersion": 2` and
 invitation is rendered from its page tree (`tools/_page.py`) with the page
 template and its fragments.
 
-`build` writes the pages (`i/<token>/index.html`), the stub (`index.html`
-and `404.html`), `assets/` (including `assets/<mediaDir>/` with the media files
-that at least one page shows and one calendar file for every event that at
-least one invitation sees, all published under the hash of their contents, and
-the icon, generated from the design tokens of `assets/app.css` unless the
-media directory provides it, and the link preview image: the cover of the
-pages rendered by headless Chrome and published in the media directory under
-the hash of its contents; see `link_preview`),
-`_headers` and `robots.txt`, and then checks the finished output: nothing but
-the expected files, no external resources, no inline scripts, every local link
-resolves, no file above the hosting size limit.
+`build` writes the invitations and nothing else, straight into `--out`: the
+pages (`<token>/index.html`) and `assets/` (including `assets/<mediaDir>/` with
+the media files that at least one page shows and one calendar file for every
+event that at least one invitation sees, all published under the hash of their
+contents, and the icon, generated from the design tokens of `assets/app.css`
+unless the media directory provides it, and the link preview image: the cover
+of the pages rendered by headless Chrome and published in the media directory
+under the hash of its contents; see `link_preview`).  The contents of `--out`
+are published under `--base-path` (`/` by default): every URL of the output
+starts with it.  Whatever the site needs around the invitations (its root
+page, a page for a wrong address, headers, `robots.txt`) is up to whoever
+publishes the output.  The finished output is checked: nothing but the
+expected files, no external resources, no inline scripts, every local link
+resolves inside the output, no file above the hosting size limit.
 
 Importing this module has no side effects: everything happens inside `main()`,
 so other tools (tests, preview scripts) can reuse the public helpers:
@@ -76,7 +79,6 @@ from tools import _schema as schema  # noqa: E402
 from tools import gen_assets  # noqa: E402
 from tools._data import (  # noqa: E402
     IMAGE_EXTENSIONS,
-    MIN_TOKEN_LENGTH,
     _extension_list,
     check_token_prefix,
     format_size,
@@ -102,21 +104,29 @@ TEMPLATE_FILE = "template.html"
 #: in `assets/`; neither is published.
 PREVIEW_TEMPLATE_FILE = "preview.html"
 PREVIEW_STYLESHEET = "preview.css"
-STUB_FILE = "stub.html"
 ASSETS_DIRNAME = "assets"
 SITE_FILE = "site.json"
 INVITATIONS_FILE = "invitations.json"
 
-#: Output layout.
-PAGES_DIRNAME = "i"
+#: Output layout: `<out>/<token>/index.html` for every page and
+#: `<out>/assets/` for everything the pages share; nothing else.
 PAGE_FILE = "index.html"
 #: The calendar file of an event, in the media directory:
 #: `assets/<mediaDir>/<sha256[:16]>.ics` of its contents.
 CALENDAR_SUFFIX = ".ics"
-#: The stub is published under both names, byte for byte the same.
-STUB_OUTPUTS = ("index.html", "404.html")
-HEADERS_FILE = "_headers"
-ROBOTS_FILE = "robots.txt"
+
+#: `build --base-path`: the path from the root of the site under which the
+#: contents of `--out` are published.  Every URL of the output starts with it:
+#: `<base path>/assets/…`, and the page of a guest is `<base path>/<token>/`.
+DEFAULT_BASE_PATH = "/"
+MAX_BASE_PATH_LENGTH = 200
+#: `/` or `/seg[/seg…]` with an optional trailing `/`.
+_BASE_PATH_RE = re.compile(r"(?:/[A-Za-z0-9_-]+)*/?")
+
+#: The files the build wrote at the top of `--out` while it built the whole
+#: site.  A directory that holds one of them is a site of that layout, never a
+#: build of the invitations (see `check_replaceable`).
+OLD_LAYOUT_FILES = frozenset({"index.html", "404.html", "_headers", "robots.txt"})
 
 #: Style sheet inside `assets/` whose `:root` tokens colour the generated images.
 TOKENS_FILE = "app.css"
@@ -150,14 +160,6 @@ DEFAULT_MEDIA_DIR = Path("examples") / "media"
 #: Default relative to the current working directory.
 DEFAULT_OUT_DIR = Path("dist")
 
-#: Everything a build may put at the top level of the output directory.  It is
-#: used to recognise a previous build before replacing `--out`, and it is the
-#: allow-list that the finished output is checked against.
-OUTPUT_TOP_LEVEL = frozenset(
-    {PAGES_DIRNAME, ASSETS_DIRNAME, *STUB_OUTPUTS, HEADERS_FILE, ROBOTS_FILE}
-)
-#: The entries of `OUTPUT_TOP_LEVEL` that are directories (the rest are files).
-OUTPUT_TOP_LEVEL_DIRS = frozenset({PAGES_DIRNAME, ASSETS_DIRNAME})
 #: Files created by the operating system; ignored when `--out` is inspected.
 OS_JUNK_FILES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 
@@ -172,52 +174,6 @@ ASSET_EXTENSIONS = frozenset(
 FORBIDDEN_OUTPUT_EXTENSIONS = frozenset({".json", ".map", ".py", ".md"})
 #: Asset files that belong to the style guide and are not part of the site.
 STYLEGUIDE_PREFIX = "styleguide."
-
-#: `_headers` (Cloudflare Pages syntax) and `robots.txt`, written verbatim.
-#:
-#: A request that matches several patterns inherits the headers of all of them,
-#: and a header is taken away by repeating its name after `! `. That is why
-#: `X-Robots-Tag` stays on `/*` (the root and a wrong path outside `/i/` keep
-#: it) and is detached on `/i/*`: the pages of the invitations are the ones
-#: whose link previews the messengers have to be able to build.
-#:
-#: **The order of the blocks matters.** The rules are applied as they follow in
-#: the file, so `! ` takes away only what a rule ABOVE it has already added: the
-#: block of `/*` has to stay above the block of `/i/*`. Swapped, the detach runs
-#: before the header it names is set, and every page silently gets `noindex`
-#: back. A test pins the order.
-HEADERS_TEXT = """\
-/*
-  X-Robots-Tag: noindex, nofollow
-  Referrer-Policy: no-referrer
-  X-Content-Type-Options: nosniff
-  X-Frame-Options: DENY
-  Content-Security-Policy: default-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
-/i/*
-  ! X-Robots-Tag
-  Cache-Control: private, no-cache
-"""
-#: A crawler obeys exactly one group of `robots.txt` — the one whose user agent
-#: name matches it most closely — and a named group is never combined with the
-#: group of `*`, so the bots listed below do not inherit the `Disallow: /` that
-#: keeps the search engines out. Several `User-agent` lines in a row make one
-#: group; the names are matched without regard to case. No address is disclosed:
-#: `Allow: /` names no path of an invitation.
-ROBOTS_TEXT = """\
-User-agent: TelegramBot
-User-agent: TwitterBot
-User-agent: facebookexternalhit
-User-agent: WhatsApp
-User-agent: Discordbot
-User-agent: Slackbot
-User-agent: Slackbot-LinkExpanding
-User-agent: ViberBot
-User-agent: SkypeUriPreview
-Allow: /
-
-User-agent: *
-Disallow: /
-"""
 
 #: How long an event without an end lasts (in its calendar file and for the
 #: past/now marks of the page); `site.json` gets a warning for such an event.
@@ -297,6 +253,11 @@ class Report:
 
     `on_warn` lets the caller show warnings as soon as they appear (the CLI
     prints them to stderr); errors are always reported together at the end.
+
+    The report also remembers the tokens of the invitations as soon as
+    `invitations.json` is read (`remember_tokens`), so that whatever prints
+    the messages of a command can hide them (`redact`): a path that a message
+    shows may lead through the directory of a page.
     """
 
     def __init__(self, on_warn: Callable[[str], None] | None = None) -> None:
@@ -306,6 +267,8 @@ class Report:
         self.media_files = 0
         #: Icon and link preview image, see `find_site_images`.
         self.site_images: SiteImages = DEFAULT_SITE_IMAGES
+        #: The valid tokens of the invitations, in lower case.
+        self.tokens: frozenset[str] = frozenset()
         self._on_warn = on_warn
 
     def error(self, message: str) -> None:
@@ -315,6 +278,22 @@ class Report:
         self.warnings.append(message)
         if self._on_warn is not None:
             self._on_warn(message)
+
+    def remember_tokens(self, invitations: Any) -> None:
+        """Remember the tokens of `invitations` (the parsed `invitations.json`,
+        whatever its shape): every value that is a valid token."""
+        if not isinstance(invitations, list):
+            return
+        found = {
+            item["token"].lower()
+            for item in invitations
+            if isinstance(item, dict) and data_tools.check_token(item.get("token")) is None
+        }
+        self.tokens = self.tokens | found
+
+    def redact(self, text: Any) -> str:
+        """`text` with the tokens hidden (`redact_tokens`)."""
+        return redact_tokens(text, self.tokens)
 
     @property
     def ok(self) -> bool:
@@ -1292,17 +1271,44 @@ def _warn_site_image_lookalikes(
         )
 
 
-def site_images_context(images: SiteImages = DEFAULT_SITE_IMAGES) -> dict:
+def check_base_path(value: Any) -> str:
+    """`build --base-path`: `/` or `/seg[/seg…]`, segments of A-Z, a-z, 0-9,
+    `_` and `-`; a trailing `/` is dropped.  `ValueError` names the problem,
+    never the value."""
+    if (
+        not isinstance(value, str)
+        or not value.startswith("/")
+        or _BASE_PATH_RE.fullmatch(value) is None
+    ):
+        raise ValueError(
+            "must be a path from the root of the site: '/' or segments of A-Z, a-z, "
+            "0-9, '_' and '-', each after a single '/', e.g. /invite (no '.' or '..', "
+            "'%', '?', '#', scheme, host or spaces)"
+        )
+    normalized = value.rstrip("/") or "/"
+    if len(normalized) > MAX_BASE_PATH_LENGTH:
+        raise ValueError(f"must be at most {MAX_BASE_PATH_LENGTH} characters long")
+    return normalized
+
+
+def assets_url_path(base_path: str = DEFAULT_BASE_PATH) -> str:
+    """`<base path>/assets`: the URL path of the files the pages share."""
+    return f"{base_path.rstrip('/')}/{ASSETS_DIRNAME}"
+
+
+def site_images_context(
+    images: SiteImages = DEFAULT_SITE_IMAGES, base_path: str = DEFAULT_BASE_PATH
+) -> dict:
     """The computed fields of the icon and the link preview image.
 
-    Every URL is a path from the site root: the build never knows the address
-    of the site.  None of the fields depends on the data: the stub may use
-    them as well.
+    Every URL is a path from the site root under `base_path`: the build never
+    knows the address of the site.  None of the fields depends on the data.
     """
+    assets = assets_url_path(base_path)
     return {
-        "faviconPath": f"/{ASSETS_DIRNAME}/{_url_component(images.favicon.name)}",
+        "faviconPath": f"{assets}/{_url_component(images.favicon.name)}",
         "faviconType": images.favicon.mime,
-        "ogImage": f"/{ASSETS_DIRNAME}/{_url_component(images.og.name)}",
+        "ogImage": f"{assets}/{_url_component(images.og.name)}",
         "ogImageType": images.og.mime,
         "ogImageWidth": images.og.width,
         "ogImageHeight": images.og.height,
@@ -1390,6 +1396,7 @@ def load_data(
     index = schema.check_site(site, report) if site is not MISSING else schema.SiteIndex()
     known = schema.GUEST_FIELD_NAMES | index.declared_ids()
     invitations = read_json(data_path / INVITATIONS_FILE, report, known)
+    report.remember_tokens(invitations)
     if invitations is not MISSING:
         schema.check_invitations(invitations, index, report)
     if media_dir is not None:
@@ -1412,6 +1419,7 @@ def page_settings(
     images: dict | None = None,
     media: dict[str, MediaFile] | None = None,
     calendars: Mapping[str, CalendarFile] | None = None,
+    base_path: str = DEFAULT_BASE_PATH,
 ) -> page_tools.PageSettings:
     """What the page trees need from the build.
 
@@ -1419,10 +1427,12 @@ def page_settings(
     (`site_images_context`) and the colours (`site_colors_context`);
     `media` the files that `check_media` found: a media file is addressed by
     its published name; `calendars` are the calendar files of the events
-    (`calendar_files`), addressed the same way.
+    (`calendar_files`), addressed the same way.  Every address starts with
+    `<base_path>/assets` (`assetsPath` of the trees).
     """
     media = media or {}
-    media_path = f"/{ASSETS_DIRNAME}/{site['mediaDir']}"
+    assets_path = assets_url_path(base_path)
+    media_path = f"{assets_path}/{site['mediaDir']}"
 
     def media_src(name: str) -> str:
         entry = media.get(name)
@@ -1447,14 +1457,15 @@ def page_settings(
         media_src=media_src,
         calendar_src=calendar_src,
         media_info={name: entry.info for name, entry in media.items()},
-        pages_path=f"/{PAGES_DIRNAME}",
-        assets_path=f"/{ASSETS_DIRNAME}",
+        assets_path=assets_path,
     )
 
 
-def page_trees(data: Data, images: dict | None = None) -> list[dict]:
+def page_trees(
+    data: Data, images: dict | None = None, base_path: str = DEFAULT_BASE_PATH
+) -> list[dict]:
     """The page tree of every invitation, in the order of `invitations.json`."""
-    settings = page_settings(data.site, images, data.media, calendar_files(data))
+    settings = page_settings(data.site, images, data.media, calendar_files(data), base_path)
     trees, _usage = page_tools.build_pages(data.site, data.invitations, settings)
     return trees
 
@@ -1816,9 +1827,24 @@ def _classify_url(value: str) -> tuple[str, str]:
     return "relative", url
 
 
-def _local_file(url: str) -> str | None:
-    """Output file that a root-absolute URL points at; None if it is not plain."""
-    path = unquote(url.split("#", 1)[0].split("?", 1)[0])
+def _url_path(url: str) -> str:
+    """The decoded path of a URL, without its query and fragment."""
+    return unquote(url.split("#", 1)[0].split("?", 1)[0])
+
+
+def _within_base(url: str, base_path: str = DEFAULT_BASE_PATH) -> bool:
+    """True when a root-absolute URL lies under `base_path` (always for `/`)."""
+    prefix = base_path.rstrip("/")
+    path = _url_path(url)
+    return not prefix or path == prefix or path.startswith(f"{prefix}/")
+
+
+def _local_file(url: str, base_path: str = DEFAULT_BASE_PATH) -> str | None:
+    """Output file that a root-absolute URL points at; None if it is not plain
+    or lies outside `base_path` (the output is published under it)."""
+    if not _within_base(url, base_path):
+        return None
+    path = _url_path(url)[len(base_path.rstrip("/")) :] or "/"
     if path.endswith("/"):
         path += PAGE_FILE
     segments = path.split("/")[1:]
@@ -1889,31 +1915,40 @@ class _UrlPolicy:
         exists: Callable[[str], bool],
         is_dir: Callable[[str], bool] | None = None,
         base: str | None = None,
+        base_path: str = DEFAULT_BASE_PATH,
     ):
         self.exists = exists
         self.is_dir = is_dir if is_dir is not None else (lambda _path: False)
         #: Directory of the style sheet being checked ("" is the root); None
         #: for HTML, where relative URLs are not allowed at all.
         self.base = base
+        #: The path the output is published under (`build --base-path`): a
+        #: local URL must lie under it.
+        self.base_path = base_path
         self.problems: list[tuple[int, str]] = []
 
     def show_path(self, url: str) -> str:
         """A local or relative URL for a message.
 
-        Only the directories that exist in the output and a known file
-        extension are shown: the rest may be text that a template put into a
-        path by mistake.
+        Only the base path, the directories that exist in the output and a
+        known file extension are shown: the rest may be text that a template
+        put into a path by mistake.
         """
         path = _clean_url(url).split("#", 1)[0].split("?", 1)[0]
         absolute = path.startswith("/")
         segments = [segment for segment in path.split("/") if segment]
         kept: list[str] = []
         if absolute:
-            for segment in segments:
-                candidate = "/".join([*kept, unquote(segment)])
+            base = [segment for segment in self.base_path.split("/") if segment]
+            start = len(base) if segments[: len(base)] == base else 0
+            kept = segments[:start]
+            inside: list[str] = []
+            for segment in segments[start:]:
+                candidate = "/".join([*inside, unquote(segment)])
                 if not _PLAIN_URL_RE.match(segment) or not self.is_dir(candidate):
                     break
-                kept.append(segment)
+                inside.append(segment)
+            kept += inside
         lead = "/" if absolute else ""
         if len(kept) == len(segments):
             return lead + "/".join(kept) + ("/" if kept else "")
@@ -1943,8 +1978,10 @@ class _UrlPolicy:
         if kind == "fragment":
             return True
         if kind == "local":
-            target = _local_file(url)
-            if target is None:
+            target = _local_file(url, self.base_path)
+            if not _within_base(url, self.base_path):
+                self.problem(line, f"{where}: '{self.show_path(url)}' points outside the output")
+            elif target is None:
                 self.problem(
                     line, f"{where}: '{self.show_path(url)}' is not a plain absolute path"
                 )
@@ -1960,7 +1997,7 @@ class _UrlPolicy:
             self.problem(
                 line,
                 f"{where}: relative path '{self.show_path(url)}'; {what} must be "
-                "absolute from the site root (start with '/')",
+                f"absolute from the site root (start with '{self.base_path.rstrip('/')}/')",
             )
         elif kind == "script":
             self.problem(line, f"{where}: script URL '{_show_url(url)}' is not allowed")
@@ -2181,13 +2218,13 @@ class _HtmlChecker(HTMLParser):
             # also closes a gap: inside <svg> a browser parses the content of
             # <style> as markup, while the parser takes it for text
             policy.problem(
-                line, "<style> elements are not allowed; styles must be files in /assets/"
+                line, "<style> elements are not allowed; styles must be files in assets/"
             )
         if tag == "script":
             self._in_script = bool(values.get("src", "").strip())
             if not self._in_script:
                 policy.problem(
-                    line, "inline <script> is not allowed; scripts must be files in /assets/"
+                    line, "inline <script> is not allowed; scripts must be files in assets/"
                 )
             if "href" in values or "xlink:href" in values:
                 policy.problem(line, "<script href> (an SVG script) is not allowed")
@@ -2273,15 +2310,18 @@ def check_html(
     document: str,
     exists: Callable[[str], bool],
     is_dir: Callable[[str], bool] | None = None,
+    base_path: str = DEFAULT_BASE_PATH,
 ) -> list[tuple[int, str]]:
     """Problems of one HTML document as (line, message) pairs.
 
     `exists` tells whether a file (relative path with '/') is in the output,
     `is_dir` does the same for directories (only used to word the messages).
+    The output is published under `base_path`: a local URL outside it points
+    outside the output, one inside it is looked up without the base path.
     Whatever the parser may read differently from a browser is an error;
     so is any absolute URL, `<meta>` links (`og:image`) included.
     """
-    policy = _UrlPolicy(exists, is_dir)
+    policy = _UrlPolicy(exists, is_dir, base_path=base_path)
     leftover = _LEFTOVER_RE.search(document)
     if leftover:
         policy.problem(
@@ -2302,13 +2342,15 @@ def check_stylesheet(
     exists: Callable[[str], bool],
     is_dir: Callable[[str], bool] | None = None,
     base: str = "",
+    base_path: str = DEFAULT_BASE_PATH,
 ) -> list[tuple[int, str]]:
     """Problems of one CSS file as (line, message) pairs.
 
     `base` is the directory of the file inside the output: relative `url()`s
-    are resolved against it and must stay inside the output.
+    are resolved against it and must stay inside the output; root-absolute
+    ones must lie under `base_path` (see `check_html`).
     """
-    policy = _UrlPolicy(exists, is_dir, base)
+    policy = _UrlPolicy(exists, is_dir, base, base_path)
     check_css(text, policy)
     return policy.problems
 
@@ -2406,6 +2448,7 @@ def check_svg(
     exists: Callable[[str], bool] | None = None,
     is_dir: Callable[[str], bool] | None = None,
     base: str = "",
+    base_path: str = DEFAULT_BASE_PATH,
 ) -> list[tuple[int, str]]:
     """Problems of one SVG file as (line, message) pairs.
 
@@ -2416,10 +2459,13 @@ def check_svg(
     attributes.  Elements are recognised by their local name (`svg:script` is a
     script); namespace URIs in `xmlns` are not references.
 
-    `exists` and `is_dir` describe the output as for `check_html`, `base` is the
-    directory of the file; without `exists` local URLs are not looked up.
+    `exists`, `is_dir` and `base_path` describe the output as for
+    `check_html`, `base` is the directory of the file; without `exists` local
+    URLs are not looked up.
     """
-    policy = _UrlPolicy(exists if exists is not None else (lambda _path: True), is_dir, base)
+    policy = _UrlPolicy(
+        exists if exists is not None else (lambda _path: True), is_dir, base, base_path
+    )
     for pattern, message in _SVG_UNSAFE_MARKUP:
         match = pattern.search(text)
         if match:
@@ -2437,7 +2483,8 @@ MAX_REPORTED_PROBLEMS = 25
 
 def _scan_output(root: Path) -> tuple[dict[str, int], list[str], list[str]]:
     """(files -> size, directories, problems) of an output tree; paths are
-    relative and use '/'.  Symbolic links are reported, never followed."""
+    relative and use '/' (in the problems as `_output_path` shows them).
+    Symbolic links are reported, never followed."""
     files: dict[str, int] = {}
     directories: list[str] = []
     problems: list[str] = []
@@ -2448,14 +2495,16 @@ def _scan_output(root: Path) -> tuple[dict[str, int], list[str], list[str]]:
         for entry in entries:
             relative = f"{prefix}{entry.name}"
             if entry.is_symlink():
-                problems.append(f"{relative}: symbolic links are not allowed in the output")
+                problems.append(
+                    f"{_output_path(relative)}: symbolic links are not allowed in the output"
+                )
             elif entry.is_dir(follow_symlinks=False):
                 directories.append(relative)
                 walk(Path(entry.path), f"{relative}/")
             elif entry.is_file(follow_symlinks=False):
                 files[relative] = entry.stat(follow_symlinks=False).st_size
             else:
-                problems.append(f"{relative}: not a regular file")
+                problems.append(f"{_output_path(relative)}: not a regular file")
 
     walk(root, "")
     return files, directories, problems
@@ -2482,13 +2531,14 @@ def _check_output_tree(
     media: Collection[str] = (),
     calendars: Collection[str] = (),
 ) -> list[str]:
-    """Allow-list of the output: only what the site needs is published.
+    """Allow-list of the output: only what the invitations need is published.
 
-    `pages` are the tokens of the invitations: `i/<token>/` holds the page
-    and nothing else.  `assets/<media_dir>/` holds exactly the published
-    names `media` and the calendar files `calendars` (and does not exist
-    without them); besides it `assets/` may only hold the files of the code
-    and the directories `ASSET_DIRECTORIES`.
+    `pages` are the tokens of the invitations: the top of the output holds
+    `assets/` and one directory `<token>/` per invitation with the page and
+    nothing else.  `assets/<media_dir>/` holds exactly the published names
+    `media` and the calendar files `calendars` (and does not exist without
+    them); besides it `assets/` may only hold the files of the code and the
+    directories `ASSET_DIRECTORIES`.  Paths are shown by `_output_path`.
     """
     problems: list[str] = []
     media_prefix = f"{ASSETS_DIRNAME}/{media_dir}/" if media_dir else None
@@ -2496,25 +2546,24 @@ def _check_output_tree(
         {f"{media_prefix}{name}" for name in (*media, *calendars)} if media_prefix else set()
     )
     allowed_asset_dirs = {f"{ASSETS_DIRNAME}/{name}" for name in ASSET_DIRECTORIES}
-    tokens = list(pages)
-    expected_pages = {f"{PAGES_DIRNAME}/{token}/{PAGE_FILE}" for token in tokens}
-    expected_dirs = {f"{PAGES_DIRNAME}/{token}" for token in tokens}
+    expected_dirs = set(pages)
+    expected_pages = {f"{token}/{PAGE_FILE}" for token in expected_dirs}
+    page_rule = f"only {PAGE_FILE} is allowed in the directory of a page"
 
     for relative in directories:
         parts = relative.split("/")
+        shown = _output_path(relative)
         if parts[-1].startswith("."):
-            problems.append(f"{relative}: dot-directories must not be published")
+            problems.append(f"{shown}: dot-directories must not be published")
         elif len(parts) == 1:
-            if relative not in OUTPUT_TOP_LEVEL_DIRS:
+            if relative != ASSETS_DIRNAME and relative not in expected_dirs:
                 problems.append(
-                    f"{relative}: unexpected directory at the top of the output"
+                    f"{shown}: unexpected directory at the top of the output (only "
+                    f"{ASSETS_DIRNAME}/ and one directory per invitation are allowed)"
                 )
-        elif parts[0] == PAGES_DIRNAME and relative not in expected_dirs:
-            problems.append(
-                f"{relative}: unexpected directory (only one directory per invitation "
-                f"is allowed in {PAGES_DIRNAME}/)"
-            )
-        elif parts[0] == ASSETS_DIRNAME:
+        elif parts[0] != ASSETS_DIRNAME:
+            problems.append(f"{shown}: unexpected directory ({page_rule})")
+        else:
             media_path = media_prefix.rstrip("/") if media_prefix else None
             if relative == media_path:
                 allowed = bool(expected_media)
@@ -2535,19 +2584,19 @@ def _check_output_tree(
         parts = relative.split("/")
         name = parts[-1]
         extension = os.path.splitext(name)[1].lower()
+        shown = _output_path(relative)
         if name.startswith("."):
-            problems.append(f"{relative}: dot-files must not be published")
+            problems.append(f"{shown}: dot-files must not be published")
         elif extension in FORBIDDEN_OUTPUT_EXTENSIONS:
-            problems.append(f"{relative}: '{extension}' files must not be published")
+            problems.append(f"{shown}: '{extension}' files must not be published")
         elif len(parts) == 1:
-            if relative not in OUTPUT_TOP_LEVEL or relative in OUTPUT_TOP_LEVEL_DIRS:
-                problems.append(f"{relative}: unexpected file at the top of the output")
-        elif parts[0] == PAGES_DIRNAME:
+            problems.append(
+                f"{shown}: unexpected file at the top of the output (the build writes "
+                f"the pages and {ASSETS_DIRNAME}/ only)"
+            )
+        elif parts[0] != ASSETS_DIRNAME:
             if relative not in expected_pages:
-                problems.append(
-                    f"{relative}: unexpected file (only <token>/{PAGE_FILE} is allowed in "
-                    f"{PAGES_DIRNAME}/)"
-                )
+                problems.append(f"{shown}: unexpected file ({page_rule})")
         elif media_prefix and relative.startswith(media_prefix):
             if relative not in expected_media:
                 problems.append(
@@ -2555,29 +2604,20 @@ def _check_output_tree(
                     "media the pages show and the calendar files of the events are "
                     "published, under the hash of their contents)"
                 )
-        elif parts[0] == ASSETS_DIRNAME:
-            if extension not in ASSET_EXTENSIONS:
-                problems.append(
-                    f"{relative}: file type '{extension or name}' is not allowed in "
-                    f"{ASSETS_DIRNAME}/ (allowed: {_extension_list(ASSET_EXTENSIONS)})"
-                )
-        else:
-            problems.append(f"{relative}: unexpected file")
+        elif extension not in ASSET_EXTENSIONS:
+            problems.append(
+                f"{shown}: file type '{extension or name}' is not allowed in "
+                f"{ASSETS_DIRNAME}/ (allowed: {_extension_list(ASSET_EXTENSIONS)})"
+            )
         if size > MAX_FILE_BYTES:
             problems.append(
-                f"{relative}: {format_size(size)} is larger than the limit of "
+                f"{shown}: {format_size(size)} is larger than the limit of "
                 f"{format_size(MAX_FILE_BYTES)} for a single file"
             )
 
-    required = [
-        *STUB_OUTPUTS,
-        HEADERS_FILE,
-        ROBOTS_FILE,
-        *sorted(expected_pages),
-    ]
-    for relative in required:
+    for relative in sorted(expected_pages):
         if relative not in files:
-            problems.append(f"{relative}: missing from the output")
+            problems.append(f"{_output_path(relative)}: missing from the output")
     for relative in sorted(expected_media):
         if relative not in files:
             problems.append(f"{_media_path(relative[len(media_prefix):])}: missing from the output")
@@ -2590,6 +2630,7 @@ def check_output(
     media_dir: str = "",
     media: Collection[str] = (),
     calendars: Collection[str] = (),
+    base_path: str = DEFAULT_BASE_PATH,
 ) -> OutputStats:
     """Check a finished output directory; raises `OutputError` with every problem.
 
@@ -2599,14 +2640,16 @@ def check_output(
     * HTML: no template syntax or comments left, no external resources, no
       inline scripts or event handlers, no embedded documents; external links
       only to the map services and with `target`/`rel`; every local URL
+      lies under `base_path`, the path the output is published under, and
       resolves to a file of the output;
     * CSS: `url()` and `@import` point at local files that exist (relative
-      URLs of a CSS file are resolved against that file); no CSS escapes that
-      could hide a URL;
+      URLs of a CSS file are resolved against that file, root-absolute ones
+      must lie under `base_path`); no CSS escapes that could hide a URL;
     * SVG: no scripts, styles sheets, event handlers, `<foreignObject>`,
       entities or external references (see `check_svg`).
 
-    Messages never quote page text, and tokens in paths are hidden (`i/…`).
+    Messages never quote page text, and the directories of the pages are
+    shown as `…` (`_output_path`): they are named after the tokens.
     """
     root = Path(out_dir)
     try:
@@ -2616,17 +2659,22 @@ def check_output(
             f"cannot read the output directory {display_path(root)}: {exc.strerror}"
         ) from None
     problems += _check_output_tree(files, directories, pages, media_dir, media, calendars)
-    problems = [_redact_paths(problem) for problem in problems]
 
-    known_dirs = set(directories)
+    # only the directories of the shared files may be named in a message: the
+    # rest are the directories of the pages
+    known_dirs = {
+        relative
+        for relative in directories
+        if relative.split("/", 1)[0] == ASSETS_DIRNAME
+    }
     # problem -> [(file as shown, line, file)], in order of appearance; the
-    # shown names of the pages are all alike (`i/…/index.html`)
+    # shown names of the pages are all alike (`…/index.html`)
     found: dict[str, list[tuple[str, int, str]]] = {}
     for relative, size in files.items():
         extension = os.path.splitext(relative)[1].lower()
         if extension not in (".html", ".css", ".svg") or size > MAX_FILE_BYTES:
             continue
-        shown = _redact_paths(relative)
+        shown = _output_path(relative)
         try:
             text = (root / relative).read_text(encoding="utf-8")
         except UnicodeDecodeError as exc:
@@ -2636,18 +2684,20 @@ def check_output(
             raise BuildError(f"cannot read {shown}: {exc.strerror}") from None
         if extension == ".html":
             file_problems = check_html(
-                text, files.__contains__, known_dirs.__contains__
+                text, files.__contains__, known_dirs.__contains__, base_path
             )
         elif extension == ".css":
             file_problems = check_stylesheet(
-                text, files.__contains__, known_dirs.__contains__, posixpath.dirname(relative)
-            )
+                text, files.__contains__, known_dirs.__contains__,
+                posixpath.dirname(relative), base_path,
+            )  # fmt: skip
         else:
             file_problems = check_svg(
-                text, files.__contains__, known_dirs.__contains__, posixpath.dirname(relative)
-            )
+                text, files.__contains__, known_dirs.__contains__,
+                posixpath.dirname(relative), base_path,
+            )  # fmt: skip
         for line, message in file_problems:
-            found.setdefault(_redact_paths(message), []).append((shown, line, relative))
+            found.setdefault(message, []).append((shown, line, relative))
 
     for message, places in found.items():
         first_file, first_line, _first = places[0]
@@ -2675,46 +2725,66 @@ def check_output(
 
 
 def display_path(path: Path | str) -> str:
-    """Path for logs: relative to the working directory when possible."""
+    """Path for logs: relative to the working directory when possible.
+
+    A path of one component gets `./` in front (`./dist`): every path a
+    message shows has a separator, which tells it from the words around it
+    (`redact_tokens`)."""
     path = Path(path)
     try:
-        return str(path.absolute().relative_to(Path.cwd())) or "."
+        shown = str(path.absolute().relative_to(Path.cwd())) or "."
     except ValueError:
         return str(path)
+    if shown != "." and os.sep not in shown and "/" not in shown:
+        shown = os.path.join(os.curdir, shown)
+    return shown
 
 
-#: `i/<token>`: both are whole path components, `i` may start the path, and a
-#: name with a dot (`i/index.html`) is a file, not a token.  Tokens may be as
-#: short as a word, so the whole component is hidden, whatever its length.
-#: `I/` counts as well: on a file system that ignores letter case it is the
-#: same directory.
-_TOKEN_IN_PATH_RE = re.compile(
-    rf"(?<![A-Za-z0-9_.-])((?i:{PAGES_DIRNAME})[/\\])[A-Za-z0-9_-]+(?![A-Za-z0-9_.-])"
-)
-#: A directory entry that may be a token or a media directory: token
-#: characters only (no dot, so not a file name), at least as long as a token.
-_TOKEN_LIKE_RE = re.compile(rf"[A-Za-z0-9_-]{{{MIN_TOKEN_LENGTH},}}\Z")
+#: A run of the characters of a token (`redact_tokens`).
+_TOKEN_RUN_RE = re.compile(r"[A-Za-z0-9_-]+")
+#: A path in a message: a word with at least one separator in it.
+_PATH_WORD_RE = re.compile(r"[^\s/\\]*(?:[/\\][^\s/\\]*)+")
 #: What takes the place of a hidden name.
 NAME_MASK = "…"
 
 
-def _redact_paths(text: Any) -> str:
-    """Hide invitation tokens that may appear inside file system paths:
-    `i/<token>/index.html` becomes `i/…/index.html`."""
-    return _TOKEN_IN_PATH_RE.sub(rf"\1{NAME_MASK}", str(text))
+def redact_tokens(text: Any, tokens: Collection[str]) -> str:
+    """`text` with the tokens of `tokens` (lower case) hidden in its paths.
+
+    A path is a word of the message with a separator in it (`display_path`
+    always gives one).  Inside it a whole run of token characters that is one
+    of the tokens, in any letter case (on a file system that ignores it,
+    `EVE-xxxx/` is the directory of `eve-xxxx`), becomes `…`: a component
+    (`dist/<token>/`), or a name with a dot (`.<token>.tmp-…`,
+    `<token>.zip`).  A token inside a longer name (`<token>_old`) is not a
+    component and stays; the words of the message stay as they are, so the
+    mask never tells that a token equals one of them.  Whatever path a
+    message shows - `--out`, a temporary directory next to it, the file of
+    an error - the directory of a page does not reveal its token."""
+    text = str(text)
+    if not tokens:
+        return text
+
+    def hide(path: re.Match) -> str:
+        return _TOKEN_RUN_RE.sub(
+            lambda run: NAME_MASK if run.group(0).lower() in tokens else run.group(0),
+            path.group(0),
+        )
+
+    return _PATH_WORD_RE.sub(hide, text)
 
 
-def _mask_name(name: str, *, pages: bool = False) -> str:
-    """A directory entry for an error message.
+def _output_path(relative: str) -> str:
+    """A path inside the output for a message.
 
-    Any name made of token characters only (no dot: not a file) may be a token
-    or a media directory, so it is hidden completely, and so is every entry of
-    a pages directory (`pages`: the directory is named `i` in any letter case),
-    even one that is also a known name of the output.
+    Every entry at the top of the output but `assets` is the directory of a
+    page, named after its token, or something the build never writes: it is
+    shown as `…`, unless its name has a dot (a token never has one).
     """
-    if pages or _TOKEN_LIKE_RE.match(name):
-        return NAME_MASK
-    return _shorten(name, 40)
+    top, sep, rest = relative.partition("/")
+    if top != ASSETS_DIRNAME and "." not in top:
+        top = NAME_MASK
+    return f"{top}{sep}{rest}"
 
 
 def _same_path(first: Path, second: Path) -> bool:
@@ -2744,12 +2814,26 @@ def check_out_dir(
     trees that are copied into the output.  An existing directory is replaced
     only when it is empty or looks like the output of a previous build.
 
+    The messages call the directory `--out` and never repeat its path nor
+    the name of anything in it: it may point inside a previous build by
+    mistake, at the directory of a page, and the data is not read yet, so no
+    token is known to hide.  An error of the file system is reported by its
+    reason alone, without the file it happened on.
+
     Extension point: later build steps may pass further protected directories
     through the same checks.
     """
+    try:
+        _check_out_dir(Path(out_dir), Path(code_dir), Path(data_dir), Path(media_dir))
+    except OSError as exc:
+        raise BuildError(
+            f"cannot inspect --out: {exc.strerror or type(exc).__name__}"
+        ) from None
+
+
+def _check_out_dir(out_dir: Path, code_dir: Path, data_dir: Path, media_dir: Path) -> None:
     out = Path(out_dir).absolute()
     resolved = Path(os.path.realpath(out))
-    shown = display_path(out)
 
     if resolved == Path(resolved.anchor):
         raise BuildError("--out must not be the file system root")
@@ -2760,7 +2844,7 @@ def check_out_dir(
     if home is not None and _same_path(resolved, home):
         raise BuildError("--out must not be the home directory")
     if out.exists() and not out.is_dir():
-        raise BuildError(f"--out exists and is not a directory: {shown}")
+        raise BuildError("--out exists and is not a directory")
 
     protected = {
         "code": Path(code_dir),
@@ -2774,8 +2858,8 @@ def check_out_dir(
             if _same_path(resolved, candidate):
                 relation = "the" if candidate == target else "a parent of the"
                 raise BuildError(
-                    f"--out must not be {relation} {label} directory "
-                    f"({shown}); choose a separate output directory"
+                    f"--out must not be {relation} {label} directory; "
+                    "choose a separate output directory"
                 )
 
     inside = {
@@ -2787,68 +2871,150 @@ def check_out_dir(
         if _is_within(resolved, target):
             relation = "the" if _same_path(resolved, target) else "inside the"
             raise BuildError(
-                f"--out must not be {relation} {label} directory ({shown}); "
+                f"--out must not be {relation} {label} directory; "
                 "choose a separate output directory"
             )
 
     if out.is_symlink():
-        raise BuildError(
-            f"--out must not be a symbolic link ({shown}); "
-            "point --out at the real directory"
-        )
+        raise BuildError("--out must not be a symbolic link; point --out at the real directory")
     check_replaceable(out)
+
+
+def _directory_entries(path: str) -> dict[str, os.DirEntry] | None:
+    """The entries of a directory but the files of the operating system;
+    None when it cannot be read."""
+    try:
+        with os.scandir(path) as iterator:
+            return {entry.name: entry for entry in iterator if entry.name not in OS_JUNK_FILES}
+    except OSError:
+        return None
+
+
+def _is_page_directory(entry: os.DirEntry) -> bool:
+    """A real directory that holds `index.html` (a regular file) and nothing else."""
+    if not entry.is_dir(follow_symlinks=False):
+        return False
+    inside = _directory_entries(entry.path)
+    return (
+        inside is not None
+        and list(inside) == [PAGE_FILE]
+        and inside[PAGE_FILE].is_file(follow_symlinks=False)
+    )
+
+
+#: What every build writes into `assets/`: a previous build has them.
+BUILD_MARKER_ASSETS = ("app.css", "app.js")
+
+
+def _is_built_assets(entry: os.DirEntry) -> bool:
+    """`assets/` as a build writes it: a real directory with `app.css` and
+    `app.js` as regular files."""
+    if not entry.is_dir(follow_symlinks=False):
+        return False
+    inside = _directory_entries(entry.path)
+    return inside is not None and all(
+        name in inside and inside[name].is_file(follow_symlinks=False)
+        for name in BUILD_MARKER_ASSETS
+    )
+
+
+def _count_entries(entries: Sequence[os.DirEntry]) -> str:
+    """`2 directories and 1 other entry`: what is there, without a name."""
+    directories = sum(1 for entry in entries if entry.is_dir(follow_symlinks=False))
+    others = len(entries) - directories
+    parts = []
+    if directories:
+        parts.append(f"{directories} director{'y' if directories == 1 else 'ies'}")
+    if others:
+        parts.append(f"{others} other entr{'y' if others == 1 else 'ies'}")
+    return " and ".join(parts)
+
+
+def _holds_pages(entry: os.DirEntry) -> bool:
+    """A real directory with a directory of a page inside: the pages one
+    level below the top, as the build laid them out while it wrote the site."""
+    if not entry.is_dir(follow_symlinks=False):
+        return False
+    inside = _directory_entries(entry.path)
+    return inside is not None and any(_is_page_directory(item) for item in inside.values())
 
 
 def check_replaceable(out_dir: Path | str) -> None:
     """Allow replacing an existing directory only if it is a previous build.
 
-    A directory qualifies when it is empty or when every top-level entry is one
-    of `OUTPUT_TOP_LEVEL` and has the expected type: `i` and `assets` are real
-    directories, everything else is a regular file, nothing is a symbolic link
-    (files created by the operating system are ignored).  No marker file is
-    written into the output: its contents stay limited to what the site needs.
+    A directory qualifies when it is empty or holds what a build writes:
+    `assets/`, a real directory with `app.css` and `app.js` (every build
+    writes them), and the directories of the pages, if any (a build of no
+    invitation has none) - real directories named like a token with
+    `index.html` (a regular file) alone; nothing else (files created by the
+    operating system are ignored).  No marker file is written into the
+    output: its contents stay limited to what the pages need.  Anything else
+    is somebody's directory and is never replaced: pages without `assets/`
+    (the pages directory of a whole site), `assets/` without `app.css` and
+    `app.js`, a site of the old layout (`index.html`, `404.html`, `_headers`
+    or `robots.txt` at the top, the pages one directory deeper), the
+    directory of a single page.
 
-    The message never shows a name that may be a token or a media directory
-    (`--out` may point inside a previous build by mistake): the entries of a
-    directory named `i` (in any letter case) and every name of 5 or more token
-    characters without a dot are shown as `…` (see `_mask_name`).
+    The messages never repeat the path of `--out` nor the name of anything
+    in it - at most they count the entries: the data is not read yet, so no
+    token is known, and `--out` may hold the pages of a previous build.  An
+    error of the file system names no file either.
     """
-    out = Path(out_dir)
+    try:
+        _check_replaceable(Path(out_dir))
+    except OSError as exc:
+        raise BuildError(
+            f"cannot inspect --out: {exc.strerror or type(exc).__name__}"
+        ) from None
+
+
+def _check_replaceable(out: Path) -> None:
     try:
         with os.scandir(out) as iterator:
             entries = sorted(iterator, key=lambda entry: entry.name)
     except FileNotFoundError:
         return
     except OSError as exc:
-        raise BuildError(
-            f"cannot read the output directory {display_path(out)}: {exc.strerror}"
-        ) from None
+        raise BuildError(f"cannot read --out: {exc.strerror}") from None
     entries = [entry for entry in entries if entry.name not in OS_JUNK_FILES]
+    if not entries:
+        return
+    refuse = "refusing to replace --out"
     advice = "remove it manually or choose another --out"
-    unexpected = [entry.name for entry in entries if entry.name not in OUTPUT_TOP_LEVEL]
-    pages = Path(os.path.abspath(out)).name.casefold() == PAGES_DIRNAME
-    if unexpected:
-        listed = ", ".join(f"'{_mask_name(name, pages=pages)}'" for name in unexpected[:3])
-        more = f" and {len(unexpected) - 3} more" if len(unexpected) > 3 else ""
+    names = [entry.name for entry in entries]
+    if names == [PAGE_FILE]:
         raise BuildError(
-            f"refusing to replace {display_path(out)}: it does not look like a "
-            f"previous build output (unexpected: {listed}{more}); {advice}"
+            f"{refuse}: it holds {PAGE_FILE} alone, like the directory of one page; point "
+            f"--out at the directory with the pages and {ASSETS_DIRNAME}/"
         )
-    for entry in entries:
-        is_directory = entry.name in OUTPUT_TOP_LEVEL_DIRS
-        matches = (
-            entry.is_dir(follow_symlinks=False)
-            if is_directory
-            else entry.is_file(follow_symlinks=False)
+    others = [entry for entry in entries if entry.name != ASSETS_DIRNAME]
+    if OLD_LAYOUT_FILES.intersection(names) or any(
+        not _is_page_directory(entry) and _holds_pages(entry) for entry in others
+    ):
+        raise BuildError(
+            f"{refuse}: it looks like a whole site (index.html, 404.html, _headers or "
+            "robots.txt at the top, or the pages one directory deeper); the build now "
+            "writes the invitations only, straight into --out - remove the directory or "
+            "choose another --out (e.g. a directory inside the site, see README 5)"
         )
-        if not matches:
-            expected = "a directory" if is_directory else "a regular file"
-            raise BuildError(
-                f"refusing to replace {display_path(out)}: it does not look like a "
-                # a known name of the output, unless it is inside a pages directory
-                f"previous build output ('{NAME_MASK if pages else entry.name}' is not "
-                f"{expected}); {advice}"
-            )
+    unexpected = [
+        entry
+        for entry in others
+        if data_tools.check_token(entry.name) is not None or not _is_page_directory(entry)
+    ]
+    if unexpected:
+        raise BuildError(
+            f"{refuse}: it does not look like a previous build output (unexpected at the "
+            f"top: {_count_entries(unexpected)}; their names are not shown, they may be "
+            f"tokens); {advice}"
+        )
+    assets = next((entry for entry in entries if entry.name == ASSETS_DIRNAME), None)
+    if assets is None or not _is_built_assets(assets):
+        raise BuildError(
+            f"{refuse}: it does not look like a previous build output (no {ASSETS_DIRNAME}/ "
+            f"with {' and '.join(BUILD_MARKER_ASSETS)}, which every build writes; the pages "
+            f"alone are not replaced either); {advice}"
+        )
 
 
 def _remove_tree(path: Path) -> bool:
@@ -2887,8 +3053,7 @@ class _StagedOutput:
             self.stage.mkdir()
         except OSError as exc:
             raise BuildError(
-                "cannot create a temporary directory next to "
-                f"{display_path(self.out)}: {exc.strerror}"
+                f"cannot create a temporary directory next to --out: {exc.strerror}"
             ) from None
         return self.stage
 
@@ -2928,8 +3093,7 @@ class _StagedOutput:
                     hint = f"; the previous output was kept in {display_path(previous)}"
             self._discard(self.stage)
             raise BuildError(
-                f"cannot replace the output directory {display_path(self.out)}: "
-                f"{exc.strerror}{hint}"
+                f"cannot replace the output directory (--out): {exc.strerror}{hint}"
             ) from None
         if os.path.lexists(previous):
             self._discard(previous)
@@ -3158,7 +3322,9 @@ def preview_page(
     data: Data, code_dir: Path, media_dir: Path | str, settings: page_tools.PageSettings
 ) -> tuple[str, dict[str, Path]] | None:
     """The preview page (`preview.html` with the cover of the site) and its
-    files by URL path; None when the site has no cover."""
+    files by URL path; None when the site has no cover.  The paths are those
+    of the pages (`settings.assets_path`): the page is served the way the
+    output is published."""
     tree = page_tools.site_cover(data.site, settings)
     if tree is None:
         return None
@@ -3170,9 +3336,10 @@ def preview_page(
     )
     page = strip_html_comments(template.render(tree), PREVIEW_TEMPLATE_FILE)
     assets = code_dir / ASSETS_DIRNAME
+    assets_path = settings.assets_path
     files: dict[str, Path] = {
-        f"/{ASSETS_DIRNAME}/{TOKENS_FILE}": assets / TOKENS_FILE,
-        f"/{ASSETS_DIRNAME}/{PREVIEW_STYLESHEET}": assets / PREVIEW_STYLESHEET,
+        f"{assets_path}/{TOKENS_FILE}": assets / TOKENS_FILE,
+        f"{assets_path}/{PREVIEW_STYLESHEET}": assets / PREVIEW_STYLESHEET,
     }
     fonts = assets / "fonts"
     if fonts.is_dir():
@@ -3181,10 +3348,10 @@ def preview_page(
             if path.is_file() and not path.is_symlink() and not any(
                 part.startswith(".") for part in relative.split("/")
             ):
-                files[f"/{ASSETS_DIRNAME}/{relative}"] = path
+                files[f"{assets_path}/{relative}"] = path
     background = tree["cover"]["background"]
     if background:
-        media_path = f"/{ASSETS_DIRNAME}/{data.site['mediaDir']}"
+        media_path = f"{assets_path}/{data.site['mediaDir']}"
         for entry in data.media.values():
             if media_url(media_path, entry.published) == background["src"]:
                 files[background["src"]] = Path(media_dir) / entry.name
@@ -3198,6 +3365,7 @@ def link_preview(
     media_dir: Path | str,
     options: PreviewOptions,
     report: Report,
+    base_path: str = DEFAULT_BASE_PATH,
 ) -> LinkPreview:
     """The link preview image of the pages, in this order:
 
@@ -3210,9 +3378,11 @@ def link_preview(
 
     No browser for the second case is an error with a hint, never a quiet
     fallback.  Nothing of a guest is on the picture: the cover tree is that
-    of the site (`tools._page.site_cover`).
+    of the site (`tools._page.site_cover`).  The addresses start with
+    `<base_path>/assets`; the picture itself does not depend on them.
     """
-    media_path = f"/{ASSETS_DIRNAME}/{data.site['mediaDir']}"
+    assets_path = assets_url_path(base_path)
+    media_path = f"{assets_path}/{data.site['mediaDir']}"
     own = images.og
     if own.source is not None:
         try:
@@ -3236,12 +3406,12 @@ def link_preview(
         )
     neutral = DEFAULT_SITE_IMAGES.og
     neutral_fields = {
-        "ogImage": f"/{ASSETS_DIRNAME}/{neutral.name}",
+        "ogImage": f"{assets_path}/{_url_component(neutral.name)}",
         "ogImageType": neutral.mime,
         "ogImageWidth": neutral.width,
         "ogImageHeight": neutral.height,
     }
-    settings = page_settings(data.site, None, data.media)
+    settings = page_settings(data.site, None, data.media, base_path=base_path)
     if not options.enabled:
         return LinkPreview(
             neutral_fields,
@@ -3384,49 +3554,6 @@ def load_template(path: Path) -> Template:
     return parse_template(_read_source(path, "template"), path.name, fragments)
 
 
-#: The only fields the stub may use: they say nothing about the site.
-STUB_FIELDS = ("faviconPath", "faviconType")
-
-
-def load_stub(path: Path, images: dict | None = None) -> str:
-    """Read the stub page (published as `index.html` and `404.html`).
-
-    The stub is the same for everybody and gets no data: the only template
-    syntax allowed in it are the placeholders of `STUB_FIELDS` (the icon, see
-    `site_images_context`).  HTML comments are removed, as on the pages.
-    """
-    source = _read_source(path, "stub page")
-    problem = (
-        "must not contain template syntax other than "
-        + " and ".join("{{" + field + "}}" for field in STUB_FIELDS)
-        + " (the stub gets no data)"
-    )
-    try:
-        nodes, _needs_item = _parse(source, path.name)
-    except TemplateError as exc:
-        raise TemplateError(f"{problem}: {exc.reason}", exc.line, path.name) from None
-
-    def shown(node: Any) -> str:
-        if isinstance(node, _Var):
-            return f"'{{{{{node.path}}}}}'"
-        if isinstance(node, _Include):
-            return "'<!-- include:… -->'"
-        return f"'<!-- {node.kind}:… -->'"
-
-    found = [
-        f"line {node.line}: {shown(node)}"
-        for node in nodes
-        if isinstance(node, (_Block, _Include))
-        or (isinstance(node, _Var) and node.path not in STUB_FIELDS)
-    ]
-    if found:
-        raise TemplateError(f"{problem}: " + "; ".join(found[:5]), None, path.name)
-    template = parse_template(source, path.name)  # no includes: no fragments needed
-    fields = images if images is not None else site_images_context()
-    rendered = template.render({field: fields[field] for field in STUB_FIELDS})
-    return strip_html_comments(rendered, path.name)
-
-
 def render_pages(
     template: Template,
     invitations: Sequence[dict],
@@ -3460,10 +3587,10 @@ def render_pages(
 
 
 def write_pages(stage: Path, pages: Iterable[tuple[str, str]]) -> int:
-    """Write `i/<token>/index.html` for every rendered page."""
+    """Write `<token>/index.html` for every rendered page."""
     count = 0
     for token, page in pages:
-        path = stage / PAGES_DIRNAME / token / PAGE_FILE
+        path = stage / token / PAGE_FILE
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "w", encoding="utf-8", newline="\n") as handle:
@@ -3504,9 +3631,7 @@ def _write_file(path: Path, content: bytes) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
     except OSError as exc:
-        raise BuildError(
-            f"cannot write {_redact_paths(path.name)}: {exc.strerror}"
-        ) from None
+        raise BuildError(f"cannot write {path.name}: {exc.strerror}") from None
 
 
 def build_site(
@@ -3518,19 +3643,27 @@ def build_site(
     log: Callable[[str], None] = print,
     site_name: str = "",
     preview: "PreviewOptions | None" = None,
+    base_path: str = DEFAULT_BASE_PATH,
 ) -> OutputStats:
     """Validate the data, write the output directory and check the result.
 
-    The output is assembled in a temporary directory and only replaces
-    `out_dir` when every check has passed.  The log gets counters and paths,
-    never data.
+    The output holds the invitations and nothing else: `<token>/index.html`
+    for every page and `assets/`.  It is assembled in a temporary directory
+    and only replaces `out_dir` when every check has passed.  The log gets
+    counters and paths, never data.
 
-    `site_name` is the name of the site in link previews (`og:site_name`,
-    see `check_site_name`); "" writes no such tag.  `preview` says whether
-    the link preview image is rendered and with which browser
-    (`link_preview`).
+    `base_path` is the path from the root of the site under which the
+    contents of `out_dir` are published (`check_base_path`): every URL of the
+    output starts with it.  `site_name` is the name of the site in link
+    previews (`og:site_name`, see `check_site_name`); "" writes no such tag.
+    `preview` says whether the link preview image is rendered and with which
+    browser (`link_preview`).
     """
     report = report if report is not None else Report()
+    try:
+        base_path = check_base_path(base_path)
+    except ValueError as exc:
+        raise BuildError(f"the base path {exc}") from None
     assets_dir = code_dir / ASSETS_DIRNAME
     check_out_dir(out_dir, code_dir=code_dir, data_dir=data_dir, media_dir=media_dir)
 
@@ -3548,18 +3681,19 @@ def build_site(
     # the pages always need the palette (their theme colour), the images only
     # when they are generated
     palette = load_palette(assets_dir)
-    og = link_preview(data, images, code_dir, media_dir, preview or PreviewOptions(), report)
+    og = link_preview(
+        data, images, code_dir, media_dir, preview or PreviewOptions(), report, base_path
+    )
     site_fields = {
-        **site_images_context(images),
+        **site_images_context(images, base_path),
         **og.fields,
         **site_colors_context(palette),
         "siteName": site_name,
     }
 
     template = load_template(code_dir / TEMPLATE_FILE)
-    stub = load_stub(code_dir / STUB_FILE, site_fields).encode("utf-8")
     calendars = calendar_files(data)
-    settings = page_settings(data.site, site_fields, data.media, calendars)
+    settings = page_settings(data.site, site_fields, data.media, calendars, base_path)
     trees, _usage = page_tools.build_pages(data.site, data.invitations, settings)
     pages = render_pages(template, data.invitations, trees)
     media_name = data.site["mediaDir"]
@@ -3568,26 +3702,27 @@ def build_site(
 
     with _StagedOutput(out_dir, warn=report.warn) as stage:
         written = write_pages(stage, pages)
-        for name in STUB_OUTPUTS:
-            _write_file(stage / name, stub)
         assets = copy_assets(assets_dir, stage / ASSETS_DIRNAME, ignore=is_unpublished_asset)
         write_site_images(images, stage / ASSETS_DIRNAME, palette, neutral_og=og.neutral)
         media = copy_media(data.media, media_dir, stage / ASSETS_DIRNAME / media_name)
         events = write_calendars(stage / ASSETS_DIRNAME / media_name, calendars, published)
         if og.name:
             write_media_file(stage / ASSETS_DIRNAME / media_name, og.name, og.content)
-        _write_file(stage / HEADERS_FILE, HEADERS_TEXT.encode("utf-8"))
-        _write_file(stage / ROBOTS_FILE, ROBOTS_TEXT.encode("utf-8"))
         stats = check_output(
             stage,
             [invitation["token"] for invitation in data.invitations],
             media_dir=media_name,
             media=published | in_media,
             calendars=[entry.name for entry in calendars.values()],
+            base_path=base_path,
         )
 
     out_shown = display_path(out_dir)
-    log(f"build: wrote {written} page(s) to {out_shown}/{PAGES_DIRNAME}/")
+    log(f"build: wrote {written} page(s) to {out_shown}/<token>/")
+    log(
+        f"build: base path {base_path}: the pages are at {base_path.rstrip('/')}/<token>/, "
+        f"the shared files at {assets_url_path(base_path)}/"
+    )
     log(f"build: copied {assets} asset file(s) to {out_shown}/{ASSETS_DIRNAME}/")
     log(
         f"build: copied {media} media file(s) under the hash of their contents to "
@@ -3632,7 +3767,20 @@ def _stderr(message: str) -> None:
 
 
 def _cli_report() -> Report:
-    return Report(on_warn=lambda message: _stderr(f"warning: {_redact_paths(message)}"))
+    """The report of a command: warnings go to stderr at once, with the
+    tokens it has seen hidden (`Report.redact`)."""
+
+    def warn(message: str) -> None:
+        _stderr(f"warning: {report.redact(message)}")
+
+    report = Report(on_warn=warn)
+    return report
+
+
+def _command_report(args: argparse.Namespace) -> Report:
+    """The report `main` made for the command (a new one when called directly)."""
+    report = getattr(args, "report", None)
+    return report if isinstance(report, Report) else _cli_report()
 
 
 def _data_dir(args: argparse.Namespace, code_dir: Path) -> Path:
@@ -3686,8 +3834,17 @@ def link_preview_setting(args: argparse.Namespace, environ: Any = None) -> "Prev
     return PreviewOptions(enabled=enabled, chrome=getattr(args, "chrome", None))
 
 
+def base_path_argument(value: str) -> str:
+    """`build --base-path`: a bad value is a bad command line (code 2)."""
+    try:
+        return check_base_path(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     code_dir = CODE_DIR
+    report = _command_report(args)
     site_name = site_name_setting(args)
     preview = link_preview_setting(args)
     build_site(
@@ -3695,12 +3852,13 @@ def cmd_build(args: argparse.Namespace) -> int:
         _media_dir(args, code_dir),
         Path(args.out) if args.out is not None else DEFAULT_OUT_DIR,
         code_dir=code_dir,
-        report=_cli_report(),
+        report=report,
         # the log shows the paths of --data, --media and --out, and --out may
-        # point at a directory named like a token (`dist/i/<token>`)
-        log=lambda message: _stdout(_redact_paths(message)),
+        # point at the directory of a page (`dist/<token>`)
+        log=lambda message: _stdout(report.redact(message)),
         site_name=site_name,
         preview=preview,
+        base_path=getattr(args, "base_path", DEFAULT_BASE_PATH),
     )
     return EXIT_OK
 
@@ -3709,10 +3867,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
     code_dir = CODE_DIR
     data_dir = _data_dir(args, code_dir)
     media_dir = _media_dir(args, code_dir)
-    report = _cli_report()
+    report = _command_report(args)
     data = load_data(data_dir, media_dir, report, assets_dir=code_dir / ASSETS_DIRNAME)
     _stdout(
-        _redact_paths(
+        report.redact(
             f"validate: OK - {len(data.invitations)} invitation(s), "
             f"{len(data.site['events'])} event(s), {len(data.site['sections'])} section(s), "
             f"{report.media_files} media file(s) (data: {display_path(data_dir)}, "
@@ -3761,9 +3919,10 @@ def running_in_ci(environ: Any = None) -> bool:
 _PERCENT_CREDENTIALS_RE = re.compile(r"%(?:40|3a)", re.IGNORECASE)
 
 
-def parse_base_url(value: str) -> str:
-    """`links --base`: an http(s) URL of the site; the trailing '/' is
-    dropped."""
+def parse_published_url(value: str) -> str:
+    """`links --url`: the http(s) address where the output directory is
+    published (the address of the site and `--base-path` of the build); the
+    trailing '/' is dropped."""
     value = value.strip()
     try:
         parts = urlsplit(value)
@@ -3788,19 +3947,41 @@ def parse_base_url(value: str) -> str:
     ):
         # the value itself is never repeated: it may carry credentials
         raise argparse.ArgumentTypeError(
-            "expected the site address, e.g. https://example.org "
-            "(http or https, no user information, query string or fragment)"
+            "expected the address where the output directory is published, e.g. "
+            "https://example.org/invite (http or https, no user information, query "
+            "string or fragment)"
         )
     return value.rstrip("/")
 
 
-def invitation_links(base: str, invitations: Sequence[dict]) -> list[str]:
-    """`<greeting><TAB><base>/i/<token>/` for every invitation."""
+def invitation_links(url: str, invitations: Sequence[dict]) -> list[str]:
+    """`<greeting><TAB><url>/<token>/` for every invitation; `url` is where
+    the output directory is published."""
     return [
-        f"{' '.join(invitation['greeting'].split())}\t"
-        f"{base}/{PAGES_DIRNAME}/{invitation['token']}/"
+        f"{' '.join(invitation['greeting'].split())}\t{url}/{invitation['token']}/"
         for invitation in invitations
     ]
+
+
+#: `links --base` gave the address of the site, and the build wrote the pages
+#: into a directory of its own below it.  Its meaning is not changed quietly:
+#: the same command would print wrong links.
+LINKS_BASE_REPLACED = (
+    "--base is replaced by --url: the address where the output directory is published, "
+    "e.g. --url https://example.org/invite; the links are <url>/<token>/"
+)
+
+
+class _ReplacedOption(argparse.Action):
+    """An option that is gone: a usage error (code 2) with a hint, whatever
+    else the command line holds."""
+
+    def __init__(self, option_strings: Sequence[str], dest: str, **kwargs: Any) -> None:
+        self.hint = kwargs.pop("hint")
+        super().__init__(option_strings, dest, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None) -> None:  # noqa: ANN001
+        parser.error(self.hint)
 
 
 def cmd_links(args: argparse.Namespace) -> int:
@@ -3809,9 +3990,9 @@ def cmd_links(args: argparse.Namespace) -> int:
             "this command prints personal data and is meant for local use only; "
             f"it does not run in CI ({' or '.join(CI_ENVIRONMENT_VARIABLES)} is set)"
         )
-    data = load_data(_data_dir(args, CODE_DIR), report=_cli_report())
+    data = load_data(_data_dir(args, CODE_DIR), report=_command_report(args))
     # Nothing is printed unless the whole data set is valid.
-    for line in invitation_links(args.base, data.invitations):
+    for line in invitation_links(args.url, data.invitations):
         _stdout(line)
     return EXIT_OK
 
@@ -3819,7 +4000,7 @@ def cmd_links(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="build.py",
-        description="Build the static site of personal invitation pages.",
+        description="Build the static pages of personal invitations.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="command")
 
@@ -3838,12 +4019,24 @@ def build_parser() -> argparse.ArgumentParser:
                 f"(default: {DEFAULT_MEDIA_DIR} next to build.py)",
             )
 
-    build_cmd = subparsers.add_parser("build", help="validate the data and write the site")
+    build_cmd = subparsers.add_parser(
+        "build", help="validate the data and write the invitations"
+    )
     add_data_options(build_cmd, media=True)
     build_cmd.add_argument(
         "--out",
         metavar="DIR",
-        help=f"output directory, replaced on every build (default: {DEFAULT_OUT_DIR})",
+        help="output directory for the invitations: <token>/index.html for every page and "
+        f"{ASSETS_DIRNAME}/, nothing else; replaced on every build (default: {DEFAULT_OUT_DIR})",
+    )
+    build_cmd.add_argument(
+        "--base-path",
+        metavar="PATH",
+        type=base_path_argument,
+        default=DEFAULT_BASE_PATH,
+        help="path from the root of the site under which the contents of --out are "
+        "published, e.g. /invite: every URL of the output starts with it and the page of "
+        f"a guest is PATH/<token>/ (default: {DEFAULT_BASE_PATH})",
     )
     build_cmd.add_argument(
         "--site-name",
@@ -3888,12 +4081,17 @@ def build_parser() -> argparse.ArgumentParser:
         "links", help="print invitation links for manual sending (local use only)"
     )
     links_cmd.add_argument(
-        "--base",
+        "--url",
         metavar="URL",
         required=True,
-        type=parse_base_url,
-        help="address of the published site, e.g. https://example.org",
+        type=parse_published_url,
+        help="address where the output directory of the build is published, e.g. "
+        "https://example.org/invite; the links are URL/<token>/",
     )
+    links_cmd.add_argument(
+        "--base", nargs="?", action=_ReplacedOption, hint=LINKS_BASE_REPLACED,
+        help=argparse.SUPPRESS,
+    )  # fmt: skip
     add_data_options(links_cmd, media=False)
     links_cmd.set_defaults(func=cmd_links)
 
@@ -3909,20 +4107,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command
+    # every message of the command passes the report, which hides the tokens
+    # it has seen (`Report.redact`): a path may lead through a page directory
+    report = args.report = _cli_report()
     try:
         return int(args.func(args))
     except ValidationError as exc:
         for message in exc.errors:
-            _stderr(f"error: {_redact_paths(message)}")
+            _stderr(f"error: {report.redact(message)}")
         _stderr(f"{command}: failed with {len(exc.errors)} error(s)")
         return EXIT_ERROR
     except BuildError as exc:
-        _stderr(f"error: {_redact_paths(exc)}")
+        _stderr(f"error: {report.redact(exc)}")
         _stderr(f"{command}: failed")
         return EXIT_ERROR
     except OSError as exc:
-        where = f": {display_path(exc.filename)}" if exc.filename else ""
-        _stderr(f"error: {_redact_paths(f'{exc.strerror or type(exc).__name__}{where}')}")
+        # before the data is read no token is known to hide: the file is not
+        # named then (it may lie in the directory of a page)
+        where = f": {display_path(exc.filename)}" if exc.filename and report.tokens else ""
+        _stderr(f"error: {report.redact(f'{exc.strerror or type(exc).__name__}{where}')}")
         _stderr(f"{command}: failed")
         return EXIT_ERROR
     except KeyboardInterrupt:  # pragma: no cover - interactive use

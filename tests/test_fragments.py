@@ -547,16 +547,6 @@ class LoadFragmentsTests(TempDirTestCase):
             "(included from template.html line 2)",
         )
 
-    def test_the_stub_may_not_include(self):
-        self.write("fragments/p/a.html", "A")
-        for source in ("<p><!-- include:p/a --></p>", "<!-- include:w/{{.type}} -->"):
-            with self.subTest(source=source):
-                self.write("stub.html", source)
-                with self.assertRaises(TemplateError) as caught:
-                    build.load_stub(self.tmp / "stub.html")
-                self.assertIn("include", str(caught.exception))
-                self.assertIn("must not contain template syntax", str(caught.exception))
-
 
 #: The fixture page with the venue and a footer moved into fragments.
 FRAGMENT_LINE = "<!-- with:primaryEvent.location --><!-- include:venue/card --><!-- endwith -->"
@@ -587,11 +577,8 @@ class BuildWithFragmentsTests(CliTestCase):
         result = self.build_in_process()
         self.assertEqual(result.returncode, 0, result.stderr)
         files = tree_files(self.out)
-        pages = sorted(f"i/{item['token']}/index.html" for item in invitations_data())
-        self.assertEqual(
-            sorted(name for name in files if name.endswith(".html")),
-            sorted(["404.html", "index.html", *pages]),
-        )
+        pages = sorted(f"{item['token']}/index.html" for item in invitations_data())
+        self.assertEqual(sorted(name for name in files if name.endswith(".html")), pages)
         for name in files:
             self.assertNotIn("fragment", name)
             self.assertNotIn("card", name)

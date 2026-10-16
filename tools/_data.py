@@ -729,10 +729,16 @@ _TOKEN_CHARS_RE = re.compile(r"[A-Za-z0-9_-]+\Z")
 _MEDIA_DIR_RE = re.compile(
     rf"[A-Za-z0-9_-]{{{MIN_MEDIA_DIR_LENGTH},{MAX_NAME_LENGTH}}}\Z"
 )
+#: Names a token must not take, in lower case: the pages are directories next
+#: to `assets/`, the directory of the files they share.
+RESERVED_TOKENS = frozenset({"assets"})
 
 
 def check_token(token: Any) -> str | None:
-    """Return a problem description for `token`, or None when it is valid."""
+    """Return a problem description for `token`, or None when it is valid.
+
+    The description never repeats the token, nor a reserved name it matches.
+    """
     if not isinstance(token, str):
         return f"'token' must be a string, got {json_type(token)}"
     if not token:
@@ -748,6 +754,11 @@ def check_token(token: Any) -> str | None:
         return (
             f"'token' is too short: at least {MIN_TOKEN_LENGTH} characters required, "
             f"got {len(token)}"
+        )
+    if token.lower() in RESERVED_TOKENS:
+        return (
+            "'token' is a reserved name: the directory of the page would be the directory "
+            "of the files the pages share (letter case aside); choose another token"
         )
     return None
 

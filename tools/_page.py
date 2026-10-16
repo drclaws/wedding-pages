@@ -10,8 +10,8 @@ address is picked and the placeholders are filled in.
 
 Everything outside the data comes in through `PageSettings`: the URL of a
 media file and of the calendar file of an event, the facts of the media files (sizes, durations), the default
-duration of an event, the path of the pages and the fields of the site
-images and colours.  The module reads no files.
+duration of an event, the URL path of the shared files and the fields of the
+site images and colours.  The module reads no files.
 
 `Usage` records what the trees show; `warn_unused` reports the parts of
 `site.json` that no page shows (their media files are not published).
@@ -119,9 +119,8 @@ class PageSettings:
     #: File name from the data -> its facts (`tools._media.MediaInfo` or an
     #: object with the same attributes); a missing entry means "unknown".
     media_info: Mapping[str, Any] = field(default_factory=dict)
-    #: The pages live in `<pages_path>/<token>/`.
-    pages_path: str = "/i"
-    #: The media directory is `<assets_path>/<mediaDir>`.
+    #: The URL path of the files the pages share (`assetsPath` of the trees):
+    #: `<base path>/assets`; the media directory is `<assets_path>/<mediaDir>`.
     assets_path: str = "/assets"
 
 
@@ -422,6 +421,7 @@ class _Page:
             "vy": self.form == "vy",
             "coupleNames": self.site["coupleNames"],
             "rsvpDeadline": _text(self.site.get("rsvpDeadline")),
+            "assetsPath": self.settings.assets_path,
             "mediaPath": self.media_path,
             "linkDescription": link_description(self.site, self.usage.texts),
             **images,
@@ -653,7 +653,11 @@ def site_cover(site: dict, settings: PageSettings) -> dict | None:
     eyebrow = site_eyebrow(site, section.pop("eyebrow", None))
     cover = page.section(section, position)
     cover["eyebrow"] = eyebrow or ""
-    return {"coupleNames": site["coupleNames"], "cover": cover}
+    return {
+        "coupleNames": site["coupleNames"],
+        "assetsPath": settings.assets_path,
+        "cover": cover,
+    }
 
 
 def link_description(site: dict, used: set[str] | None = None) -> str:

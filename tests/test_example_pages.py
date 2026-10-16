@@ -146,7 +146,7 @@ class ExamplePagesTestCase(unittest.TestCase):
     @staticmethod
     def own(invitation: dict, files: dict[str, str]) -> dict[str, str]:
         """The files of the directory of one invitation (its page only)."""
-        prefix = f"i/{invitation['token']}/"
+        prefix = f"{invitation['token']}/"
         return {path: text for path, text in files.items() if path.startswith(prefix)}
 
     @staticmethod
@@ -173,7 +173,7 @@ class PrivacyTests(ExamplePagesTestCase):
         checked = 0
         for name, _site, invitations, files in self.sets():
             for invitation in invitations:
-                page = f"i/{invitation['token']}/index.html"
+                page = f"{invitation['token']}/index.html"
                 for value in [invitation["greeting"], *notes(invitation)]:
                     # the whole text as the page writes it: escaped, with paragraphs
                     text = build.text_to_html(value)
@@ -194,9 +194,9 @@ class PrivacyTests(ExamplePagesTestCase):
             for invitation in invitations:
                 seen = visible_events(site, invitation)
                 own = self.own(invitation, files)
-                self.assertEqual(list(own), [f"i/{invitation['token']}/index.html"])
+                self.assertEqual(list(own), [f"{invitation['token']}/index.html"])
                 calendars = self.calendars(site, files)
-                page = own[f"i/{invitation['token']}/index.html"]
+                page = own[f"{invitation['token']}/index.html"]
                 linked = {path.rsplit("/", 1)[1] for path in re.findall(r'href="/([^"]+\.ics)"', page)}
                 self.assertEqual(linked, {calendars[event_id].rsplit("/", 1)[1] for event_id in seen})
                 for event_id, event in site["events"].items():
@@ -237,13 +237,13 @@ class PrivacyTests(ExamplePagesTestCase):
         guests = [invitation for invitation in invitations if "brunch" in visible_events(site, invitation)]
         self.assertEqual(len(guests), 2)
         brunch = self.calendars(site, files)["brunch"]
-        pages = sorted(f"i/{invitation['token']}/index.html" for invitation in guests)
+        pages = sorted(f"{invitation['token']}/index.html" for invitation in guests)
         self.assertEqual(
             sorted(path for path, content in files.items() if title in content),
             sorted([*pages, brunch]),
         )
-        # its calendar file is linked from these pages only: not from the stub,
-        # nor from the pages of the other guests
+        # its calendar file is linked from these pages only, not from the pages
+        # of the other guests
         file_name = brunch.rsplit("/", 1)[1]
         self.assertEqual(sorted(path for path, content in files.items() if file_name in content), pages)
 
@@ -251,7 +251,7 @@ class PrivacyTests(ExamplePagesTestCase):
         checked = 0
         for name, site, invitations, files in self.sets():
             for invitation in invitations:
-                page = files[f"i/{invitation['token']}/index.html"]
+                page = files[f"{invitation['token']}/index.html"]
                 for section_id in hidden_sections(site, invitation):
                     with self.subTest(data=name, token=invitation["token"][:4], section=section_id):
                         self.assertNotIn(f'id="s-{section_id}"', page)
@@ -266,7 +266,7 @@ class PrivacyTests(ExamplePagesTestCase):
             path for path, content in files.items()
             if text["ty"] in content or text["vy"] in content
         ]  # fmt: skip
-        self.assertEqual(pages, ["i/IBAhKaLEOj1DHuOUdUMzQA/index.html"])
+        self.assertEqual(pages, ["IBAhKaLEOj1DHuOUdUMzQA/index.html"])
 
     def test_calendar_files_carry_nothing_of_the_invitation(self):
         for name, _site, invitations, files in self.sets():
@@ -283,7 +283,7 @@ class PrivacyTests(ExamplePagesTestCase):
         for name, _site, invitations, files in self.sets():
             for invitation in invitations:
                 token = invitation["token"]
-                page = f"i/{token}/index.html"
+                page = f"{token}/index.html"
                 with self.subTest(data=name, token=token[:4]):
                     for path, content in files.items():
                         if path == page:
@@ -293,7 +293,7 @@ class PrivacyTests(ExamplePagesTestCase):
                         else:
                             self.assertNotIn(token, content, path)
                             self.assertNotIn(token.lower(), content.lower(), path)
-                    self.assertTrue(all(path.startswith(f"i/{token}/") for path in files if token in path))
+                    self.assertEqual([path for path in files if token in path], [page])
 
     def test_media_names_of_the_data_are_not_published(self):
         site, _invitations, files = self.built["data"]
@@ -320,7 +320,7 @@ class PrivacyTests(ExamplePagesTestCase):
         for name in names:
             self.assertFalse(any(name in str(path) for path in out.rglob("*")), name)
             self.assertFalse(any(name.encode() in content for content in contents), name)
-        page = (out / "i" / invitations[0]["token"] / "index.html").read_text(encoding="utf-8")
+        page = (out / invitations[0]["token"] / "index.html").read_text(encoding="utf-8")
         self.assertIn(f'<img src="/assets/{site["mediaDir"]}/{thumb}" alt=""', page)
 
 
@@ -348,7 +348,7 @@ class CompanionTests(ExamplePagesTestCase):
         for name, site, invitations, files in self.sets():
             text = self.companion_text(site)
             for invitation in invitations:
-                page = files[f"i/{invitation['token']}/index.html"]
+                page = files[f"{invitation['token']}/index.html"]
                 texts = self.invite_texts(page)
                 with self.subTest(data=name, token=invitation["token"][:4]):
                     self.assertTrue(texts[0].startswith("Мы, "), texts[0])
@@ -385,7 +385,7 @@ class MarkupTests(ExamplePagesTestCase):
     def pages(self):
         for name, _site, invitations, files in self.sets():
             for invitation in invitations:
-                yield name, invitation["token"][:4], files[f"i/{invitation['token']}/index.html"]
+                yield name, invitation["token"][:4], files[f"{invitation['token']}/index.html"]
 
     def test_ids_are_unique_and_every_reference_resolves(self):
         for name, token, document in self.pages():
@@ -427,10 +427,11 @@ class IndexingTests(ExamplePagesTestCase):
     """Who is kept out of the search engines — in the sources and in the pages.
 
     A page of an invitation carries no `robots` meta tag on purpose: a bot that
-    is given `noindex` builds no link preview of it.  The stub, which the root
-    and every wrong path get, keeps the tag, and so does the style guide, which
-    is not published at all.  The checks read the files of the repository, so
-    that putting the tag back into `template.html` breaks a test.
+    is given `noindex` builds no link preview of it.  The style guide, which is
+    not published at all, keeps the tag; the pages around the invitations
+    (the root, a wrong path) belong to the site that publishes them.  The
+    checks read the files of the repository, so that putting the tag back into
+    `template.html` breaks a test.
     """
 
     #: The start of the tag, whatever its content.
@@ -444,20 +445,21 @@ class IndexingTests(ExamplePagesTestCase):
     def test_the_template_of_a_page_carries_no_robots_meta_tag(self):
         self.assertNotIn(self.META, self.source("template.html"))
 
-    def test_the_stub_and_the_style_guide_keep_the_robots_meta_tag(self):
-        for name in ("stub.html", "styleguide.html"):
-            with self.subTest(file=name):
-                self.assertIn(self.META_FULL, self.source(name))
+    def test_the_style_guide_keeps_the_robots_meta_tag(self):
+        self.assertIn(self.META_FULL, self.source("styleguide.html"))
 
     def test_the_built_pages_follow_their_sources(self):
         for name, _site, invitations, files in self.sets():
             for invitation in invitations:
-                page = files[f"i/{invitation['token']}/index.html"]
+                page = files[f"{invitation['token']}/index.html"]
                 with self.subTest(data=name, token=invitation["token"][:4]):
                     self.assertNotIn(self.META, page)
-            for stub in ("index.html", "404.html"):
-                with self.subTest(data=name, file=stub):
-                    self.assertIn(self.META_FULL, files[stub])
+            # nothing but the pages is HTML: the build writes no page of the site
+            with self.subTest(data=name):
+                self.assertEqual(
+                    sorted(path for path in files if path.endswith(".html")),
+                    sorted(f"{invitation['token']}/index.html" for invitation in invitations),
+                )
 
 
 if __name__ == "__main__":  # pragma: no cover

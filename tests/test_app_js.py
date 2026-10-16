@@ -128,10 +128,13 @@ class EventsSourceTest(unittest.TestCase):
         start = code.index("var EVENTS_RECHECK_MS")
         end = code.index("\n  });", code.index("register('events'")) + len("\n  });")
         cls.module = code[start:end]
-        css = strip_comments(APP_CSS.read_text(encoding="utf-8"))
-        cls.css = css
-        start = css.index(".events__tabs {")
-        cls.tabs_css = css[start:css.index(".stub {", start)]
+        raw_css = APP_CSS.read_text(encoding="utf-8")
+        cls.css = strip_comments(raw_css)
+        # the styles of the tabs: from their first rule up to the heading of
+        # the section that follows them (7. Motion & reveal)
+        start = raw_css.index(".events__tabs {")
+        end = raw_css.rindex("/*", start, raw_css.index("7. Motion & reveal", start))
+        cls.tabs_css = strip_comments(raw_css[start:end])
 
     def function(self, name):
         """Source of a function of the module, up to the next declaration at its level."""
@@ -593,7 +596,7 @@ class CoverBarTest(unittest.TestCase):
     def test_the_canvas_of_an_invitation_has_the_colour_of_the_bar(self):
         # the canvas (beyond the edges of the page, the under-page colour of
         # WebKit) gets the token of the bar, on the invitation pages only: the
-        # stub and the styleguide keep the canvas of their body
+        # styleguide keeps the canvas of its body
         rules = [(" ".join(selector.split()), body)
                  for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", self.css)]
         backgrounds = [selector for selector, body in rules
@@ -611,7 +614,7 @@ class CoverBarTest(unittest.TestCase):
         self.assertIn("color-scheme: only light;", self.css)
         template = (ROOT / "template.html").read_text(encoding="utf-8")
         self.assertIn('<html lang="ru" class="invitation">', template)
-        for other in ("stub.html", "styleguide.html"):
+        for other in ("styleguide.html",):
             with self.subTest(page=other):
                 self.assertNotIn("invitation", re.search(r"<html[^>]*>", (ROOT / other).read_text(
                     encoding="utf-8")).group(0))
