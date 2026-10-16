@@ -358,24 +358,24 @@ class BuildCommandTests(CliTestCase):
         self.assertEqual((self.out / "about" / "index.html").read_text(encoding="utf-8"), "precious")
         self.assertNotIn("about", result.stderr)
 
-    def test_assets_alone_are_not_replaced(self):
+    def test_assets_of_somebody_else_are_not_replaced(self):
         assets = self.out / "assets"
         (assets / "photos").mkdir(parents=True)
         (assets / "notes.md").write_text("precious", encoding="utf-8")
         result = run_cli(self.code, *self.build_args(), cwd=self.work)
         self.assertEqual(result.returncode, 1)
         self.assertIn("no assets/ with app.css and app.js", result.stderr)
-        # even with the files every build writes, there are no pages
-        for name in ("app.css", "app.js"):
-            (assets / name).write_text("x", encoding="utf-8")
-        result = run_cli(self.code, *self.build_args(), cwd=self.work)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn(
-            "error: refusing to replace --out: it holds assets/ alone, without the pages of a "
-            "previous build; remove it manually or choose another --out\n",
-            result.stderr,
-        )
         self.assertEqual((assets / "notes.md").read_text(encoding="utf-8"), "precious")
+
+    def test_a_build_of_no_invitation_is_built_again(self):
+        # no pages, only assets/ as a build writes it: built over again
+        write_data(self.data, invitations=[])
+        for _attempt in range(2):
+            result = run_cli(self.code, *self.build_args(), cwd=self.work)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("(0 page(s), ", result.stdout)
+        self.assertEqual(sorted(path.name for path in self.out.iterdir()), ["assets"])
+        self.assertTrue((self.out / "assets" / "app.js").is_file())
 
     def test_empty_output_directory_is_replaced(self):
         self.out.mkdir(parents=True)

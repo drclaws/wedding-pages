@@ -163,15 +163,12 @@ class ReplaceableOutputTests(TempDirTestCase):
         (out / "assets").write_text("not a directory", encoding="utf-8")
         self.assertIn(self.NO_ASSETS, self.refusal(out))
 
-    def test_assets_alone_are_refused(self):
+    def test_assets_alone(self):
+        # a build of no invitation: assets/ as a build writes it is replaced
         out = self.make_previous_build()
         for token in self.TOKENS:
             shutil.rmtree(out / token)
-        self.assertEqual(
-            self.refusal(out),
-            "refusing to replace --out: it holds assets/ alone, without the pages of a "
-            "previous build; remove it manually or choose another --out",
-        )
+        build.check_replaceable(out)
         # assets/ of somebody else
         other = self.tmp / "other"
         (other / "assets" / "photos").mkdir(parents=True)

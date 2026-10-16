@@ -2944,14 +2944,16 @@ def check_replaceable(out_dir: Path | str) -> None:
 
     A directory qualifies when it is empty or holds what a build writes:
     `assets/`, a real directory with `app.css` and `app.js` (every build
-    writes them), and at least one directory of a page - a real directory
-    named like a token with `index.html` (a regular file) alone; nothing else
-    (files created by the operating system are ignored).  No marker file is
-    written into the output: its contents stay limited to what the pages need.
-    Anything else is somebody's directory and is never replaced: pages without
-    `assets/` (the pages directory of a whole site), `assets/` alone, a site
-    of the old layout (`index.html`, `404.html`, `_headers` or `robots.txt` at
-    the top, the pages one directory deeper), the directory of a single page.
+    writes them), and the directories of the pages, if any (a build of no
+    invitation has none) - real directories named like a token with
+    `index.html` (a regular file) alone; nothing else (files created by the
+    operating system are ignored).  No marker file is written into the
+    output: its contents stay limited to what the pages need.  Anything else
+    is somebody's directory and is never replaced: pages without `assets/`
+    (the pages directory of a whole site), `assets/` without `app.css` and
+    `app.js`, a site of the old layout (`index.html`, `404.html`, `_headers`
+    or `robots.txt` at the top, the pages one directory deeper), the
+    directory of a single page.
 
     The messages never repeat the path of `--out` nor the name of anything
     in it - at most they count the entries: the data is not read yet, so no
@@ -3012,11 +3014,6 @@ def _check_replaceable(out: Path) -> None:
             f"{refuse}: it does not look like a previous build output (no {ASSETS_DIRNAME}/ "
             f"with {' and '.join(BUILD_MARKER_ASSETS)}, which every build writes; the pages "
             f"alone are not replaced either); {advice}"
-        )
-    if not others:
-        raise BuildError(
-            f"{refuse}: it holds {ASSETS_DIRNAME}/ alone, without the pages of a previous "
-            f"build; {advice}"
         )
 
 
