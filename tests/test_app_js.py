@@ -128,10 +128,13 @@ class EventsSourceTest(unittest.TestCase):
         start = code.index("var EVENTS_RECHECK_MS")
         end = code.index("\n  });", code.index("register('events'")) + len("\n  });")
         cls.module = code[start:end]
-        css = strip_comments(APP_CSS.read_text(encoding="utf-8"))
-        cls.css = css
-        start = css.index(".events__tabs {")
-        cls.tabs_css = css[start:css.index(".stub {", start)]
+        raw_css = APP_CSS.read_text(encoding="utf-8")
+        cls.css = strip_comments(raw_css)
+        # the styles of the tabs: from their first rule up to the heading of
+        # the section that follows them (7. Motion & reveal)
+        start = raw_css.index(".events__tabs {")
+        end = raw_css.rindex("/*", start, raw_css.index("7. Motion & reveal", start))
+        cls.tabs_css = strip_comments(raw_css[start:end])
 
     def function(self, name):
         """Source of a function of the module, up to the next declaration at its level."""
