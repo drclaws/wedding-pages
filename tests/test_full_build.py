@@ -24,71 +24,13 @@ from tests.support import (
 MEDIA = f"assets/{support.MEDIA_DIR}"
 TOKENS = (support.TOKEN_A, support.TOKEN_B, support.TOKEN_C)
 
-EXPECTED_HEADERS = """/*
-  X-Robots-Tag: noindex, nofollow
-  Referrer-Policy: no-referrer
-  X-Content-Type-Options: nosniff
-  X-Frame-Options: DENY
-  Content-Security-Policy: default-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
-/i/*
-  ! X-Robots-Tag
-  Cache-Control: private, no-cache
-"""
-
-EXPECTED_ROBOTS = """User-agent: TelegramBot
-User-agent: TwitterBot
-User-agent: facebookexternalhit
-User-agent: WhatsApp
-User-agent: Discordbot
-User-agent: Slackbot
-User-agent: Slackbot-LinkExpanding
-User-agent: ViberBot
-User-agent: SkypeUriPreview
-Allow: /
-
-User-agent: *
-Disallow: /
-"""
-
 #: The tag that keeps a page out of the search engines.
 ROBOTS_META = '<meta name="robots"'
-
-
-def header_rules(text: str) -> dict[str, list[str]]:
-    """`_headers` as `{url pattern: [line of the rule, …]}`."""
-    rules: dict[str, list[str]] = {}
-    for line in text.splitlines():
-        if line.startswith(" "):
-            rules[pattern].append(line.strip())
-        else:
-            pattern = line
-            rules[pattern] = []
-    return rules
-
-
-def robots_groups(text: str) -> dict[tuple[str, ...], list[str]]:
-    """`robots.txt` as `{(user agent, …): [rule, …]}`; one entry per group."""
-    groups: dict[tuple[str, ...], list[str]] = {}
-    agents: list[str] = []
-    rules: list[str] = []
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        name, _, value = line.partition(":")
-        if name.strip().lower() == "user-agent":
-            if rules:  # a name after a rule starts a group of its own
-                groups[tuple(agents)] = rules
-                agents, rules = [], []
-            agents.append(value.strip())
-        else:
-            rules.append(line.strip())
-    if agents:
-        groups[tuple(agents)] = rules
-    return groups
-
+#: What the site around the invitations needs; the build writes none of it.
+SITE_FILES = ("index.html", "404.html", "_headers", "robots.txt")
 
 #: Every file of the fixture build.
-FILES_IN_TOTAL = 18
+FILES_IN_TOTAL = 14
 
 
 def pending_site() -> dict:
@@ -130,7 +72,7 @@ class FullBuildTestCase(CliTestCase):
         return result
 
     def page(self, token: str) -> str:
-        return (self.out / "i" / token / "index.html").read_text(encoding="utf-8")
+        return (self.out / token / "index.html").read_text(encoding="utf-8")
 
 
 class OutputContentsTests(FullBuildTestCase):
@@ -140,17 +82,13 @@ class OutputContentsTests(FullBuildTestCase):
             tree_files(self.out),
             sorted(
                 [
-                    "404.html",
-                    "_headers",
                     "assets/app.css",
                     "assets/favicon.svg",
                     "assets/og.png",
                     "assets/fonts/sans.woff2",
                     *(f"{MEDIA}/{published_name(name)}" for name in support.MEDIA_FILES),
-                    *(f"i/{token}/index.html" for token in TOKENS),
+                    *(f"{token}/index.html" for token in TOKENS),
                     *calendar_files(),
-                    "index.html",
-                    "robots.txt",
                 ]
             ),
         )
@@ -164,16 +102,12 @@ class OutputContentsTests(FullBuildTestCase):
             tree_files(self.out),
             sorted(
                 [
-                    "404.html",
-                    "_headers",
                     "assets/app.css",
                     "assets/favicon.svg",
                     "assets/og.png",
                     "assets/fonts/sans.woff2",
-                    *(f"i/{token}/index.html" for token in TOKENS),
+                    *(f"{token}/index.html" for token in TOKENS),
                     *calendar_files(pending_site()),
-                    "index.html",
-                    "robots.txt",
                 ]
             ),
         )
@@ -186,64 +120,43 @@ class OutputContentsTests(FullBuildTestCase):
         self.assertEqual(page.count(f"/{MEDIA}/"), page.count(".ics\""))
         self.assertIn(calendar_link("dinner", pending_site()), page)
 
-    def test_top_level_matches_the_allow_list(self):
+    def test_top_level_holds_the_pages_and_assets_only(self):
         self.build()
-        self.assertEqual({path.name for path in self.out.iterdir()}, build.OUTPUT_TOP_LEVEL)
-
-    def test_headers_and_robots(self):
-        self.build()
-        self.assertEqual((self.out / "_headers").read_bytes(), EXPECTED_HEADERS.encode())
-        self.assertEqual((self.out / "robots.txt").read_bytes(), EXPECTED_ROBOTS.encode())
-        self.assertEqual(list(self.out.rglob("sitemap*")), [])
-
-    def test_the_headers_take_noindex_off_the_pages_and_leave_the_rest(self):
-        self.build()
-        rules = header_rules((self.out / "_headers").read_text(encoding="utf-8"))
-        self.assertEqual(list(rules), ["/*", "/i/*"])
-        # everything a wrong path and the root still get
-        self.assertIn("X-Robots-Tag: noindex, nofollow", rules["/*"])
-        self.assertIn("Referrer-Policy: no-referrer", rules["/*"])
-        self.assertIn("X-Content-Type-Options: nosniff", rules["/*"])
-        self.assertIn("X-Frame-Options: DENY", rules["/*"])
-        policy = [line for line in rules["/*"] if line.startswith("Content-Security-Policy:")]
-        self.assertEqual(len(policy), 1)
-        self.assertIn("default-src 'self'", policy[0])
-        # the pages of the invitations: the ban is detached, the rest is untouched
-        self.assertIn("! X-Robots-Tag", rules["/i/*"])
-        self.assertIn("Cache-Control: private, no-cache", rules["/i/*"])
-        self.assertEqual([line for line in rules["/i/*"] if line.startswith("X-Robots-Tag")], [])
-
-    def test_robots_lets_the_preview_bots_in_and_nobody_else(self):
-        self.build()
-        text = (self.out / "robots.txt").read_text(encoding="utf-8")
-        groups = robots_groups(text)
-        self.assertEqual(len(groups), 2)
-        [allowed] = [names for names in groups if "*" not in names]
-        self.assertIn("TelegramBot", allowed)
-        self.assertEqual(groups[allowed], ["Allow: /"])
-        # the group of the named bots is not the group of everybody else
-        self.assertEqual(groups[("*",)], ["Disallow: /"])
-        # and no address of an invitation is disclosed by the file
+        self.assertEqual(
+            sorted(path.name for path in self.out.iterdir()), sorted(["assets", *TOKENS])
+        )
         for token in TOKENS:
-            self.assertNotIn(token, text)
-        self.assertNotIn("/i/", text)
+            self.assertTrue((self.out / token).is_dir())
 
-    def test_the_pages_carry_no_robots_meta_tag_and_the_stub_does(self):
+    def test_the_files_of_the_site_are_not_written(self):
+        # the root page, the page of a wrong address, the headers and
+        # robots.txt belong to the site that publishes the output
+        self.build()
+        for name in SITE_FILES:
+            self.assertFalse((self.out / name).exists(), name)
+        self.assertEqual(list(self.out.rglob("sitemap*")), [])
+        self.assertEqual(list(self.out.rglob("_headers")), [])
+        self.assertEqual(list(self.out.rglob("robots.txt")), [])
+        self.assertEqual(list(self.out.glob("*.html")), [])
+
+    def test_the_pages_carry_no_robots_meta_tag(self):
         self.build()
         for token in TOKENS:
             self.assertNotIn(ROBOTS_META, self.page(token))
-        for name in ("index.html", "404.html"):
-            self.assertIn(ROBOTS_META, (self.out / name).read_text(encoding="utf-8"))
+        # the page template of the repository: no robots tag, the referrer tag stays
+        template = (support.ROOT / "template.html").read_text(encoding="utf-8")
+        self.assertNotIn(ROBOTS_META, template)
+        self.assertIn('<meta name="referrer" content="no-referrer">', template)
 
     def test_one_calendar_file_per_event_in_the_media_directory(self):
         self.build()
         found = sorted(path.relative_to(self.out).as_posix() for path in self.out.rglob("*.ics"))
         self.assertEqual(found, sorted(calendar_files()))
         self.assertEqual(len(found), 2)  # the dinner, and the brunch Eve sees
-        self.assertEqual(list((self.out / "i").rglob("*.ics")), [])
+        self.assertEqual(list(self.out.glob("*/*.ics")), [])
         for token in TOKENS:
             self.assertEqual(
-                sorted(path.name for path in (self.out / "i" / token).iterdir()), ["index.html"]
+                sorted(path.name for path in (self.out / token).iterdir()), ["index.html"]
             )
 
     def test_calendar_files_are_those_of_the_data(self):
@@ -425,11 +338,9 @@ class OutputContentsTests(FullBuildTestCase):
         page = self.page(support.TOKEN_A)
         self.assertNotIn("<img src=https", page)
         self.assertGreater(page.count("&lt;img src=https://h.example.invalid/x&gt;"), 20)
-        self.assertNotIn("h.example.invalid", (self.out / "index.html").read_text(encoding="utf-8"))
 
     def test_html_comments_are_removed(self):
         self.assertIn("<!-- a note", support.TEMPLATE)
-        self.assertIn("<!-- a note", support.STUB)
         self.build()
         for path in self.out.rglob("*.html"):
             self.assertNotIn("<!--", path.read_text(encoding="utf-8"), path)
@@ -437,7 +348,11 @@ class OutputContentsTests(FullBuildTestCase):
     def test_log_has_counters_and_no_data(self):
         result = self.build()
         self.assertIn("3 invitation(s), 5 media file(s) validated", result.stdout)
-        self.assertIn("wrote 3 page(s) to dist/i/", result.stdout)
+        self.assertIn("wrote 3 page(s) to dist/<token>/", result.stdout)
+        self.assertIn(
+            "build: base path /: the pages are at /<token>/, the shared files at /assets/",
+            result.stdout,
+        )
         self.assertIn("wrote 2 calendar file(s), one per event", result.stdout)
         self.assertIn("2 asset file(s)", result.stdout)
         self.assertIn("copied 5 media file(s) under the hash of their contents", result.stdout)
@@ -454,27 +369,6 @@ class OutputContentsTests(FullBuildTestCase):
             self.assertNotIn(name, result.stdout)
 
 
-class StubTests(FullBuildTestCase):
-    def test_index_and_404_are_identical(self):
-        self.build()
-        index = (self.out / "index.html").read_bytes()
-        self.assertEqual(index, (self.out / "404.html").read_bytes())
-        self.assertIn("Такой страницы нет.", index.decode("utf-8"))
-
-    def test_stub_gets_no_data(self):
-        self.build()
-        stub = (self.out / "index.html").read_text(encoding="utf-8")
-        for secret in (*support.PRIVATE_STRINGS, support.MEDIA_DIR, "/i/", "2030"):
-            self.assertNotIn(secret, stub)
-
-    def test_stub_is_the_same_for_every_data_set(self):
-        self.build()
-        first = (self.out / "index.html").read_bytes()
-        write_data(self.data, site=pending_site(), invitations=invitations_data(1))
-        self.build()
-        self.assertEqual((self.out / "index.html").read_bytes(), first)
-
-
 class PrivacyTests(FullBuildTestCase):
     """A guest's data is found on that guest's page and nowhere else."""
 
@@ -486,7 +380,7 @@ class PrivacyTests(FullBuildTestCase):
         contents = self.contents()
         checked = 0
         for invitation in invitations_data():
-            own_page = f"i/{invitation['token']}/index.html"
+            own_page = f"{invitation['token']}/index.html"
             values = [invitation["greeting"]] + [
                 override["note"]
                 for part in ("sections", "events")
@@ -507,12 +401,12 @@ class PrivacyTests(FullBuildTestCase):
         title = support.HIDDEN_EVENT_TITLE.encode()
         found = sorted(name for name, content in contents.items() if title in content)
         brunch = support.calendar_names()["brunch"]
-        self.assertEqual(sorted(found), sorted([f"{MEDIA}/{brunch}", f"i/{support.TOKEN_A}/index.html"]))
+        self.assertEqual(sorted(found), sorted([f"{MEDIA}/{brunch}", f"{support.TOKEN_A}/index.html"]))
         # the link to its calendar file is on Eve's page only
         linked = sorted(name for name, content in contents.items() if brunch.encode() in content)
-        self.assertEqual(linked, [f"i/{support.TOKEN_A}/index.html"])
+        self.assertEqual(linked, [f"{support.TOKEN_A}/index.html"])
         for token in (support.TOKEN_B, support.TOKEN_C):
-            page = contents[f"i/{token}/index.html"]
+            page = contents[f"{token}/index.html"]
             self.assertNotIn(b"brunch", page)
             self.assertNotIn(b"2030-06-02", page)
 
@@ -520,7 +414,7 @@ class PrivacyTests(FullBuildTestCase):
         self.build()
         contents = self.contents()
         for token in TOKENS:
-            own_page = f"i/{token}/index.html"
+            own_page = f"{token}/index.html"
             for name, content in contents.items():
                 self.assertNotIn(token.encode(), content, name)
                 self.assertNotIn(token.lower().encode(), content.lower(), name)
@@ -556,9 +450,10 @@ class PrivacyTests(FullBuildTestCase):
     def test_names_stay_on_the_pages(self):
         self.build()
         contents = self.contents()
-        self.assertIn(support.COUPLE_NAMES.encode(), contents[f"i/{support.TOKEN_A}/index.html"])
+        self.assertIn(support.COUPLE_NAMES.encode(), contents[f"{support.TOKEN_A}/index.html"])
+        pages = {f"{token}/index.html" for token in TOKENS}
         for name, content in contents.items():
-            if name.startswith("i/") and name.endswith(".html"):
+            if name in pages:
                 continue
             # a calendar file is linked from the pages only, under a name that
             # takes every token to work out: it is as private as a page
@@ -591,6 +486,29 @@ class ReproducibilityTests(FullBuildTestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(tree_digest(other), first)
+
+    def test_a_base_path_changes_the_addresses_and_nothing_else(self):
+        self.build()
+        root = {name: (self.out / name).read_bytes() for name in tree_files(self.out)}
+        other = self.work / "invite"
+        result = support.run_cli(
+            self.code, "build", "--data", str(self.data), "--media", str(self.media),
+            "--out", str(other), "--base-path", "/invite", cwd=self.work,
+        )  # fmt: skip
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prefixed = {name: (other / name).read_bytes() for name in tree_files(other)}
+        # the same files under the same names: media, calendars, link preview image
+        self.assertEqual(sorted(prefixed), sorted(root))
+        for name, content in root.items():
+            with self.subTest(name=name):
+                if name.endswith("/index.html") and not name.startswith("assets/"):
+                    self.assertNotEqual(prefixed[name], content)
+                    self.assertEqual(
+                        prefixed[name], content.replace(b'"/assets/', b'"/invite/assets/')
+                    )
+                    self.assertNotIn(b'"/assets/', prefixed[name])
+                else:
+                    self.assertEqual(prefixed[name], content)
 
     def test_in_process_build_matches_the_command_line(self):
         self.build()
@@ -647,8 +565,8 @@ class ExampleDataTests(CliTestCase):
             sorted(p.name for p in media.iterdir()),
             sorted({published_name(n) for n in names} | set(calendars.values())),
         )
-        self.assertEqual(len(list((out / "i").iterdir())), len(invitations))
-        self.assertEqual(list((out / "i").rglob("*.ics")), [])
+        self.assertEqual(len(list(out.glob("*/index.html"))), len(invitations))
+        self.assertEqual(list(out.glob("*/*.ics")), [])
         self.assertEqual(len(list(out.rglob("*.ics"))), 3)
 
     def test_example_with_pending_venue(self):
@@ -660,10 +578,10 @@ class ExampleDataTests(CliTestCase):
             sorted(p.name for p in (out / "assets" / site["mediaDir"]).iterdir()),
             [calendars["celebration"]],
         )
-        self.assertEqual(list((out / "i").rglob("*.ics")), [])
+        self.assertEqual(list(out.glob("*/*.ics")), [])
         # readable tokens, a short one among them, are directory names as they are
         self.assertEqual(
-            sorted(p.name for p in (out / "i").iterdir()),
+            sorted(p.name for p in out.iterdir() if p.name != "assets"),
             sorted(item["token"] for item in invitations),
         )
 

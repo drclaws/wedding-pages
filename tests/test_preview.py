@@ -28,8 +28,8 @@ CHROME = _preview.find_chrome()
 LONG_NAMES = "Анастасия-Александра и Константин"
 
 
-def preview_html(site: dict) -> str:
-    tree = _page.site_cover(site, F.settings())
+def preview_html(site: dict, assets_path: str = "/assets") -> str:
+    tree = _page.site_cover(site, F.settings(assets_path=assets_path))
     template = build.parse_template(
         (support.ROOT / build.PREVIEW_TEMPLATE_FILE).read_text(encoding="utf-8"),
         build.PREVIEW_TEMPLATE_FILE,
@@ -48,6 +48,15 @@ class PreviewPageTests(unittest.TestCase):
         self.assertIn('class="cover__photo cover__photo--center" src="/assets/', page)
         self.assertIn('href="/assets/preview.css"', page)
         self.assertNotIn("<script", page)
+
+    def test_the_paths_follow_the_pages(self):
+        page = preview_html(F.site(), "/invite/assets")
+        self.assertIn('href="/invite/assets/app.css"', page)
+        self.assertIn('href="/invite/assets/preview.css"', page)
+        self.assertIn('class="cover__photo cover__photo--center" src="/invite/assets/', page)
+        self.assertEqual(
+            page.replace('"/invite/assets/', '"/assets/'), preview_html(F.site())
+        )
 
     def test_nothing_of_a_guest(self):
         site = F.site()
@@ -270,8 +279,29 @@ class LinkPreviewBuildTests(CliTestCase):
         return result
 
     def og_image(self, token=support.TOKEN_A) -> str:
-        page = (self.out / "i" / token / "index.html").read_text(encoding="utf-8")
+        page = (self.out / token / "index.html").read_text(encoding="utf-8")
         return page.split('<meta property="og:image" content="', 1)[1].split('"', 1)[0]
+
+    def test_the_preview_page_is_served_under_the_base_path(self):
+        site = support.site_data()
+        site["sections"][0].update(background="venue-1")
+        support.write_data(self.data, site=site)
+        fake_preview.CALLS.clear()
+        self.build()
+        root_page, root_files = fake_preview.CALLS[0]
+        root_image = self.og_image()
+        fake_preview.CALLS.clear()
+        self.build("--base-path", "/invite")
+        page, files = fake_preview.CALLS[0]
+        # the same page and the same files, only the paths are under the base path
+        self.assertEqual(page.replace('"/invite/assets/', '"/assets/'), root_page)
+        self.assertNotIn('"/assets/', page)
+        self.assertEqual(
+            {path[len("/invite") :]: source for path, source in files.items()}, root_files
+        )
+        self.assertTrue(all(path.startswith("/invite/assets/") for path in files))
+        # the same picture under the same name
+        self.assertEqual(self.og_image(), "/invite" + root_image)
 
     def test_the_cover_is_published_in_the_media_directory(self):
         fake_preview.CALLS.clear()
@@ -320,6 +350,8 @@ class LinkPreviewBuildTests(CliTestCase):
                 self.assertEqual(self.og_image(), "/assets/og.png")
                 self.assertTrue((self.out / "assets" / "og.png").is_file())
                 self.assertIn("(the link preview image is turned off)", result.stdout)
+        self.build("--no-link-preview-image", "--base-path", "/invite")
+        self.assertEqual(self.og_image(), "/invite/assets/og.png")
 
     def test_a_bad_switch(self):
         result = self.build_in_process(env={"LINK_PREVIEW_IMAGE": "maybe"})
@@ -411,13 +443,20 @@ class LinkPreviewBuildTests(CliTestCase):
 class RealBrowserTests(support.TempDirTestCase):
     """The real browser: a JPEG of the right size, twice the same bytes."""
 
-    def render(self, site: dict) -> _preview.PreviewImage:
+    def render(self, site: dict, assets_path: str = "/assets") -> _preview.PreviewImage:
         assets = support.ROOT / "assets"
         files = {
-            "/assets/app.css": assets / "app.css",
-            "/assets/preview.css": assets / build.PREVIEW_STYLESHEET,
+            f"{assets_path}/app.css": assets / "app.css",
+            f"{assets_path}/preview.css": assets / build.PREVIEW_STYLESHEET,
         }
-        return REAL(preview_html(site), files)
+        return REAL(preview_html(site, assets_path), files)
+
+    def test_the_image_does_not_depend_on_the_base_path(self):
+        site = F.site()
+        site["sections"][0].pop("background")
+        self.assertEqual(
+            self.render(site, "/invite/x/assets").content, self.render(site).content
+        )
 
     def test_the_image(self):
         site = F.site()

@@ -36,7 +36,6 @@ SOURCES = (
     "template.html",
     "assets/app.js",
     "assets/app.css",
-    "stub.html",
     "styleguide.html",
     "assets/styleguide.js",
     "assets/styleguide.css",
@@ -154,8 +153,8 @@ class FragmentTests(unittest.TestCase):
         head = TEMPLATE[: TEMPLATE.index("</head>")]
         self.assertEqual(head.count('rel="stylesheet"'), 1)
         self.assertEqual(head.count("<script"), 1)
-        self.assertIn('<link rel="stylesheet" href="/assets/app.css">', head)
-        self.assertIn('<script src="/assets/app.js" defer></script>', head)
+        self.assertIn('<link rel="stylesheet" href="{{assetsPath}}/app.css">', head)
+        self.assertIn('<script src="{{assetsPath}}/app.js" defer></script>', head)
 
 
 class StylesTests(unittest.TestCase):
@@ -244,7 +243,7 @@ class BuiltPageTests(TempDirTestCase):
 
     def pages(self, out: Path) -> list[str]:
         return [
-            path.read_text(encoding="utf-8") for path in sorted((out / "i").rglob("index.html"))
+            path.read_text(encoding="utf-8") for path in sorted(out.glob("*/index.html"))
         ]
 
     def test_the_output_has_no_vendor_directory(self):
@@ -288,10 +287,13 @@ class BuiltPageTests(TempDirTestCase):
                 self.assertIn(f'alt="" width="{width}" height="{height}"', page)
 
     def test_pages_have_no_inline_styles(self):
-        """The pages work under a style-src without 'unsafe-inline': they
-        have no style attributes and no <style> elements."""
-        self.assertIn("style-src 'self';", build.HEADERS_TEXT)
-        self.assertNotIn("unsafe-inline", build.HEADERS_TEXT)
+        """The pages work under a style-src without 'unsafe-inline' (the
+        policy the README asks of the site): they have no style attributes and
+        no <style> elements."""
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        policy = re.search(r"Content-Security-Policy: (.*)", readme).group(1)
+        self.assertIn("style-src 'self';", policy)
+        self.assertNotIn("unsafe-inline", policy)
         style_attribute = re.compile(r"<[a-zA-Z][^>]*\sstyle\s*=", re.S)
         for data_name in ("data", "data-venue-pending"):
             out = self.build(data_name)

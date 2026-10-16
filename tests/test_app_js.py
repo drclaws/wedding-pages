@@ -593,7 +593,7 @@ class CoverBarTest(unittest.TestCase):
     def test_the_canvas_of_an_invitation_has_the_colour_of_the_bar(self):
         # the canvas (beyond the edges of the page, the under-page colour of
         # WebKit) gets the token of the bar, on the invitation pages only: the
-        # stub and the styleguide keep the canvas of their body
+        # styleguide keeps the canvas of its body
         rules = [(" ".join(selector.split()), body)
                  for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", self.css)]
         backgrounds = [selector for selector, body in rules
@@ -611,7 +611,7 @@ class CoverBarTest(unittest.TestCase):
         self.assertIn("color-scheme: only light;", self.css)
         template = (ROOT / "template.html").read_text(encoding="utf-8")
         self.assertIn('<html lang="ru" class="invitation">', template)
-        for other in ("stub.html", "styleguide.html"):
+        for other in ("styleguide.html",):
             with self.subTest(page=other):
                 self.assertNotIn("invitation", re.search(r"<html[^>]*>", (ROOT / other).read_text(
                     encoding="utf-8")).group(0))

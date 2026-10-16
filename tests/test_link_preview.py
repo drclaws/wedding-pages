@@ -74,7 +74,7 @@ class LinkPreviewBuildTests(CliTestCase):
 
     def heads(self) -> list[_Head]:
         return [
-            head((self.out / "i" / token / "index.html").read_text(encoding="utf-8"))
+            head((self.out / token / "index.html").read_text(encoding="utf-8"))
             for token in (support.TOKEN_A, support.TOKEN_B, support.TOKEN_C)
         ]
 
@@ -115,11 +115,19 @@ class LinkPreviewBuildTests(CliTestCase):
                            support.HIDDEN_EVENT_TITLE, support.TOKEN_A):  # fmt: skip
                 self.assertNotIn(secret, text)
 
-    def test_the_stub_has_no_preview_tags(self):
-        self.build("--site-name", SITE_NAME)
-        stub = (self.out / "index.html").read_text(encoding="utf-8")
-        for text in ("og:", "description", SITE_NAME, support.COUPLE_NAMES, "twitter:"):
-            self.assertNotIn(text, stub)
+    def test_the_image_follows_the_base_path(self):
+        self.build("--base-path", "/invite")
+        for page in self.heads():
+            meta = dict(page.meta)
+            self.assertRegex(
+                meta["og:image"], rf"\A/invite/assets/{support.MEDIA_DIR}/[0-9a-f]{{16}}\.jpg\Z"
+            )
+            # the file is inside the output, under the path without the base
+            self.assertTrue((self.out / meta["og:image"][len("/invite/") :]).is_file())
+        self.build("--base-path", "/invite", "--no-link-preview-image")
+        for page in self.heads():
+            self.assertEqual(dict(page.meta)["og:image"], "/invite/assets/og.png")
+        self.assertTrue((self.out / "assets" / "og.png").is_file())
 
     def test_the_site_name(self):
         result = self.build("--site-name", f"  {SITE_NAME} ")

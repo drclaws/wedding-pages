@@ -17,7 +17,7 @@ from tools import _page, _schema
 from tools._media import MediaInfo
 
 ROOT_FIELDS = {
-    "greeting", "form", "ty", "vy", "coupleNames", "rsvpDeadline", "mediaPath",
+    "greeting", "form", "ty", "vy", "coupleNames", "rsvpDeadline", "assetsPath", "mediaPath",
     "faviconPath", "faviconType", "ogImage", "ogImageType", "ogImageWidth",
     "ogImageHeight", "themeColor", "siteName", "linkDescription", "primaryEvent", "sections",
 }  # fmt: skip
@@ -154,6 +154,7 @@ class ContractTests(unittest.TestCase):
 
     def test_root_values(self):
         page = build()[0]
+        self.assertEqual(page["assetsPath"], "/assets")
         self.assertEqual(page["mediaPath"], f"/assets/{F.MEDIA_DIR}")
         for key, value in F.SITE_IMAGES.items():
             self.assertEqual(page[key], value)
@@ -161,6 +162,15 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(page["coupleNames"], "Алиса и Боб")
         self.assertEqual(page["rsvpDeadline"], "1 мая 2030")
         self.assertEqual(page["primaryEvent"]["domId"], "")
+
+    def test_the_shared_files_under_a_base_path(self):
+        page = build(assets_path="/invite/assets")[0]
+        self.assertEqual(page["assetsPath"], "/invite/assets")
+        self.assertEqual(page["mediaPath"], f"/invite/assets/{F.MEDIA_DIR}")
+        cover = _page.site_cover(F.site(), F.settings(assets_path="/invite/assets"))
+        self.assertEqual(cover["assetsPath"], "/invite/assets")
+        self.assertEqual(set(cover), {"coupleNames", "assetsPath", "cover"})
+        self.assertFalse(hasattr(F.settings(), "pages_path"))
 
     def test_rsvp_deadline_is_an_empty_string_when_not_set(self):
         def change(site, invitations):

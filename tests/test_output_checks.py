@@ -31,12 +31,22 @@ def exists_in(*names: str):
     return set(names).__contains__
 
 
-def html_problems(document: str, *existing: str) -> list[str]:
-    return [message for _line, message in build.check_html(document, exists_in(*existing))]
+def html_problems(document: str, *existing: str, base_path: str = "/") -> list[str]:
+    return [
+        message
+        for _line, message in build.check_html(
+            document, exists_in(*existing), base_path=base_path
+        )
+    ]
 
 
-def css_problems(text: str, *existing: str) -> list[str]:
-    return [message for _line, message in build.check_stylesheet(text, exists_in(*existing))]
+def css_problems(text: str, *existing: str, base_path: str = "/") -> list[str]:
+    return [
+        message
+        for _line, message in build.check_stylesheet(
+            text, exists_in(*existing), base_path=base_path
+        )
+    ]
 
 
 class FailingBuildTestCase(CliTestCase):
@@ -44,11 +54,12 @@ class FailingBuildTestCase(CliTestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        (self.out / "i" / "PreviousToken-0123456789").mkdir(parents=True)
-        (self.out / "i" / "PreviousToken-0123456789" / "index.html").write_text(
+        (self.out / "PreviousToken-0123456789").mkdir(parents=True)
+        (self.out / "PreviousToken-0123456789" / "index.html").write_text(
             "previous page", encoding="utf-8"
         )
-        (self.out / "index.html").write_text("previous stub", encoding="utf-8")
+        (self.out / "assets").mkdir()
+        (self.out / "assets" / "app.css").write_text("previous styles", encoding="utf-8")
         self.previous = tree_digest(self.out)
 
     def add_to_template(self, snippet: str) -> None:
@@ -57,13 +68,8 @@ class FailingBuildTestCase(CliTestCase):
             self.template.replace("</body>", snippet + "\n</body>"), encoding="utf-8"
         )
 
-    def add_to_stub(self, snippet: str) -> None:
-        (self.code / "stub.html").write_text(
-            support.STUB.replace("</body>", snippet + "\n</body>"), encoding="utf-8"
-        )
-
-    def assertBuildFails(self, *fragments: str, in_process: bool = True):
-        result = self.build_in_process() if in_process else self.run_build()
+    def assertBuildFails(self, *fragments: str, in_process: bool = True, extra=()):
+        result = self.build_in_process(*extra) if in_process else self.run_build(*extra)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         for fragment in fragments:
             self.assertIn(fragment, result.stderr)
@@ -75,8 +81,8 @@ class FailingBuildTestCase(CliTestCase):
         self.assertEqual(leftovers, [], "temporary directories were left behind")
         return result
 
-    def assertBuildPasses(self):
-        result = self.build_in_process()
+    def assertBuildPasses(self, *extra: str):
+        result = self.build_in_process(*extra)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result
 
@@ -90,7 +96,7 @@ class ExternalResourceTests(FailingBuildTestCase):
         )
         # the same problem on every page is reported once, tokens are hidden
         self.assertIn("3 files:", result.stderr)
-        self.assertIn("first: i/…/index.html line ", result.stderr)
+        self.assertIn("first: …/index.html line ", result.stderr)
         self.assertNotIn(support.TOKEN_A[:4], result.stderr)
         self.assertIn("failed with 1 error(s)", result.stderr)
 
@@ -184,7 +190,9 @@ class ExternalResourceTests(FailingBuildTestCase):
         )
         result = self.assertBuildFails()
         self.assertRegex(result.stderr, "markup-like text is not allowed|<img src>: external URL")
-        self.add_to_stub('<svg><textarea><img src="https://cdn.example.invalid/x.png"></textarea></svg>')
+        self.add_to_template(
+            '<svg><textarea><img src="https://cdn.example.invalid/x.png"></textarea></svg>'
+        )
         result = self.assertBuildFails()
         self.assertRegex(result.stderr, "markup-like text is not allowed|<img src>: external URL")
 
@@ -207,8 +215,8 @@ class ExternalResourceTests(FailingBuildTestCase):
             '<![CDATA[ > <img src="https://cdn.example.invalid/x.png"> ]]>'
         )
         self.assertBuildFails("'<![…' (CDATA sections, processing instructions) is not allowed")
-        self.add_to_stub("<?xml version='1.0'?>")
-        self.assertBuildFails("stub.html line ", "'<?…'")
+        self.add_to_template("<?xml version='1.0'?>")
+        self.assertBuildFails("template.html line ", "'<?…'")
 
     def test_markup_hidden_in_svg_content(self):
         self.add_to_template(
@@ -248,11 +256,6 @@ class ExternalResourceTests(FailingBuildTestCase):
             encoding="utf-8",
         )
         self.assertBuildPasses()
-
-    def test_external_url_in_the_stub(self):
-        self.add_to_stub('<img src="https://cdn.example.invalid/pic.png" alt="">')
-        result = self.assertBuildFails("2 files:", "first: 404.html line ")
-        self.assertIn("<img src>: external URL", result.stderr)
 
     def test_meta_with_an_external_url(self):
         self.add_to_template(
@@ -418,6 +421,11 @@ class LocalPathTests(FailingBuildTestCase):
         self.add_to_template('<img src="" alt="">')
         self.assertBuildFails("<img src>: the URL is empty")
 
+    def test_the_root_of_the_site_is_not_part_of_the_output(self):
+        # the build writes no page for the root: whatever the site puts there
+        self.add_to_template('<a href="/">home</a>')
+        self.assertBuildFails("<a href>: '/' does not exist in the output")
+
     def test_path_with_dot_segments(self):
         self.add_to_template('<img src="/assets/../index.html" alt="">')
         self.assertBuildFails("is not a plain absolute path")
@@ -432,7 +440,8 @@ class LocalPathTests(FailingBuildTestCase):
             'b::after { content: "// not a url"; background: url("data:image/png;base64,AAAA") }\n',
         )
         self.add_to_template(
-            '<a href="/">home</a> <a href="#top">top</a> <a href="/?x=1#y">q</a>\n'
+            f'<a href="/{support.TOKEN_B}/">page</a> <a href="#top">top</a> '
+            '<a href="/assets/app.css?x=1#y">q</a>\n'
             '<img src="/assets/app.css?v=2" srcset="/assets/app.css 1x, /assets/fonts/sans.woff2 2x" alt="">\n'
             '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="">\n'
             '<link rel="icon" href="data:,">\n'
@@ -442,8 +451,8 @@ class LocalPathTests(FailingBuildTestCase):
         )
         self.assertBuildPasses()
 
-    def test_template_and_stub_must_not_be_symlinks(self):
-        for name in ("template.html", "stub.html"):
+    def test_the_templates_must_not_be_symlinks(self):
+        for name in ("template.html", "preview.html"):
             with self.subTest(name=name):
                 real = self.tmp / f"real-{name}"
                 os.replace(self.code / name, real)
@@ -456,24 +465,140 @@ class LocalPathTests(FailingBuildTestCase):
                 os.replace(real, self.code / name)
 
 
-class StubCheckTests(FailingBuildTestCase):
-    def test_placeholder_in_the_stub(self):
-        self.add_to_stub("<p>{{coupleNames}}</p>")
+class BasePathTests(FailingBuildTestCase):
+    """`--base-path`: the output is published under a path of the site."""
+
+    BASE = ("--base-path", "/invite")
+
+    def test_every_address_starts_with_the_base_path(self):
+        self.assertBuildPasses(*self.BASE)
+        page = (self.out / support.TOKEN_A / "index.html").read_text(encoding="utf-8")
+        media = f"/invite/assets/{support.MEDIA_DIR}/"
+        self.assertIn('href="/invite/assets/app.css"', page)
+        self.assertIn('href="/invite/assets/favicon.svg"', page)
+        # the rendered cover (a fake picture in the tests)
+        self.assertRegex(page, rf'<meta property="og:image" content="{media}[0-9a-f]{{16}}\.jpg">')
+        self.assertIn(f'src="{media}{support.published_name("venue-1.png")}"', page)
+        self.assertIn(f'data-media-poster="{media}{support.published_name("poster.png")}"', page)
+        self.assertIn(f'href="{media}{support.calendar_names()["dinner"]}"', page)
+        for attribute in ('href="/assets/', 'src="/assets/', 'content="/assets/', '"/assets/'):
+            self.assertNotIn(attribute, page)
+        # the layout of the output does not depend on the base path
+        self.assertTrue((self.out / "assets" / "app.css").is_file())
+        self.assertFalse((self.out / "invite").exists())
+
+    def test_an_address_outside_the_base_path_points_outside_the_output(self):
+        self.add_to_template('<link rel="stylesheet" href="/assets/app.css">')
         self.assertBuildFails(
-            "stub.html: must not contain template syntax", "line 13: '{{coupleNames}}'"
+            "<link href>: '/assets/….css' points outside the output", extra=self.BASE
+        )
+        self.add_to_template('<a href="/inviter/assets/app.css">x</a>')
+        self.assertBuildFails("<a href>: '/….css' points outside the output", extra=self.BASE)
+        self.add_to_template('<img src="/../invite/assets/app.css" alt="">')
+        self.assertBuildFails("points outside the output", extra=self.BASE)
+
+    def test_an_address_under_the_base_path_is_looked_up_without_it(self):
+        self.add_to_template('<link rel="stylesheet" href="/invite/assets/missing.css">')
+        self.assertBuildFails(
+            "<link href>: '/invite/assets/….css' does not exist in the output", extra=self.BASE
+        )
+        self.add_to_template('<a href="/invite/">x</a>')
+        self.assertBuildFails("<a href>: '/invite/' does not exist in the output", extra=self.BASE)
+        self.add_to_template('<img src="/invite/assets/../assets/app.css" alt="">')
+        self.assertBuildFails("is not a plain absolute path", extra=self.BASE)
+        self.add_to_template(
+            '<link rel="stylesheet" href="/invite/assets/app.css?v=1#x">'
+            f'<a href="/invite/{support.TOKEN_B}/">x</a>'
+        )
+        self.assertBuildPasses(*self.BASE)
+
+    def test_a_relative_url_asks_for_the_base_path(self):
+        self.add_to_template('<link rel="stylesheet" href="assets/app.css">')
+        self.assertBuildFails(
+            "<link href>: relative path '….css'; resource paths must be absolute from the "
+            "site root (start with '/invite/')",
+            extra=self.BASE,
         )
 
-    def test_directive_in_the_stub(self):
-        self.add_to_stub("<!-- if:ty -->x<!-- endif -->")
-        self.assertBuildFails("stub.html: must not contain template syntax")
+    def test_css_follows_the_base_path(self):
+        support.write_app_css(
+            self.code,
+            'a { background: url("/invite/assets/fonts/sans.woff2") }\n'
+            "b { background: url(fonts/sans.woff2) }\n",
+        )
+        self.assertBuildPasses(*self.BASE)
+        self.previous = tree_digest(self.out)
+        support.write_app_css(self.code, 'a { background: url("/assets/fonts/sans.woff2") }\n')
+        self.assertBuildFails(
+            "assets/app.css line 1: CSS url(): '/assets/fonts/….woff2' points outside the output",
+            extra=self.BASE,
+        )
 
-    def test_missing_stub(self):
-        os.remove(self.code / "stub.html")
-        self.assertBuildFails("stub page not found", "stub.html")
+    def test_the_default_is_the_root(self):
+        self.assertBuildPasses("--base-path", "/")
+        page = (self.out / support.TOKEN_A / "index.html").read_text(encoding="utf-8")
+        self.assertIn('href="/assets/app.css"', page)
+        first = tree_digest(self.out)
+        self.assertBuildPasses()
+        self.assertEqual(tree_digest(self.out), first)
 
-    def test_stub_that_is_not_utf8(self):
-        (self.code / "stub.html").write_bytes(b"<p>\xff\xfe</p>")
-        self.assertBuildFails("stub.html: not valid UTF-8")
+    def test_the_trailing_slash_and_deeper_paths(self):
+        self.assertBuildPasses("--base-path", "/a/b_c-1/")
+        page = (self.out / support.TOKEN_A / "index.html").read_text(encoding="utf-8")
+        self.assertIn('href="/a/b_c-1/assets/app.css"', page)
+        self.assertNotIn("/a/b_c-1//", page)
+
+
+class BasePathUnitTests(unittest.TestCase):
+    def test_valid_values(self):
+        for value, expected in (
+            ("/", "/"), ("/invite", "/invite"), ("/invite/", "/invite"),
+            ("/a/B_c-1/2", "/a/B_c-1/2"), ("/" + "x" * 199, "/" + "x" * 199),
+        ):  # fmt: skip
+            with self.subTest(value=value):
+                self.assertEqual(build.check_base_path(value), expected)
+
+    def test_invalid_values(self):
+        for value in (
+            "", "guests", "//", "//guests", "/guests//x", "/./x", "/x/..", "/x/.", "/a b",
+            "/%69nvite", "/x?y", "/x#y", "https://example.invalid/x", "/x\\y", "/x\n",
+            "/выход", " /x", "/x ", "/x.y", "/" + "x" * 200, "x/",
+        ):  # fmt: skip
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as caught:
+                    build.check_base_path(value)
+                # the value is not repeated
+                if len(value.strip("/ ")) >= 3:
+                    self.assertNotIn(value.strip("/ "), str(caught.exception))
+
+    def test_urls_of_the_output(self):
+        exists = exists_in("assets/app.css", "tok/index.html")
+        for url, expected in (
+            ("/invite/assets/app.css", []),
+            ("/invite/tok/", []),
+            ("/invite/%61ssets/app.css", []),
+            ("/assets/app.css", ["<link href>: '/assets/….css' points outside the output"]),
+            ("/invited/assets/app.css", ["<link href>: '/….css' points outside the output"]),
+            ("/invite", ["<link href>: '/invite/' does not exist in the output"]),
+        ):
+            with self.subTest(url=url):
+                problems = [
+                    message
+                    for _line, message in build.check_html(
+                        f'<link rel="stylesheet" href="{url}">', exists,
+                        {"assets"}.__contains__, base_path="/invite",
+                    )
+                ]  # fmt: skip
+                self.assertEqual(problems, expected)
+        # at the root nothing lies outside
+        self.assertEqual(html_problems('<a href="/assets/app.css">x</a>', "assets/app.css"), [])
+
+    def test_svg_follows_the_base_path(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(/assets/x.svg#a)"/></svg>'
+        self.assertEqual(build.check_svg(svg), [])
+        problems = build.check_svg(svg, base_path="/invite")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("points outside the output", problems[0][1])
 
 
 class OutputContentsCheckTests(FailingBuildTestCase):
@@ -653,76 +778,99 @@ class CheckOutputTreeTests(TempDirTestCase):
 
     def make_tree(self) -> Path:
         out = self.tmp / "dist"
-        page = out / "i" / self.TOKEN / "index.html"
+        page = out / self.TOKEN / "index.html"
         page.parent.mkdir(parents=True)
         page.write_text("<p>page</p>", encoding="utf-8")
-        for name in ("index.html", "404.html"):
-            (out / name).write_text("<p>stub</p>", encoding="utf-8")
-        (out / "_headers").write_text("/*\n", encoding="utf-8")
-        (out / "robots.txt").write_text("User-agent: *\n", encoding="utf-8")
         (out / "assets").mkdir()
+        (out / "assets" / "app.css").write_text("a{}", encoding="utf-8")
         return out
 
-    def problems(self, out: Path) -> list[str]:
+    def problems(self, out: Path, base_path: str = "/") -> list[str]:
         with self.assertRaises(build.OutputError) as caught:
-            build.check_output(out, [self.TOKEN])
+            build.check_output(out, [self.TOKEN], base_path=base_path)
         for message in caught.exception.errors:
             self.assertNotIn(self.TOKEN, message)
+            self.assertNotIn(self.TOKEN[:3], message)
         return caught.exception.errors
 
     def test_clean_tree_passes(self):
         out = self.make_tree()
-        self.assertEqual(build.check_output(out, [self.TOKEN]).files, 5)
+        self.assertEqual(build.check_output(out, [self.TOKEN]).files, 2)
         # a mapping of the tokens is read as its keys
-        self.assertEqual(build.check_output(out, {self.TOKEN: ()}).files, 5)
+        self.assertEqual(build.check_output(out, {self.TOKEN: ()}).files, 2)
+        self.assertEqual(build.check_output(out, [self.TOKEN], base_path="/invite").files, 2)
 
     def test_dot_files(self):
         out = self.make_tree()
         (out / "assets" / ".gitkeep").write_text("", encoding="utf-8")
         (out / ".well-known").mkdir()
+        (out / self.TOKEN / ".hidden").mkdir()
         problems = self.problems(out)
         self.assertIn("assets/.gitkeep: dot-files must not be published", problems)
         self.assertIn(".well-known: dot-directories must not be published", problems)
+        self.assertIn("…/.hidden: dot-directories must not be published", problems)
 
-    def test_unexpected_top_level_entries(self):
+    def test_the_files_of_a_site_are_not_written(self):
         out = self.make_tree()
-        (out / "sitemap.xml").write_text("<x/>", encoding="utf-8")
-        (out / "styleguide.html").write_text("<p>x</p>", encoding="utf-8")
+        for name in ("index.html", "404.html", "_headers", "robots.txt", "sitemap.xml"):
+            (out / name).write_text("x", encoding="utf-8")
         (out / "data").mkdir()
         problems = self.problems(out)
-        self.assertIn("sitemap.xml: unexpected file at the top of the output", problems)
-        self.assertIn("styleguide.html: unexpected file at the top of the output", problems)
-        self.assertIn("data: unexpected directory at the top of the output", problems)
+        tail = "unexpected file at the top of the output (the build writes the pages and assets/ only)"
+        for name in ("index.html", "404.html", "robots.txt", "sitemap.xml"):
+            self.assertIn(f"{name}: {tail}", problems)
+        # a name without a dot may be a token: it is not shown
+        self.assertIn(f"…: {tail}", problems)
+        self.assertIn(
+            "…: unexpected directory at the top of the output (only assets/ and one "
+            "directory per invitation are allowed)",
+            problems,
+        )
+        self.assertNotIn("_headers", "\n".join(problems))
 
-    def test_only_known_tokens_inside_the_pages_directory(self):
+    def test_only_known_tokens_at_the_top(self):
         out = self.make_tree()
-        stranger = out / "i" / "StrangerToken-0123456789"
+        stranger = out / "StrangerToken-0123456789"
         stranger.mkdir()
         (stranger / "index.html").write_text("<p>x</p>", encoding="utf-8")
-        (out / "i" / "index.html").write_text("<p>list</p>", encoding="utf-8")
-        (out / "i" / self.TOKEN / "extra.html").write_text("<p>x</p>", encoding="utf-8")
+        (out / self.TOKEN / "extra.html").write_text("<p>x</p>", encoding="utf-8")
+        (out / self.TOKEN / "sub").mkdir()
         # calendar files live in the media directory, never next to a page
-        (out / "i" / self.TOKEN / "dinner.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
-        (out / "i" / self.TOKEN / "0123456789abcdef.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
-        (out / "i" / "event.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
+        (out / self.TOKEN / "dinner.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
+        (out / self.TOKEN / "0123456789abcdef.ics").write_bytes(b"BEGIN:VCALENDAR\r\n")
         problems = self.problems(out)
         self.assertIn(
-            "i/…: unexpected directory (only one directory per invitation is "
-            "allowed in i/)",
+            "…: unexpected directory at the top of the output (only assets/ and one "
+            "directory per invitation are allowed)",
             problems,
         )
         self.assertIn(
-            "i/index.html: unexpected file (only <token>/index.html is allowed in i/)",
+            "…/sub: unexpected directory (only index.html is allowed in the directory of "
+            "a page)",
             problems,
         )
-        for name in ("extra.html", "dinner.ics", "0123456789abcdef.ics"):
-            self.assertTrue(
-                any(p.startswith(f"i/…/{name}: unexpected file") for p in problems), name
+        # the page of an unknown token as well
+        for name in ("extra.html", "dinner.ics", "0123456789abcdef.ics", "index.html"):
+            self.assertIn(
+                f"…/{name}: unexpected file (only index.html is allowed in the directory of "
+                "a page)",
+                problems,
             )
-        self.assertTrue(any(p.startswith("i/event.ics: unexpected file") for p in problems))
         for problem in problems:
             self.assertNotIn("Stra", problem)
-            self.assertNotIn(self.TOKEN[:3], problem)
+
+    def test_tokens_in_the_messages_of_the_pages_are_hidden(self):
+        out = self.make_tree()
+        (out / self.TOKEN / "index.html").write_text(
+            f'<p>x</p>\n<img src="/{self.TOKEN}/missing.png" alt="">\n'
+            f'<a href="/{self.TOKEN}/">x</a>\n', encoding="utf-8",
+        )  # fmt: skip
+        (out / self.TOKEN / "broken.html").write_bytes(b"\xff\xfe")
+        problems = self.problems(out)
+        self.assertIn("…/index.html line 2: <img src>: '/….png' does not exist in the output", problems)
+        self.assertIn("…/broken.html: not valid UTF-8 (at byte 0)", problems)
+        # the link to a page resolves
+        self.assertFalse([p for p in problems if "line 3" in p], problems)
 
     def test_no_calendar_file_among_the_assets(self):
         out = self.make_tree()
@@ -741,43 +889,43 @@ class CheckOutputTreeTests(TempDirTestCase):
 
     def test_missing_pieces(self):
         out = self.make_tree()
-        os.remove(out / "404.html")
-        os.remove(out / "i" / self.TOKEN / "index.html")
+        os.remove(out / self.TOKEN / "index.html")
         problems = self.problems(out)
-        self.assertIn("404.html: missing from the output", problems)
-        self.assertIn("i/…/index.html: missing from the output", problems)
+        self.assertIn("…/index.html: missing from the output", problems)
 
     def test_data_files_anywhere(self):
         out = self.make_tree()
-        (out / "i" / self.TOKEN / "guest.json").write_text("{}", encoding="utf-8")
+        (out / self.TOKEN / "guest.json").write_text("{}", encoding="utf-8")
         (out / "assets" / "app.css.map").write_text("{}", encoding="utf-8")
         (out / "assets" / "UPPER.JSON").write_text("{}", encoding="utf-8")
+        (out / "site.json").write_text("{}", encoding="utf-8")
         problems = self.problems(out)
-        self.assertIn("i/…/guest.json: '.json' files must not be published", problems)
+        self.assertIn("…/guest.json: '.json' files must not be published", problems)
         self.assertIn("assets/app.css.map: '.map' files must not be published", problems)
         self.assertIn("assets/UPPER.JSON: '.json' files must not be published", problems)
+        self.assertIn("site.json: '.json' files must not be published", problems)
 
     def test_symlink_in_the_output(self):
         out = self.make_tree()
         try:
-            os.symlink(out / "index.html", out / "assets" / "link.css")
+            os.symlink(out / "assets" / "app.css", out / "assets" / "link.css")
+            os.symlink(out / "assets" / "app.css", out / self.TOKEN / "app.css")
         except (OSError, NotImplementedError) as exc:
             self.skipTest(f"symbolic links are not available: {exc}")
-        self.assertIn(
-            "assets/link.css: symbolic links are not allowed in the output",
-            self.problems(out),
-        )
+        problems = self.problems(out)
+        self.assertIn("assets/link.css: symbolic links are not allowed in the output", problems)
+        self.assertIn("…/app.css: symbolic links are not allowed in the output", problems)
 
     def test_leftover_template_syntax_and_comments(self):
         out = self.make_tree()
-        (out / "i" / self.TOKEN / "index.html").write_text(
+        (out / self.TOKEN / "index.html").write_text(
             "<p>{{greeting}}</p>\n<!-- a note -->\n", encoding="utf-8"
         )
         problems = self.problems(out)
         self.assertIn(
-            "i/…/index.html line 1: template syntax left in the output: '{{'", problems
+            "…/index.html line 1: template syntax left in the output: '{{'", problems
         )
-        self.assertIn("i/…/index.html line 2: HTML comment left in the output", problems)
+        self.assertIn("…/index.html line 2: HTML comment left in the output", problems)
 
     HASHED = "0123456789abcdef.png"
     CALENDAR = "fedcba9876543210.ics"
@@ -803,7 +951,7 @@ class CheckOutputTreeTests(TempDirTestCase):
             self.with_media(), [self.TOKEN], media_dir=support.MEDIA_DIR,
             media={self.HASHED},
         )
-        self.assertEqual(stats.files, 6)
+        self.assertEqual(stats.files, 3)
 
     UNEXPECTED_MEDIA = (
         "unexpected file (only the media the pages show and the calendar files of the "
@@ -832,13 +980,13 @@ class CheckOutputTreeTests(TempDirTestCase):
             out, [self.TOKEN], media_dir=support.MEDIA_DIR, media={self.HASHED},
             calendars={self.CALENDAR},
         )
-        self.assertEqual(stats.files, 7)
+        self.assertEqual(stats.files, 4)
         # without media files the directory holds the calendar files alone
         os.remove(out / "assets" / support.MEDIA_DIR / self.HASHED)
         stats = build.check_output(
             out, [self.TOKEN], media_dir=support.MEDIA_DIR, calendars={self.CALENDAR}
         )
-        self.assertEqual(stats.files, 6)
+        self.assertEqual(stats.files, 3)
 
     def test_an_extra_calendar_file_is_refused(self):
         out = self.with_media()
@@ -908,10 +1056,10 @@ class HtmlCheckUnitTests(unittest.TestCase):
         document = (
             '<!doctype html><html><head><link rel="stylesheet" href="/assets/app.css">'
             '<script src="/assets/app.js" defer></script></head>'
-            '<body><a href="/i/x/">x</a></body></html>'
+            '<body><a href="/x/">x</a></body></html>'
         )
         self.assertEqual(
-            html_problems(document, "assets/app.css", "assets/app.js", "i/x/index.html"), []
+            html_problems(document, "assets/app.css", "assets/app.js", "x/index.html"), []
         )
 
     def test_line_numbers(self):
@@ -934,8 +1082,11 @@ class HtmlCheckUnitTests(unittest.TestCase):
         )
 
     def test_directory_urls_resolve_to_index_html(self):
-        self.assertEqual(html_problems('<a href="/i/t/">x</a>', "i/t/index.html"), [])
-        self.assertTrue(html_problems('<a href="/i/t">x</a>', "i/t/index.html"))
+        self.assertEqual(html_problems('<a href="/t/">x</a>', "t/index.html"), [])
+        self.assertTrue(html_problems('<a href="/t">x</a>', "t/index.html"))
+        self.assertEqual(
+            html_problems('<a href="/invite/t/">x</a>', "t/index.html", base_path="/invite"), []
+        )
 
     def test_data_urls(self):
         self.assertEqual(html_problems('<img src="data:image/svg+xml,%3Csvg/%3E">'), [])
@@ -999,7 +1150,7 @@ class HtmlCheckUnitTests(unittest.TestCase):
             ["<script src> must be empty"],
         )
         self.assertIn(
-            "<style> elements are not allowed; styles must be files in /assets/",
+            "<style> elements are not allowed; styles must be files in assets/",
             html_problems("<svg><style><img src=https://h.example.invalid/x></style></svg>"),
         )
 
@@ -1142,7 +1293,7 @@ class CommentStrippingTests(unittest.TestCase):
         for document in ("<![CDATA[ > <p>x</p> ]]>", "<!--[if IE]>x<![endif]-->", "<?xml?>"):
             with self.subTest(document=document):
                 with self.assertRaises(build.TemplateError):
-                    build.strip_html_comments(document, "stub.html")
+                    build.strip_html_comments(document, "template.html")
 
     def test_doctype_and_text_are_kept(self):
         document = "<!doctype html>\n<p>1 < 2 &amp; 3 > 2</p>\n"

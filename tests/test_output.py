@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -89,14 +90,15 @@ class StagedOutputTests(TempDirTestCase):
         self.assertIn("could not remove", self.warnings[0])
         self.assertIn(".dist.old-", self.warnings[0])
 
-    def test_stage_directory_error_names_the_output(self):
+    def test_stage_directory_error_names_the_option(self):
         blocker = self.tmp / "file"
         blocker.write_text("x", encoding="utf-8")
         with self.assertRaises(build.BuildError) as caught:
-            with build._StagedOutput(blocker / "sub" / "dist"):
+            with build._StagedOutput(blocker / "sub" / "QuokkaToken"):
                 pass  # pragma: no cover
-        self.assertIn("cannot create a temporary directory", str(caught.exception))
-        self.assertIn("dist", str(caught.exception))
+        self.assertIn("cannot create a temporary directory next to --out", str(caught.exception))
+        # the path of --out is not repeated: it may lead through a page directory
+        self.assertNotIn("Quokka", str(caught.exception))
 
 
 class ReplaceableOutputTests(TempDirTestCase):
@@ -105,155 +107,139 @@ class ReplaceableOutputTests(TempDirTestCase):
         (self.tmp / "empty").mkdir()
         build.check_replaceable(self.tmp / "empty")
 
+    TOKENS = ("EveToken-0123456789abcdefg", "KarlKlaraToken-zyxwvutsrq98", "quokka")
+
     def make_previous_build(self) -> Path:
+        """What a build writes, plus the files of the operating system."""
         out = self.tmp / "dist"
-        out.mkdir()
-        for name in build.OUTPUT_TOP_LEVEL | build.OS_JUNK_FILES:
-            if name in build.OUTPUT_TOP_LEVEL_DIRS:
-                (out / name).mkdir()
-            else:
-                (out / name).write_text("x", encoding="utf-8")
+        (out / "assets" / "m3d1a-f1xtur3-dir").mkdir(parents=True)
+        for token in self.TOKENS:
+            (out / token).mkdir()
+            (out / token / "index.html").write_text("x", encoding="utf-8")
+        for name in build.OS_JUNK_FILES:
+            (out / name).write_text("x", encoding="utf-8")
+            (out / self.TOKENS[0] / name).write_text("x", encoding="utf-8")
         return out
 
-    def test_every_known_name_is_accepted(self):
+    def refusal(self, out: Path) -> str:
+        with self.assertRaises(build.BuildError) as caught:
+            build.check_replaceable(out)
+        message = str(caught.exception)
+        self.assertTrue(message.startswith("refusing to replace --out: "), message)
+        # the path of --out is never repeated: it may lead through a page directory
+        self.assertNotIn(str(out), message)
+        self.assertNotIn(out.name, message)
+        for token in self.TOKENS:
+            self.assertNotIn(token[:4], message)
+        return message
+
+    def test_a_previous_build_is_accepted(self):
         build.check_replaceable(self.make_previous_build())
+        # without assets/ (the pages a site of the old layout kept one level down)
+        only_pages = self.tmp / "only-pages"
+        (only_pages / "quokka").mkdir(parents=True)
+        (only_pages / "quokka" / "index.html").write_text("x", encoding="utf-8")
+        build.check_replaceable(only_pages)
+        # with assets/ alone
+        (self.tmp / "only-assets" / "assets").mkdir(parents=True)
+        build.check_replaceable(self.tmp / "only-assets")
 
-    def test_known_names_must_have_the_expected_type(self):
+    def test_the_entries_must_have_the_expected_type(self):
         out = self.make_previous_build()
-        (out / "assets").rmdir()
+        shutil.rmtree(out / "assets")
         (out / "assets").write_text("not a directory", encoding="utf-8")
-        with self.assertRaises(build.BuildError) as caught:
-            build.check_replaceable(out)
-        self.assertIn("'assets' is not a directory", str(caught.exception))
+        self.assertIn("('assets' is not a directory)", self.refusal(out))
 
-        out = self.tmp / "other"
-        (out / "index.html").mkdir(parents=True)
-        with self.assertRaises(build.BuildError) as caught:
-            build.check_replaceable(out)
-        self.assertIn("'index.html' is not a regular file", str(caught.exception))
+        shutil.rmtree(out)
+        out = self.make_previous_build()
+        (out / self.TOKENS[1] / "index.html").unlink()
+        (out / self.TOKENS[1] / "index.html").mkdir()
+        self.assertIn("(unexpected: '…')", self.refusal(out))
 
-    def test_symlinks_with_known_names_are_refused(self):
+    def test_a_page_directory_holds_its_page_alone(self):
+        out = self.make_previous_build()
+        (out / self.TOKENS[2] / "notes.txt").write_text("x", encoding="utf-8")
+        self.assertIn("(unexpected: '…')", self.refusal(out))
+        (out / self.TOKENS[2] / "notes.txt").unlink()
+        (out / self.TOKENS[2] / "index.html").unlink()
+        self.assertIn("(unexpected: '…')", self.refusal(out))  # an empty directory
+
+    def test_symlinks_are_refused(self):
         target = self.tmp / "elsewhere"
         target.mkdir()
-        (target / "keep.txt").write_text("precious", encoding="utf-8")
+        (target / "index.html").write_text("precious", encoding="utf-8")
         out = self.tmp / "dist"
         out.mkdir()
         try:
             os.symlink(target, out / "assets", target_is_directory=True)
-            os.symlink(target / "keep.txt", out / "robots.txt")
         except (OSError, NotImplementedError) as exc:
             self.skipTest(f"symbolic links are not available: {exc}")
-        with self.assertRaises(build.BuildError) as caught:
-            build.check_replaceable(out)
-        self.assertIn("is not a", str(caught.exception))
+        self.assertIn("('assets' is not a directory)", self.refusal(out))
+        os.remove(out / "assets")
+        os.symlink(target, out / "quokka", target_is_directory=True)
+        self.assertIn("(unexpected: '…')", self.refusal(out))
+        os.remove(out / "quokka")
+        (out / "quokka").mkdir()
+        os.symlink(target / "index.html", out / "quokka" / "index.html")
+        self.assertIn("(unexpected: '…')", self.refusal(out))
+        self.assertEqual((target / "index.html").read_text(encoding="utf-8"), "precious")
+
+    OLD_LAYOUT = (
+        "refusing to replace --out: it looks like a whole site (index.html, 404.html, "
+        "_headers or robots.txt at the top, or the pages one directory deeper); the build "
+        "now writes the invitations only, straight into --out - remove the directory or "
+        "choose another --out (e.g. a directory inside the site, see README 5)"
+    )
+
+    def test_a_site_of_the_old_layout_is_refused_with_a_hint(self):
+        for name in ("index.html", "404.html", "_headers", "robots.txt"):
+            with self.subTest(name=name):
+                out = self.make_previous_build()
+                (out / name).write_text("x", encoding="utf-8")
+                self.assertEqual(self.refusal(out), self.OLD_LAYOUT)
+                shutil.rmtree(out)
+        # the pages one directory deeper, whatever the name of that directory
+        out = self.make_previous_build()
+        (out / "pages").mkdir()
+        os.rename(out / self.TOKENS[0], out / "pages" / self.TOKENS[0])
+        self.assertEqual(self.refusal(out), self.OLD_LAYOUT)
+
+    def test_the_directory_of_a_page_is_refused(self):
+        out = self.make_previous_build()
+        self.assertEqual(
+            self.refusal(out / self.TOKENS[0]),
+            "refusing to replace --out: it holds index.html alone, like the directory of one "
+            "page; point --out at the directory with the pages and assets/",
+        )
 
     def test_names_that_look_like_tokens_are_masked(self):
-        # --out pointing inside a previous build by mistake: <out>/i holds the
-        # tokens and <out>/assets holds the media directory
-        pages = self.tmp / "dist" / "i"
-        for token in ("EveToken-0123456789abcdefg", "KarlKlaraToken-zyxwvutsrq98"):
-            (pages / token).mkdir(parents=True)
-        with self.assertRaises(build.BuildError) as caught:
-            build.check_replaceable(pages)
-        message = str(caught.exception)
-        self.assertIn("(unexpected: '…', '…')", message)
-        self.assertNotIn("EveT", message)
-        self.assertNotIn("Karl", message)
-
-        assets = self.tmp / "dist" / "assets"
-        (assets / "m3d1a-f1xtur3-dir").mkdir(parents=True)
+        # --out pointing inside a previous build by mistake: <out>/assets
+        # holds the media directory
+        assets = self.make_previous_build() / "assets"
         (assets / "app.css").write_text("x", encoding="utf-8")
-        with self.assertRaises(build.BuildError) as caught:
-            build.check_replaceable(assets)
-        message = str(caught.exception)
+        message = self.refusal(assets)
         self.assertIn("'…'", message)
         self.assertIn("'app.css'", message)
         self.assertNotIn("m3d1", message)
-
-    def test_short_tokens_in_a_pages_directory_are_masked(self):
-        # every entry of a directory named "i" may be a token, however short
-        pages = self.tmp / "dist" / "i"
-        for token in ("quokka", "otter_king"):
-            (pages / token).mkdir(parents=True)
-        with self.assertRaises(build.BuildError) as caught:
-            build.check_replaceable(pages)
-        message = str(caught.exception)
-        self.assertIn("(unexpected: '…', '…')", message)
-        for token in ("quokka", "otter_king"):
-            self.assertNotIn(token[:3], message)
-        # a token that is also a known name of the output is hidden as well
-        (pages / "quokka").rmdir()
-        (pages / "otter_king").rmdir()
-        (pages / "_headers").mkdir()
-        with self.assertRaises(build.BuildError) as caught:
-            build.check_replaceable(pages)
-        message = str(caught.exception)
-        self.assertIn("('…' is not a regular file)", message)
-        self.assertNotIn("_headers", message)
-        # a copy of the pages under another name: names of token characters
-        # are hidden, file names and names too short for a token are shown
+        # names of token characters are hidden, file names and names too
+        # short for a token are shown
         other = self.tmp / "notes"
         for name in ("quokka", "otter_king", "abcd"):
-            (other / name).mkdir(parents=True)
+            (other / name / "sub").mkdir(parents=True)
         (other / "todo.txt").write_text("x", encoding="utf-8")
-        with self.assertRaises(build.BuildError) as caught:
-            build.check_replaceable(other)
-        message = str(caught.exception)
+        message = self.refusal(other)
         self.assertIn("(unexpected: 'abcd', '…', '…' and 1 more)", message)
         self.assertNotIn("quo", message)
         self.assertNotIn("ott", message)
         (self.tmp / "notes-files").mkdir()
         (self.tmp / "notes-files" / "todo.txt").write_text("x", encoding="utf-8")
-        with self.assertRaises(build.BuildError) as caught:
-            build.check_replaceable(self.tmp / "notes-files")
-        self.assertIn("'todo.txt'", str(caught.exception))
+        self.assertIn("'todo.txt'", self.refusal(self.tmp / "notes-files"))
 
-    def test_pages_directory_in_another_letter_case(self):
-        # "I" is the same directory as "i" on a file system that ignores case
-        pages = self.tmp / "dist" / "I"
-        (pages / "zorro").mkdir(parents=True)
-        (pages / "_headers").mkdir()
-        with self.assertRaises(build.BuildError) as caught:
-            build.check_replaceable(pages)
-        message = str(caught.exception)
-        self.assertIn("(unexpected: '…')", message)
-        self.assertNotIn("zor", message)
-        self.assertNotIn("_headers", message)
-        # a token that is also a known name of the output
-        (pages / "zorro").rmdir()
-        with self.assertRaises(build.BuildError) as caught:
-            build.check_replaceable(pages)
-        message = str(caught.exception)
-        self.assertIn("('…' is not a regular file)", message)
-        self.assertNotIn("_headers", message)
-        redacted = build._redact_paths("dist/I/zorro/index.html")
-        self.assertEqual(redacted, "dist/I/…/index.html")
-
-    def test_known_names(self):
-        self.assertEqual(
-            build.OUTPUT_TOP_LEVEL,
-            {"i", "assets", "index.html", "404.html", "_headers", "robots.txt"},
-        )
-
-    def test_tokens_in_paths_are_redacted(self):
-        for token in ("EveToken-0123456789abcdefg", "quokka", "abc12", "otter_king"):
-            for path in (
-                f"i/{token}/index.html",
-                f"dist/i/{token}/index.html",
-                f"dist\\i\\{token}\\index.html",
-                f"cannot write 'i/{token}/index.html'",
-                f"/i/{token}/dinner.ics",
-                f"i/{token}",
-            ):
-                with self.subTest(path=path):
-                    redacted = build._redact_paths(path)
-                    self.assertNotIn(token[:3], redacted)
-                    self.assertIn("i/…", redacted.replace("\\", "/"))
-            # other directories whose name merely ends in "i" are left alone
-            self.assertEqual(build._redact_paths(f"wiki/{token}"), f"wiki/{token}")
-        # files of the pages directory are not tokens
-        self.assertEqual(build._redact_paths("i/index.html"), "i/index.html")
-        self.assertEqual(build._redact_paths("dist/i/"), "dist/i/")
+    def test_an_unreadable_directory(self):
+        with mock.patch.object(build.os, "scandir", side_effect=PermissionError(13, "Permission denied")):
+            with self.assertRaises(build.BuildError) as caught:
+                build.check_replaceable(self.tmp / "QuokkaToken")
+        self.assertEqual(str(caught.exception), "cannot read --out: Permission denied")
 
     def test_unexpected_entries_are_listed_but_capped(self):
         out = self.tmp / "dist"

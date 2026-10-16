@@ -57,10 +57,7 @@ class SiteImagesTestCase(CliTestCase):
         return result
 
     def page(self, token: str = support.TOKEN_A) -> _Head:
-        return head_of((self.out / "i" / token / "index.html").read_text(encoding="utf-8"))
-
-    def stub(self) -> str:
-        return (self.out / "index.html").read_text(encoding="utf-8")
+        return head_of((self.out / token / "index.html").read_text(encoding="utf-8"))
 
 
 class GeneratedImagesTests(SiteImagesTestCase):
@@ -91,39 +88,16 @@ class GeneratedImagesTests(SiteImagesTestCase):
             for url in (head.icons[0]["href"], head.meta["og:image"]):
                 self.assertTrue((self.out / url.lstrip("/")).is_file(), url)
 
-    def test_stub_has_the_icon_and_nothing_else(self):
-        self.build()
+    def test_files_and_links_under_a_base_path(self):
+        self.build("--base-path", "/invite")
+        head = self.page()
         self.assertEqual(
-            (self.out / "index.html").read_bytes(), (self.out / "404.html").read_bytes()
+            head.icons,
+            [{"rel": "icon", "href": "/invite/assets/favicon.svg", "type": "image/svg+xml"}],
         )
-        head = head_of(self.stub())
-        self.assertEqual(
-            head.icons, [{"rel": "icon", "href": "/assets/favicon.svg", "type": "image/svg+xml"}]
-        )
-        self.assertEqual(head.meta, {})
-        self.assertNotIn("og:", self.stub())
-        self.assertNotIn("og.png", self.stub())
-        self.assertNoPrivateData(self.stub())
-
-    def test_stub_may_use_the_icon_fields_only(self):
-        for field in ("ogImage", "ogImageType", "themeColor", "mediaPath", "coupleNames"):
-            with self.subTest(field=field):
-                (self.code / "stub.html").write_text(
-                    support.STUB.replace("</body>", f"<p>{{{{{field}}}}}</p></body>"),
-                    encoding="utf-8",
-                )
-                result = self.build_in_process()
-                self.assertEqual(result.returncode, 1)
-                self.assertIn("stub.html: must not contain template syntax other than", result.stderr)
-                self.assertIn(f"'{{{{{field}}}}}'", result.stderr)
-
-    def test_stub_without_placeholders_still_builds(self):
-        (self.code / "stub.html").write_text(
-            support.STUB.replace('<link rel="icon" href="{{faviconPath}}" type="{{faviconType}}">\n', ""),
-            encoding="utf-8",
-        )
-        self.build()
-        self.assertEqual(head_of(self.stub()).icons, [])
+        self.assertEqual(head.meta["og:image"], "/invite/assets/og.png")
+        for url in (head.icons[0]["href"], head.meta["og:image"]):
+            self.assertTrue((self.out / url[len("/invite/") :]).is_file(), url)
 
     def test_changing_a_token_changes_the_images(self):
         """Regenerating after a change of the tokens is an ordinary rebuild."""
@@ -215,10 +189,9 @@ class MediaOverrideTests(SiteImagesTestCase):
                 self.assertEqual((self.out / "assets" / name).read_bytes(), content)
                 images = [n for n in tree_files(self.out / "assets") if n.startswith("favicon")]
                 self.assertEqual(images, [name])
-                for head in (self.page(), head_of(self.stub())):
-                    self.assertEqual(
-                        head.icons, [{"rel": "icon", "href": f"/assets/{name}", "type": mime}]
-                    )
+                self.assertEqual(
+                    self.page().icons, [{"rel": "icon", "href": f"/assets/{name}", "type": mime}]
+                )
                 # the link preview image is still the rendered cover
                 self.assertTrue(self.page().meta["og:image"].endswith(".jpg"))
 
@@ -440,21 +413,23 @@ class ContextFieldTests(support.TempDirTestCase):
             },
         )
 
-    def test_stub_fields_are_not_personal(self):
-        self.assertLessEqual(set(build.STUB_FIELDS), set(build.site_images_context()))
-        self.assertFalse(any(re.match("og", field) for field in build.STUB_FIELDS))
+    def test_under_a_base_path(self):
+        fields = build.site_images_context(base_path="/invite/x")
+        self.assertEqual(fields["faviconPath"], "/invite/x/assets/favicon.svg")
+        self.assertEqual(fields["ogImage"], "/invite/x/assets/og.png")
+        self.assertEqual(build.site_images_context(base_path="/"), build.site_images_context())
 
-    def test_real_template_and_stub(self):
+    def test_real_template(self):
         template = (support.ROOT / "template.html").read_text(encoding="utf-8")
-        stub = (support.ROOT / "stub.html").read_text(encoding="utf-8")
         icon = '<link rel="icon" href="{{faviconPath}}" type="{{faviconType}}">'
-        for document in (template, stub):
-            self.assertEqual(document.count(icon), 1)
-            self.assertNotIn("data:,", document)
+        self.assertEqual(template.count(icon), 1)
+        self.assertNotIn("data:,", template)
         self.assertIn('<meta property="og:image" content="{{ogImage}}">', template)
         self.assertIn('<meta property="og:image:width" content="{{ogImageWidth}}">', template)
-        self.assertNotIn("og:", stub)
-        self.assertEqual(set(re.findall(r"\{\{(.*?)\}\}", stub)), set(build.STUB_FIELDS))
+        # every address of the head comes from the tree: none is written into it
+        head = template[: template.index("</head>")]
+        self.assertNotIn('"/assets', head)
+        self.assertIn('href="{{assetsPath}}/app.css"', head)
 
 
 class ThemeColorTests(SiteImagesTestCase):
@@ -475,16 +450,11 @@ class ThemeColorTests(SiteImagesTestCase):
             with self.subTest(token=token):
                 self.assertEqual(self.theme_colors(token), [self.FIXTURE_COLOUR])
 
-    def test_the_stub_has_no_theme_colour(self):
-        self.build()
-        self.assertNotIn("theme-color", self.stub())
-        self.assertNotIn(self.FIXTURE_COLOUR, self.stub())
-
     def test_changing_the_token_changes_only_the_meta_tag(self):
         self.build()
         before = tree_digest(self.out)
         pages = {
-            token: (self.out / "i" / token / "index.html").read_text(encoding="utf-8")
+            token: (self.out / token / "index.html").read_text(encoding="utf-8")
             for token in (support.TOKEN_A, support.TOKEN_B, support.TOKEN_C)
         }
         support.write_app_css(self.code, cover_veil="#123abc")
@@ -493,12 +463,12 @@ class ThemeColorTests(SiteImagesTestCase):
         changed = sorted(name for name in before if before[name] != after[name])
         self.assertEqual(
             changed,
-            ["assets/app.css"] + sorted(f"i/{token}/index.html" for token in pages),
+            sorted(["assets/app.css", *(f"{token}/index.html" for token in pages)]),
         )
         for token, page in pages.items():
             with self.subTest(token=token):
                 self.assertEqual(self.theme_colors(token), ["#123abc"])
-                now = (self.out / "i" / token / "index.html").read_text(encoding="utf-8")
+                now = (self.out / token / "index.html").read_text(encoding="utf-8")
                 self.assertEqual(
                     now.replace('content="#123abc"', f'content="{self.FIXTURE_COLOUR}"'), page
                 )
@@ -564,8 +534,3 @@ class RealTemplateThemeColorTests(SiteImagesTestCase):
             re.search(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(",
                       self.template)
         )
-
-    def test_the_stub_keeps_its_own_canvas(self):
-        stub = (support.ROOT / "stub.html").read_text(encoding="utf-8")
-        self.assertNotIn("theme-color", stub)
-        self.assertNotIn("invitation", stub)
