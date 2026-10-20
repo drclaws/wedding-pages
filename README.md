@@ -168,7 +168,7 @@ python3 build.py links    --url URL [--data DIR]
 | `--media` | `examples/media` рядом с `build.py` |
 | `--out` | `dist` относительно текущего каталога |
 | `--base-path` | `/`: содержимое `--out` публикуется в корне сайта |
-| `--allow-path` | not set: every local link of the pages leads to a file of the output ([2.1](#21-build--собрать-приглашения)) |
+| `--allow-path` | не задан: каждая локальная ссылка страниц ведёт на файл результата ([2.1](#21-build--собрать-приглашения)) |
 | `--site-name` | переменная окружения `SITE_NAME`, иначе не задан (тега `og:site_name` нет) |
 | `--chrome` | переменная окружения `CHROME`, иначе стандартные места: на macOS `/Applications/Google Chrome.app/…` и `Chromium.app`, на Linux `google-chrome`, `google-chrome-stable`, `chromium`, `chromium-browser` в `PATH` |
 | `--no-link-preview-image` | переменная окружения `LINK_PREVIEW_IMAGE=off`, иначе картинка рисуется |
@@ -232,6 +232,10 @@ a resource under `PATH` (`src`, `poster`, `srcset`, `<link href>`, `url()` and
   itself, a directory above it, or — unless the base path is `/` — a directory
   below it (the addresses under the base path are files of the output and are
   checked against them as before);
+- at `--base-path /` `PATH` must not lead into the output either: its first
+  segment is neither `assets` nor the token of an invitation (letter case
+  aside). The first case is a usage error; the second one is known only once
+  the data is read: code 1, and the message names no token;
 - a bad value is a usage error: code 2, the value is not repeated;
 - without the option the build behaves exactly as before: a link outside
   `--base-path` "points outside the output", at `--base-path /` it "does not
@@ -697,7 +701,7 @@ python3 -m http.server 8000             # http://localhost:8000/styleguide.html
 | `schedule` | id программы | нет | программа события (в карточке) |
 | `description` | текст | нет | многострочный — можно; формы и подстановки работают |
 | `visible` | булево | нет | по умолчанию `true`; `false` — событие только для тех, у кого оно включено |
-| `links` | object | no | buttons of the card of the event that lead to other pages of the site, see "Links of an event" below |
+| `links` | объект | нет | buttons of the card of the event that lead to other pages of the site, see "Links of an event" below |
 
 `start` и `end` — строгое подмножество ISO 8601: `ГГГГ-ММ-ДДTчч:мм[:сс[.мс]]` и
 обязательное смещение (`+03:00`, `-05:00` или `Z`). Смещение обязательно: без
@@ -2591,9 +2595,11 @@ ffmpeg -ss 00:00:01 -i proposal.mp4 -frames:v 1 -update 1 -q:v 3 proposal-poster
 нему; без них страницы работают, но теряют охранные заголовки и защиту от
 индексации. Примеры даны для сайта, который публикует приглашения по пути
 `/invite` (`build --out <сайт>/invite --base-path /invite`), и для Cloudflare
-Pages. The pages that the links of the invitations lead to under
-`--allow-path` are the site's as well: the build does not look for them, so
-the site checks that every such link has its page.
+Pages.
+
+The pages that the links of the invitations lead to under `--allow-path` are
+the site's as well: the build does not look for them, so the site checks that
+every such link has its page.
 
 **Заголовки и CSP.** Образец `_headers` в корне сайта (синтаксис Cloudflare
 Pages):
