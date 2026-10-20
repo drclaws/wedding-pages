@@ -27,7 +27,12 @@
     "form": "ty",
     "events": {
       "dinner": {
-        "note": "Напиши нам, пожалуйста, про аллергию — подберём блюда из меню."
+        "note": "Напиши нам, пожалуйста, про аллергию — подберём блюда из меню.",
+        "links": {
+          "menu": {
+            "visible": true
+          }
+        }
       }
     }
   },
@@ -121,6 +126,15 @@
     "token": "04e2efb6-33cd-423f-acff-3c14562a3113",
     "greeting": "Уважаемая Хайди Андреевна!",
     "form": "vy",
+    "events": {
+      "dinner": {
+        "links": {
+          "menu": {
+            "visible": true
+          }
+        }
+      }
+    },
     "sections": {
       "invite": {
         "widgets": {

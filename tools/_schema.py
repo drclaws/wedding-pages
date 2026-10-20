@@ -12,14 +12,16 @@ the invitations a key or an id is shown only when it is a field name of the
 format or an id declared in `site.json`: such a key may be somebody's name,
 so every other key is replaced by a neutral label.  One broken thing gives
 one message: the references of the invitations to sections are not checked
-when a section has a broken id or type, and not at all when `site.json` is
-not in the format 2.
+when a section has a broken id or type, those to the links of an event not
+when its `links` are broken, and none at all when `site.json` is not in the
+format 2.
 
 Standard library only; no input/output.
 """
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -129,8 +131,16 @@ WIDGET_VARIANTS = {
 MEDIA_LAYOUTS = ("grid", "ribbon", "single")
 
 EVENT_FIELDS = (
-    "title", "location", "start", "end", "showEnd", "schedule", "description", "visible"
+    "title", "location", "start", "end", "showEnd", "schedule", "description", "visible",
+    "links",
 )
+#: Fields of a link of an event (`events.<id>.links.<id>`): a button in the
+#: card of the event that leads to another page of the site.
+LINK_FIELDS = ("text", "href", "visible")
+#: Stands for the token of the invitation in the `href` of a link.
+TOKEN_PLACEHOLDER = "{token}"
+MAX_LINK_HREF_LENGTH = 200
+_LINK_SEGMENT_RE = re.compile(r"[A-Za-z0-9_-]+")
 LOCATION_FIELDS = (
     "ready",
     "name",
@@ -200,10 +210,13 @@ V1_INVITATION_HINTS = {
     '"sections": { "<id>": { "note": … } }',
 }
 # default: an invitation may switch sections, the widgets of a section (by
-# their id) and events on or off and add notes to sections and events
-GUEST_EVENT_FIELDS = ("visible", "note")
+# their id), events and the links of events on or off and add notes to
+# sections and events
+GUEST_EVENT_FIELDS = ("visible", "note", "links")
 GUEST_SECTION_FIELDS = ("visible", "note", "widgets")
 GUEST_WIDGET_FIELDS = ("visible",)
+#: An invitation switches a link of an event on or off, nothing else.
+GUEST_LINK_FIELDS = ("visible",)
 #: Every field name of an invitation: always safe to show.
 GUEST_FIELD_NAMES = frozenset(
     {*INVITATION_FIELDS, *GUEST_EVENT_FIELDS, *GUEST_SECTION_FIELDS, *V1_INVITATION_HINTS}
@@ -476,6 +489,12 @@ class SiteIndex:
     #: False when a section has no usable id or type: the references of the
     #: invitations to sections are not checked then.
     sections_ok: bool = True
+    #: Event id -> the ids of its links, in their order.
+    event_links: dict[str, list[str]] = field(default_factory=dict)
+    #: Events whose `links` are broken (not an object, a key that is not an
+    #: id) or that are not an object: the references of the invitations to
+    #: their links are not checked.
+    broken_links: set[str] = field(default_factory=set)
     #: Placeholders that have a value.
     available: frozenset[str] = frozenset(PLACEHOLDERS)
 
@@ -492,6 +511,8 @@ class SiteIndex:
         ids = set(self.sections) | set(self.events or ())
         for widgets in self.widget_ids.values():
             ids.update(widgets)
+        for links in self.event_links.values():
+            ids.update(links)
         return frozenset(item for item in ids if is_identifier(item))
 
 
@@ -833,11 +854,13 @@ def _check_events(check: _Checker, site: dict, index: SiteIndex) -> dict | None:
         parts = ("events", event_id)
         event = check.object(event, parts)
         if event is None:
+            index.broken_links.add(event_id)
             continue
         check.unknown_fields(event, EVENT_FIELDS, parts)
         check.value(event, "title", "string", parts, required=True, single_line=True)
         _check_text(check, event, "description", parts, index)
         check.value(event, "visible", "boolean", parts)
+        _check_event_links(check, event, parts, event_id, index)
         show_end = check.value(event, "showEnd", "boolean", parts)
         if "location" not in event:
             check.error(
@@ -884,6 +907,86 @@ def _check_events(check: _Checker, site: dict, index: SiteIndex) -> dict | None:
             "especially around a change to or from summer time",
         )
     return events
+
+
+def link_href_problem(href: str) -> str | None:
+    """The problem of the `href` of a link of an event, or None.
+
+    A path from the root of the site to a directory of it: `/`, segments of
+    A-Z, a-z, 0-9, `_` and `-` (or exactly `{token}`, at most once) each
+    followed by `/`; at most `MAX_LINK_HREF_LENGTH` characters.  The value
+    is never quoted.
+    """
+    if len(href) > MAX_LINK_HREF_LENGTH:
+        return f"is longer than {MAX_LINK_HREF_LENGTH} characters"
+    if not href.startswith("/"):
+        return (
+            "must be a path from the root of the site that starts with '/' "
+            "(not an address with a scheme or a host)"
+        )
+    if not href.endswith("/"):
+        return "must end with '/': a link leads to a directory of the site"
+    segments = href[1:-1].split("/")
+    if segments == [""]:
+        return "must name a directory below the root of the site"
+    if not all(
+        segment == TOKEN_PLACEHOLDER or _LINK_SEGMENT_RE.fullmatch(segment)
+        for segment in segments
+    ):
+        return (
+            "has a segment that is not allowed: every segment between the slashes is "
+            f"A-Z, a-z, 0-9, '_' and '-' or exactly {TOKEN_PLACEHOLDER} (no empty "
+            "segment, '.', '..', '%', '?', '#', spaces or scheme)"
+        )
+    if segments.count(TOKEN_PLACEHOLDER) > 1:
+        return f"uses {TOKEN_PLACEHOLDER} more than once"
+    return None
+
+
+def _check_event_links(
+    check: _Checker, event: dict, parts: Sequence[PathPart], event_id: str, index: SiteIndex
+) -> None:
+    """`events.<id>.links`: `{ "<id>": { "text", "href", "visible" } }`."""
+    if "links" not in event:
+        index.event_links[event_id] = []
+        return
+    where = (*parts, "links")
+    links = event["links"]
+    if not isinstance(links, dict):
+        check.error(where, f"must be an object {{ id: … }}, got {json_type(links)}")
+        index.broken_links.add(event_id)
+        return
+    declared: list[str] = []
+    for link_id, link in links.items():
+        link_parts = (*where, link_id)
+        if not is_identifier(link_id):
+            check.error(link_parts, f"is not an identifier: an id has {ID_RULE}")
+            # an invitation may refer to this key: its references to the links
+            # of the event are not checked, the problem is reported here
+            index.broken_links.add(event_id)
+            continue
+        declared.append(link_id)
+        link = check.object(link, link_parts)
+        if link is None:
+            continue
+        check.unknown_fields(link, LINK_FIELDS, link_parts)
+        # default: the text of a link is a plain line, as the title of an
+        # event: no forms of address, nothing is filled in
+        text = check.value(link, "text", "string", link_parts, required=True, single_line=True)
+        if text is not MISSING and ("{" in text or "}" in text):
+            check.error(
+                (*link_parts, "text"),
+                "must not contain '{' or '}': the text of a link is shown as it is, "
+                "without placeholders or named texts",
+            )
+        href = check.value(link, "href", "string", link_parts, required=True)
+        if href is not MISSING:
+            problem = link_href_problem(href)
+            if problem is not None:
+                check.error((*link_parts, "href"), problem)
+        # default: a link is hidden; an invitation switches it on
+        check.value(link, "visible", "boolean", link_parts)
+    index.event_links[event_id] = declared
 
 
 def _check_main_event(check: _Checker, site: dict, index: SiteIndex) -> None:
@@ -1392,9 +1495,45 @@ def _check_guest_events(
             check.warning(
                 (*parts, "note"), "is set, but the event is hidden for this invitation"
             )
+        _check_guest_links(check, override, parts, event_id, index, visible[event_id])
     if visible and not any(visible.values()):
         check.error(("events",), "hides every event; at least one must stay visible")
     return visible
+
+
+def _check_guest_links(
+    check: _Checker,
+    override: dict,
+    parts: Sequence[PathPart],
+    event_id: str,
+    index: SiteIndex,
+    event_shown: bool,
+) -> None:
+    """`events.<id>.links.<id>.visible` of an invitation."""
+    links = check.value(override, "links", "object", parts)
+    if links is MISSING or event_id in index.broken_links:
+        return  # broken links of the event are reported in site.json
+    declared = index.event_links.get(event_id, [])
+    for link_id, link_override in links.items():
+        link_parts = (*parts, "links", link_id)
+        if link_id not in declared:
+            known = _known_list(declared, "link") if declared else "; the event has no links"
+            check.error(
+                link_parts,
+                f"refers to an unknown link of event {show_id(event_id)}"
+                f"{did_you_mean(link_id, declared)}{known}",
+            )
+            continue
+        link_override = check.object(link_override, link_parts)
+        if link_override is None:
+            continue
+        check.unknown_fields(link_override, GUEST_LINK_FIELDS, link_parts)
+        shown = check.value(link_override, "visible", "boolean", link_parts)
+        if shown is True and not event_shown:
+            check.warning(
+                (*link_parts, "visible"),
+                "switches the link on, but the event is hidden for this invitation",
+            )
 
 
 def _check_primary_event(

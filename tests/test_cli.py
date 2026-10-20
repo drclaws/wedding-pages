@@ -520,6 +520,56 @@ class BuildCommandTests(CliTestCase):
         result = run_main(self.code, *self.build_args("--base-path=-x"))
         self.assertEqual(result.returncode, 2, result.stderr)
 
+    def test_allow_path_may_be_repeated(self):
+        site = site_data()
+        site["events"]["dinner"]["links"] = {
+            "menu": {"text": "Меню", "href": "/zmenu/{token}/", "visible": True},
+            "seating": {"text": "Рассадка", "href": "/zseating/", "visible": True},
+        }
+        write_data(self.data, site=site)
+        result = self.run_build("--allow-path", "/zmenu", "--allow-path", "/zseating/")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        page = (self.out / support.TOKEN_A / "index.html").read_text(encoding="utf-8")
+        self.assertIn(f'href="/zmenu/{support.TOKEN_A}/">Меню</a>', page)
+        self.assertIn('href="/zseating/">Рассадка</a>', page)
+        # the log is the same as without it: no counter of its own
+        self.assertNotIn("zmenu", result.stdout + result.stderr)
+        self.assertNoPrivateData(result.stdout, result.stderr)
+        # one of the two is not enough
+        result = run_main(self.code, *self.build_args("--allow-path", "/zmenu"))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("<a href>: '/…' does not exist in the output", result.stderr)
+        self.assertNoPrivateData(result.stdout, result.stderr)
+
+    def test_invalid_allow_path_is_a_usage_error(self):
+        for args, message in (
+            (("--allow-path", "/"), "must not be '/'"),
+            (("--allow-path", "zmenu"), "must be a path from the root of the site"),
+            (("--allow-path", "/zmenu//x"), "must be a path from the root of the site"),
+            (("--allow-path", "/zm%65nu"), "must be a path from the root of the site"),
+            (("--allow-path", "/" + "z" * 200), "must be at most 200 characters long"),
+            (("--base-path", "/invite", "--allow-path", "/invite"), "must not be the --base-path"),
+            (("--base-path", "/invite", "--allow-path", "/invite/zmenu"),
+             "must not lie under the --base-path"),
+            (("--base-path", "/zmenu/x", "--allow-path", "/zmenu"),
+             "must not contain the --base-path"),
+            (("--allow-path", "/zmenu", "--allow-path", "zother"),
+             "must be a path from the root of the site"),
+        ):  # fmt: skip
+            with self.subTest(args=args):
+                result = run_main(self.code, *self.build_args(*args))
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertIn(f"argument --allow-path: {message}", result.stderr)
+                self.assertNotIn("zm", result.stderr.replace("--", ""))
+                self.assertNotIn("zz", result.stderr)
+                self.assertFalse(self.out.exists())
+
+    def test_validate_knows_no_allow_path(self):
+        result = run_main(self.code, "validate", "--data", str(self.data), "--allow-path", "/zmenu")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("unrecognized arguments: --allow-path", result.stderr)
+
 
 class OutputDirectoryGuardTests(CliTestCase):
     def assertRefused(self, out: Path, *, env: dict | None = None, fragment: str = "--out"):

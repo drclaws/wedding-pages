@@ -7,11 +7,12 @@
 For every set it generates the placeholder media (the main set only, with
 ``tools/gen_example_media.py`` into ``examples/media/``, which git ignores),
 builds the invitations into ``<out>/<set>/`` with ``build.py build
---base-path /`` and prints where they are, how to look at them and the
-address of every page with its greeting (the data of the examples is
-fictional).  The directory of a set is the root to serve: the pages are
-``/<token>/``.  In CI (``CI`` or ``GITHUB_ACTIONS`` set) the pages and
-greetings are not printed, as with ``build.py links``.
+--base-path / --allow-path /menu`` (the examples link to a page of their
+fictional site that is not built) and prints where they are, how to look at
+them and the address of every page with its greeting (the data of the
+examples is fictional).  The directory of a set is the root to serve: the
+pages are ``/<token>/``.  In CI (``CI`` or ``GITHUB_ACTIONS`` set) the pages
+and greetings are not printed, as with ``build.py links``.
 
 Only the sets in ``examples/`` are accepted: for real data use ``build.py
 build`` and ``build.py links``.  The main set shows videos, so it needs
@@ -51,6 +52,9 @@ NEEDS_FFMPEG = ("data",)
 #: A set is built for the root of a local server: `<out>/<set>/` is served
 #: as it is.
 BASE_PATH = "/"
+#: The examples link to a neighbouring directory of their fictional site,
+#: which the build does not write (`build.py build --allow-path`).
+ALLOW_PATHS = ("/menu",)
 CI_ENVIRONMENT_VARIABLES = ("CI", "GITHUB_ACTIONS")
 
 
@@ -107,6 +111,8 @@ def build_set(name: str, out: Path, port: int, extra: list[str] | None = None) -
         str(BUILD), "build", "--data", str(data), "--media", str(media), "--out", str(target),
         "--base-path", BASE_PATH,
     ]  # fmt: skip
+    for path in ALLOW_PATHS:
+        args += ["--allow-path", path]
     args += extra or []
     code = run(args)
     if code != 0:

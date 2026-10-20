@@ -61,11 +61,16 @@ WIDGET_FIELDS = {
 EVENT_FIELDS = (
     "id", "domId", "title", "description", "note", "isMain", "isPrimary", "kind",
     "startISO", "endISO", "dateText", "timeText", "whenText", "tabText", "icsPath",
-    "location", "program",
+    "location", "program", "links",
 )
 #: `primaryEvent` in the root has the fields of every event; its DOM id is ""
 #: (and so are those of its place and its program): it is not on the page.
 PRIMARY_EVENT_FIELDS = EVENT_FIELDS
+#: A link of an event that the guest sees (`links[]`).
+LINK_FIELDS = ("id", "href", "text")
+#: The pages link to this directory of their fictional site, which the build
+#: does not write (`build.py build --allow-path`).
+ALLOW_PATHS = ("/menu",)
 LOCATION_FIELDS = (
     "id", "domId", "ready", "name", "address", "description", "mapLinks", "hasMapLinks",
     "photos", "directions", "directionsCredit", "compact", "nested",
@@ -192,6 +197,7 @@ EVENTS = {
                  "whenText": "Суббота, 15 июня 2030, 11:00–12:00"},
     "dinner": {"title": "Праздничный ужин", "location": "manor", "schedule": "dinner",
                "description": "Дресс-код — светлые тона.",
+               "links": {"menu": {"text": "Меню ужина", "href": "/menu/{token}/"}},
                "start": "2030-06-15T16:00:00+03:00", "end": "2030-06-15T23:30:00+03:00",
                "dateText": "15 июня 2030", "timeText": "16:00", "dayMonth": "15 июня",
                "whenText": "Суббота, 15 июня 2030, 16:00–23:30"},
@@ -251,7 +257,8 @@ GUESTS = [
      "sections": {"personal": {"note": "Спасибо, что столько лет рядом. Очень ждём! <3"},
                   "plus-one": {"visible": True}}},
     {"token": "oWaEF01q51e11fwVhCZQqQ", "greeting": "Дорогой Дэйв!", "form": "ty",
-     "events": {"dinner": {"note": "Напиши нам, пожалуйста, про аллергию."}}},
+     "events": {"dinner": {"note": "Напиши нам, пожалуйста, про аллергию.",
+                           "links": {"menu": {"visible": True}}}}},
     {"token": "48lh3whME-jqDOw3yzzWpQ", "greeting": "Дорогая Ева!", "form": "ty",
      "primaryEvent": "ceremony", "events": {"brunch": {"visible": True}},
      "sections": {"personal": {"note": "Помнишь, как мы познакомились в поезде?\n\nЖдём!"},
@@ -270,7 +277,7 @@ GUESTS = [
      "sections": {"personal": {"note": "Для нас большая честь пригласить вас."},
                   "plus-one": {"visible": True}}},
     {"token": "04e2efb6-33cd-423f-acff-3c14562a3113", "greeting": "Уважаемая Хайди Андреевна!",
-     "form": "vy",
+     "form": "vy", "events": {"dinner": {"links": {"menu": {"visible": True}}}},
      "sections": {"plus-one": {"visible": True},
                   "travel": {"visible": True, "note": "Трансфер будет ждать у главного входа."},
                   "where": {"note": "Если понадобится помощь с дорогой — напишите нам."}}},
@@ -357,6 +364,16 @@ class PageTree:
                       lambda match: values[match.group(1)] if match.group(1)
                       else match.group(0)[0], value)
 
+    def links(self, event_id: str) -> list[Strict]:
+        """The links of an event the guest sees: switched on for him, else by default."""
+        overrides = self.guest.get("events", {}).get(event_id, {}).get("links", {})
+        return [
+            node(LINK_FIELDS, id=link_id, text=link["text"],
+                 href=link["href"].replace("{token}", self.guest["token"]))
+            for link_id, link in EVENTS[event_id].get("links", {}).items()
+            if overrides.get(link_id, {}).get("visible", link.get("visible", False))
+        ]
+
     def event(self, event_id: str, dom_id: str | None) -> Strict:
         item = EVENTS[event_id]
         fields = EVENT_FIELDS if dom_id is not None else PRIMARY_EVENT_FIELDS
@@ -376,6 +393,7 @@ class PageTree:
             program=node(PROGRAM_FIELDS, domId=join_id(dom_id or "", "program"),
                          items=schedule_items(item["schedule"]), nested=True)
             if item.get("schedule") else None,
+            links=self.links(event_id),
         )
         values["domId"] = dom_id or ""
         return node(fields, **values)
@@ -558,7 +576,7 @@ def cover_bar(document: str) -> re.Match:
 
 def html_problems(document: str, files: set[str] | None = None) -> list[tuple[int, str]]:
     exists = (lambda _path: True) if files is None else files.__contains__
-    return build.check_html(document, exists)
+    return build.check_html(document, exists, allow_paths=ALLOW_PATHS)
 
 
 # --- the contract of every fragment on its own -------------------------------------
@@ -590,6 +608,10 @@ def bare_location(full: bool, ready: bool = True, compact: bool = False,
     )
 
 
+def bare_link(link_id: str, text: str = "Ссылка") -> Strict:
+    return node(LINK_FIELDS, id=link_id, href=f"/menu/{link_id}-t0k3n/", text=text)
+
+
 def bare_event(event_id: str, full: bool, primary: bool = False, with_dom_id: bool = True) -> Strict:
     values = dict(
         id=event_id, title="Событие", description="Описание" if full else "",
@@ -602,6 +624,7 @@ def bare_event(event_id: str, full: bool, primary: bool = False, with_dom_id: bo
         program=node(PROGRAM_FIELDS, domId=f"w--e-{event_id}--program", nested=True, items=[
             node(SCHEDULE_ITEM_FIELDS, time="16:00", title="Пункт", text="Текст"),
             node(SCHEDULE_ITEM_FIELDS, time="", title="Пункт", text="")]) if full else None,
+        links=[bare_link("menu"), bare_link("map", "Схема")] if full else [],
     )
     values["domId"] = f"w--e-{event_id}" if with_dom_id else ""
     return node(EVENT_FIELDS if with_dom_id else PRIMARY_EVENT_FIELDS, **values)
@@ -834,13 +857,48 @@ class FragmentContractTests(unittest.TestCase):
         document = self.render("widgets", [bare_widget(
             "events", items=[bare_event("a", True, primary=True)], count=1, multiple=False,
             primaryDomId="w--e-a")])
-        order = ["<h3", "events__when", "text/calendar", "events__description",
+        order = ["<h3", "events__when", "text/calendar", 'href="/menu/menu-t0k3n/"',
+                 'href="/menu/map-t0k3n/"', "</header>", "events__description",
                  "events__note", "venue__name", "events__program"]
         positions = [document.index(marker) for marker in order]
         self.assertEqual(positions, sorted(positions))
         self.assertRegex(document, r"<h4 class=\"venue__name\">")
         self.assertRegex(document, r"<h4 class=\"events__program-title\" id=\"w--e-a--program\">")
         self.assertRegex(document, r"<h5 class=\"schedule__name\">")
+
+    def test_the_links_of_an_event(self):
+        def card(links: list) -> str:
+            event = bare_event("a", False, primary=True)
+            event["links"] = links
+            document = self.render("widgets", [bare_widget(
+                "events", items=[event], count=1, multiple=False, primaryDomId="w--e-a")])
+            self.assertEqual(html_problems(document), [])
+            return re.search(r'<header class="events__head">.*?</header>', document, re.S).group(0)
+
+        calendar = ('<p class="events__actions"><a class="btn btn--secondary" '
+                    'href="/assets/m/a.ics" type="text/calendar">Добавить в календарь</a></p>')
+        # without links: the header as it always was, byte for byte
+        self.assertTrue(card([]).endswith(f"{calendar}\n    </header>"))
+        # every link is a paragraph of its own right after the calendar, in their order
+        self.assertTrue(card([bare_link("menu", "Меню ужина"), bare_link("map", "Схема")]).endswith(
+            f'{calendar}<p class="events__actions"><a class="btn btn--secondary" '
+            'href="/menu/menu-t0k3n/">Меню ужина</a></p><p class="events__actions"><a '
+            'class="btn btn--secondary" href="/menu/map-t0k3n/">Схема</a></p>\n    </header>'))
+        # the text is text: markup in it is escaped
+        self.assertIn('href="/menu/menu-t0k3n/">&lt;b&gt;Меню&lt;/b&gt;</a>',
+                      card([bare_link("menu", "<b>Меню</b>")]))
+
+    def test_only_the_events_widget_shows_the_links(self):
+        event = bare_event("e", True, True)
+        self.assertTrue(event["links"])
+        date = self.render("widgets", [bare_widget(
+            "date", event=event, countdown=True, calendar=True, showEventTitle=True)])
+        cover = self.render("sections", [node(
+            SECTION_FIELDS["cover"], id="cover", type="cover", domId="s-cover",
+            titleId="s-cover--title", eyebrow="", event=event, background=None,
+            backgroundFocus="center")])
+        for document in (date, cover):
+            self.assertNotIn("/menu/", document)
 
     def test_one_program_markup_at_two_depths(self):
         items = [node(SCHEDULE_ITEM_FIELDS, time="10:00", title="Пункт", text="")]
@@ -1153,6 +1211,7 @@ NODE_FIELDS = {
     "media": set(MEDIA_FIELDS),
     "program": set(PROGRAM_FIELDS),
     "item": set(SCHEDULE_ITEM_FIELDS),
+    "link": set(LINK_FIELDS),
 }
 
 
@@ -1166,6 +1225,8 @@ def nodes_of(tree: dict):
             yield "program", value["program"]
             for item in value["program"]["items"]:
                 yield "item", item
+        for link in value["links"]:
+            yield "link", link
 
     def place(value):
         yield "location", value

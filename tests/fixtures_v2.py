@@ -3,10 +3,11 @@
 `SITE` / `INVITATIONS` are the main set: eight invitations that cover every
 combination of the form of address, a guest from another city and a
 companion, a different primary event, hidden and switched-on events, notes
-for sections and events, a place that is not announced yet, events on two
-days, photos with a portrait and a landscape video and a photo behind the
-cover.  `PENDING_SITE` / `PENDING_INVITATIONS` are the set without places and
-media (and a cover without a photo).
+for sections and events, a link of an event switched on for two invitations,
+a place that is not announced yet, events on two days, photos with a portrait
+and a landscape video and a photo behind the cover.  `PENDING_SITE` /
+`PENDING_INVITATIONS` are the set without places and media (and a cover
+without a photo).
 
 There are no media files: `MEDIA_INFO` stands for what the build would read
 from them.  Use `site()` / `invitations()` for copies that a test may change.
@@ -142,6 +143,8 @@ SITE = {
             "end": "2030-06-15T23:30:00+03:00",
             "showEnd": True,
             "schedule": "dinner",
+            # hidden by default: switched on for two invitations
+            "links": {"menu": {"text": "Меню ужина", "href": "/menu/{token}/"}},
         },
         "brunch": {
             "title": "Второй день",
@@ -249,7 +252,10 @@ INVITATIONS = [
         "greeting": "Дорогой Дэйв!",
         "form": "ty",
         "events": {
-            "dinner": {"note": "Напиши нам, пожалуйста, про аллергию — подберём блюда из меню."}
+            "dinner": {
+                "note": "Напиши нам, пожалуйста, про аллергию — подберём блюда из меню.",
+                "links": {"menu": {"visible": True}},
+            }
         },
     },
     {
@@ -313,6 +319,7 @@ INVITATIONS = [
         "token": "04e2efb6-33cd-423f-acff-3c14562a3113",
         "greeting": "Уважаемая Хайди Андреевна!",
         "form": "vy",
+        "events": {"dinner": {"links": {"menu": {"visible": True}}}},
         "sections": {
             "invite": {"widgets": {"plus-one": {"visible": True}}},
             "travel": {
