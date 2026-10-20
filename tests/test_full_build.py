@@ -533,13 +533,13 @@ class ReproducibilityTests(FullBuildTestCase):
 class ExampleDataTests(CliTestCase):
     """The example data sets of the repository build with the fixture template."""
 
-    def build_example(self, name: str, media_names=()) -> Path:
+    def build_example(self, name: str, media_names=(), *extra: str) -> Path:
         data = support.ROOT / "examples" / name
         media = self.tmp / f"media-{name}"
         support.write_media(media, media_names)
         result = support.run_cli(
             self.code, "build", "--data", str(data), "--media", str(media),
-            "--out", str(self.out), cwd=self.work,
+            "--out", str(self.out), *extra, cwd=self.work,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         return self.out
@@ -561,7 +561,8 @@ class ExampleDataTests(CliTestCase):
             {item[key] for item in site["media"].values() for key in ("file", "poster", "thumb")
              if key in item}
         )  # fmt: skip
-        out = self.build_example("data", names)
+        # the link to the menu leads to a directory of the fictional site
+        out = self.build_example("data", names, "--allow-path", "/menu")
         media = out / "assets" / site["mediaDir"]
         calendars = support.calendar_names(site, invitations)
         self.assertEqual(list(calendars), ["ceremony", "dinner", "brunch"])
@@ -572,6 +573,37 @@ class ExampleDataTests(CliTestCase):
         self.assertEqual(len(list(out.glob("*/index.html"))), len(invitations))
         self.assertEqual(list(out.glob("*/*.ics")), [])
         self.assertEqual(len(list(out.rglob("*.ics"))), 3)
+        # switched on for the second and the eighth guest only
+        with_link = [
+            number
+            for number, invitation in enumerate(invitations, start=1)
+            if f'href="/menu/{invitation["token"]}/">Меню ужина</a>'
+            in (out / invitation["token"] / "index.html").read_text(encoding="utf-8")
+        ]
+        self.assertEqual(with_link, [2, 8])
+
+    def test_the_link_of_the_example_needs_the_allowed_path(self):
+        site, invitations = self.load("data")
+        names = sorted(
+            {item[key] for item in site["media"].values() for key in ("file", "poster", "thumb")
+             if key in item}
+        )  # fmt: skip
+        media = self.tmp / "media-data"
+        support.write_media(media, names)
+        for extra, message in (
+            ((), "<a href>: '/…' does not exist in the output"),
+            (("--base-path", "/invite"), "<a href>: '/…' points outside the output"),
+        ):
+            with self.subTest(extra=extra):
+                result = support.run_cli(
+                    self.code, "build", "--data", str(support.ROOT / "examples" / "data"),
+                    "--media", str(media), "--out", str(self.out), *extra, cwd=self.work,
+                )  # fmt: skip
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(f"2 files: {message}; first: …/index.html line ", result.stderr)
+                self.assertFalse(self.out.exists())
+                for invitation in invitations:
+                    self.assertNotIn(invitation["token"], result.stdout + result.stderr)
 
     def test_example_with_pending_venue(self):
         site, invitations = self.load("data-venue-pending")

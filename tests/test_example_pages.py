@@ -25,6 +25,8 @@ from tests.support import build
 
 ROOT = support.ROOT
 DATA_SETS = ("data", "data-venue-pending")
+#: The main set links to a directory of its fictional site that is not built.
+ALLOW_PATHS = ("/menu",)
 
 #: Script hooks whose elements never carry the reveal mark.
 NO_REVEAL_HOOKS = ("data-gallery", "data-lightbox", "data-countdown")
@@ -54,6 +56,43 @@ def hidden_sections(site: dict, invitation: dict) -> set[str]:
         for section in site["sections"]
         if not overrides.get(section["id"], {}).get("visible", section.get("visible", True))
     }
+
+
+def shown_widgets(site: dict, invitation: dict, kind: str) -> list[dict]:
+    """The widgets of a type on the page of an invitation (sections and
+    widgets switched on or off as the invitation says)."""
+    hidden = hidden_sections(site, invitation)
+    overrides = invitation.get("sections", {})
+    found = []
+    for section in site["sections"]:
+        if section["id"] in hidden:
+            continue
+        switched = overrides.get(section["id"], {}).get("widgets", {})
+        for widget in section.get("widgets", []):
+            shown = switched.get(widget.get("id"), {}).get("visible", widget.get("visible", True))
+            if widget["type"] == kind and shown:
+                found.append(widget)
+    return found
+
+
+def token_links(site: dict, invitation: dict) -> list[str]:
+    """The `href` (token filled in) of the links with `{token}` that the page
+    of an invitation shows: switched on for it, of an event it sees in an
+    events widget."""
+    seen = visible_events(site, invitation)
+    in_cards = {
+        event_id
+        for widget in shown_widgets(site, invitation, "events")
+        for event_id in widget.get("events", list(site["events"]))
+    } & seen
+    hrefs = []
+    for event_id in sorted(in_cards):
+        overrides = invitation.get("events", {}).get(event_id, {}).get("links", {})
+        for link_id, link in site["events"][event_id].get("links", {}).items():
+            if overrides.get(link_id, {}).get("visible", link.get("visible", False)):
+                if "{token}" in link["href"]:
+                    hrefs.append(link["href"].replace("{token}", invitation["token"]))
+    return hrefs
 
 
 def notes(invitation: dict) -> list[str]:
@@ -127,7 +166,10 @@ class ExamplePagesTestCase(unittest.TestCase):
             )  # fmt: skip
             media = support.write_media(cls.tmp / f"media-{name}", names)
             out = cls.tmp / f"dist-{name}"
-            build.build_site(ROOT / "examples" / name, media, out, code_dir=ROOT, log=lambda _l: None)
+            build.build_site(
+                ROOT / "examples" / name, media, out, code_dir=ROOT, log=lambda _l: None,
+                allow_paths=ALLOW_PATHS,
+            )  # fmt: skip
             files = {
                 path.relative_to(out).as_posix(): path.read_bytes().decode("utf-8", "replace")
                 for path in sorted(out.rglob("*"))
@@ -280,20 +322,35 @@ class PrivacyTests(ExamplePagesTestCase):
                                 self.assertNotIn(line, content)
 
     def test_a_token_is_only_in_its_own_directory_and_page(self):
-        for name, _site, invitations, files in self.sets():
+        linked = 0
+        for name, site, invitations, files in self.sets():
+            for path, content in files.items():
+                self.assertNotIn("{token}", content, path)
             for invitation in invitations:
                 token = invitation["token"]
                 page = f"{token}/index.html"
+                # the links with the token that the page shows (the events widget only)
+                hrefs = token_links(site, invitation)
                 with self.subTest(data=name, token=token[:4]):
                     for path, content in files.items():
                         if path == page:
-                            # nothing of the page is under its token: the
-                            # calendar files are in the media directory
-                            self.assertNotIn(token, content)
+                            # on its own page only in the links switched on for
+                            # the guest: nothing of the page is under its token,
+                            # the calendar files are in the media directory
+                            self.assertEqual(content.lower().count(token.lower()), len(hrefs))
+                            rest = content
+                            for href in hrefs:
+                                self.assertEqual(href, f"/menu/{token}/")
+                                self.assertEqual(rest.count(f'href="{href}"'), 1)
+                                rest = rest.replace(f'href="{href}"', "")
+                            self.assertNotIn(token.lower(), rest.lower())
                         else:
                             self.assertNotIn(token, content, path)
                             self.assertNotIn(token.lower(), content.lower(), path)
                     self.assertEqual([path for path in files if token in path], [page])
+                linked += len(hrefs)
+        # the link to the menu is switched on for two guests of the main set
+        self.assertEqual(linked, 2)
 
     def test_media_names_of_the_data_are_not_published(self):
         site, _invitations, files = self.built["data"]
@@ -314,7 +371,7 @@ class PrivacyTests(ExamplePagesTestCase):
         media = support.write_media(self.tmp / "media-thumb", names)
         (media / "walk-thumb.png").write_bytes(support.png_bytes(16, 9))
         out = self.tmp / "dist-thumb"
-        build.build_site(data, media, out, code_dir=ROOT, log=lambda _l: None)
+        build.build_site(data, media, out, code_dir=ROOT, log=lambda _l: None, allow_paths=ALLOW_PATHS)
         thumb = build.media_tools.hashed_name(media / "walk-thumb.png")
         contents = [path.read_bytes() for path in out.rglob("*") if path.is_file()]
         for name in names:

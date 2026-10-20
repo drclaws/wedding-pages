@@ -6,7 +6,9 @@ is built: a hidden section, widget or event is not in the tree at all, and a
 hidden event is left out of the cards, the dates and the programmes.  The end
 of an event never depends on the other events.  Every field of the tree always exists: an empty
 string, `[]`, `false` or `null` for an object.  Texts come ready: the form of
-address is picked and the placeholders are filled in.
+address is picked and the placeholders are filled in.  The token of the
+invitation is in its tree only in the `href` of the links of events that are
+switched on for it.
 
 Everything outside the data comes in through `PageSettings`: the URL of a
 media file and of the calendar file of an event, the facts of the media files (sizes, durations), the default
@@ -42,6 +44,7 @@ from tools._schema import (
     COVER_FOCUSES,
     PLACEHOLDERS,
     SITE_FILE,
+    TOKEN_PLACEHOLDER,
     report_warning,
 )
 
@@ -278,7 +281,28 @@ class _Page:
                 raw["location"], dom_id(own_id, location_part(raw["location"])), nested=True
             ),
             "program": self.program(raw, own_id),
+            "links": self.links(event_id),
         }
+
+    def links(self, event_id: str) -> list[dict]:
+        """The links of an event this invitation sees, in their order, with
+        `{token}` replaced by its token."""
+        token = self.invitation.get("token")
+        if not isinstance(token, str):
+            return []  # nobody in particular (the link preview page)
+        overrides = self.event_overrides.get(event_id, {}).get("links", {})
+        found = []
+        for link_id, link in self.events[event_id].get("links", {}).items():
+            # default: a link is hidden unless the invitation switches it on
+            if overrides.get(link_id, {}).get("visible", link.get("visible", False)):
+                found.append(
+                    {
+                        "id": link_id,
+                        "href": link["href"].replace(TOKEN_PLACEHOLDER, token),
+                        "text": link["text"],
+                    }
+                )
+        return found
 
     def program(self, raw: dict, event_dom_id: str) -> dict | None:
         """The programme of an event; null when it has none (or it is empty)."""
@@ -570,11 +594,21 @@ class _Page:
         if self.warn is None:
             return
         for event_id, override in self.event_overrides.items():
-            if event_id in self.visible and _text(override.get("note")) and event_id not in self.cards:
+            if event_id not in self.visible or event_id in self.cards:
+                continue  # a hidden event is reported by the checks of the data
+            if _text(override.get("note")):
                 self.warn(
                     f"{self.label}: field 'events.{event_id}.note' is set, but no 'events' "
                     "widget on this page shows the event"
                 )
+            # only the events widget shows the links of an event
+            for link_id, link in override.get("links", {}).items():
+                if link.get("visible") is True:
+                    self.warn(
+                        f"{self.label}: field 'events.{event_id}.links.{link_id}.visible' "
+                        "switches the link on, but no 'events' widget on this page shows "
+                        "the event"
+                    )
 
 
 # --------------------------------------------------------------------------

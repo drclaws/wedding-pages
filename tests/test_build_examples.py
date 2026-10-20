@@ -150,7 +150,24 @@ class BuildExamplesTests(TempDirTestCase):
         self.assertTrue((self.repo / "examples" / "media" / "walk.mp4").is_file())
         for token, greeting in tokens("data"):
             self.assertIn(f"  http://localhost:8000/{token}/  {greeting}", result.stdout)
+        # built with --allow-path /menu: the link to the menu of the fictional
+        # site, switched on for two guests, leads to a directory that is not built
+        linked = [
+            token for token, _greeting in tokens("data")
+            if f'href="/menu/{token}/"' in (out / token / "index.html").read_text(encoding="utf-8")
+        ]  # fmt: skip
+        self.assertEqual(len(linked), 2)
+        self.assertFalse((out / "menu").exists())
         self.assertOnlyOutputAndMedia()
+
+    def test_the_sets_are_built_with_the_allowed_path(self):
+        # the output of the script does not change: the option is passed on silently
+        result = self.run_script("--set", "data-venue-pending", "--out", "out")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("menu", result.stdout + result.stderr)
+        source = (ROOT / "tools" / "build_examples.py").read_text(encoding="utf-8")
+        self.assertIn('ALLOW_PATHS = ("/menu",)', source)
+        self.assertIn('args += ["--allow-path", path]', source)
 
 
 if __name__ == "__main__":  # pragma: no cover

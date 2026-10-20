@@ -44,6 +44,20 @@ def visible_sections(site: dict, invitation: dict) -> set[str]:
     }
 
 
+def link_nodes(value) -> list[dict]:
+    """Every link of every event node of a tree."""
+    found = []
+    if isinstance(value, dict):
+        if isinstance(value.get("links"), list):
+            found += value["links"]
+        for item in value.values():
+            found += link_nodes(item)
+    elif isinstance(value, list):
+        for item in value:
+            found += link_nodes(item)
+    return found
+
+
 def hidden_event_strings(site: dict, event_id: str) -> list[str]:
     event = site["events"][event_id]
     strings = [f'"{event_id}"', f"-{event_id}", f"/{event_id}.ics", event["title"], event["start"][:16]]
@@ -80,6 +94,33 @@ class TreePrivacyTests(unittest.TestCase):
 
     def test_set_without_places(self):
         self.assertGreater(self.check_set(F.pending_site(), F.pending_invitations(), {}), 10)
+
+    def test_the_token_is_only_in_the_links_switched_on(self):
+        site, invitations = F.site(), F.invitations()
+        # one more link, visible to everybody and without the token
+        site["events"]["dinner"]["links"]["seating"] = {
+            "text": "Рассадка", "href": "/seating/", "visible": True
+        }
+        pages, _usage = _page.build_pages(site, invitations, F.settings())
+        switched_on = 0
+        for number, (invitation, page) in enumerate(zip(invitations, pages), start=1):
+            token = invitation["token"]
+            text = json.dumps(page, ensure_ascii=False)
+            hrefs = [link["href"] for link in link_nodes(page)]
+            with self.subTest(invitation=number):
+                self.assertNotIn("{token}", text)
+                self.assertIn("/seating/", hrefs)
+                with_token = [href for href in hrefs if token in href]
+                self.assertEqual(text.count(token), len(with_token))
+                self.assertEqual(set(with_token), {f"/menu/{token}/"} if with_token else set())
+                rest = text.replace(f'"href": "/menu/{token}/"', "")
+                self.assertNotIn(token, rest)
+                for other in invitations:
+                    if other is not invitation:
+                        self.assertNotIn(other["token"].lower(), text.lower())
+            switched_on += bool(with_token)
+        # the second and the eighth invitation
+        self.assertEqual(switched_on, 2)
 
     def test_widget_switched_on_for_one_invitation(self):
         booked = F.SITE["sections"][5]["widgets"][2]["text"]

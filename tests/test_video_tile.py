@@ -238,7 +238,10 @@ class BuiltPageTests(TempDirTestCase):
         data = ROOT / "examples" / data_name
         media = support.write_media(self.tmp / f"media-{data_name}", self.media_names)
         out = self.tmp / f"dist-{data_name}"
-        build.build_site(data, media, out, code_dir=ROOT, log=lambda _message: None)
+        # the main example links to a page of its fictional site that is not built
+        build.build_site(
+            data, media, out, code_dir=ROOT, log=lambda _message: None, allow_paths=("/menu",)
+        )
         return out
 
     def pages(self, out: Path) -> list[str]:

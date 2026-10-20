@@ -155,8 +155,8 @@ class CiWorkflowTest(unittest.TestCase):
         """The layout a real site uses: the invitations in a directory of it."""
         builds = [block for block in self.runs if "--base-path" in block]
         self.assertEqual(len(builds), 1)
-        self.assertIn('python build.py build --base-path /invite --out "$RUNNER_TEMP/site/invite"',
-                      builds[0])
+        self.assertIn('python build.py build --base-path /invite --allow-path /menu '
+                      '--out "$RUNNER_TEMP/site/invite"', builds[0])
         checks = [block for block in self.runs if "check_out()" in block]
         self.assertEqual(len(checks), 1)
         block = checks[0]
@@ -188,6 +188,24 @@ class CiWorkflowTest(unittest.TestCase):
         self.assertIn("google-chrome --headless=new", block)
         # the sandbox stays on, as in the build
         self.assertNotIn("--no-sandbox", self.raw)
+
+    def test_the_main_set_is_built_with_the_allowed_path(self):
+        """The examples link to a directory of their fictional site: the builds of
+        the main set allow it, the set without places is built as before."""
+        builds = re.findall(r"(?m)^\s*python build\.py build\b.*$", "\n".join(self.runs))
+        self.assertEqual(len(builds), 4)
+        main = [line.strip() for line in builds if "examples/data-venue-pending" not in line]
+        self.assertEqual(
+            main,
+            ['python build.py build --allow-path /menu --out "$RUNNER_TEMP/dist"',
+             'python build.py build --base-path /invite --allow-path /menu --out '
+             '"$RUNNER_TEMP/site/invite"',
+             'python build.py build --allow-path /menu --out "$RUNNER_TEMP/dist2"'],
+        )  # fmt: skip
+        pending = [line for line in builds if "examples/data-venue-pending" in line]
+        self.assertEqual(len(pending), 1)
+        self.assertNotIn("--allow-path", pending[0])
+        self.assertNotRegex(self.raw, r"build\.py validate[^\n]*--allow-path")
 
     def test_build_output_goes_to_runner_temp(self):
         outs = re.findall(r"--out\s+(\S+)", "\n".join(self.runs))

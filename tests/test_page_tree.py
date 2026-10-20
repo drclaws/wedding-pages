@@ -36,8 +36,9 @@ WIDGET_FIELDS = {
 EVENT_FIELDS = {
     "id", "domId", "title", "description", "note", "isMain", "isPrimary", "kind",
     "startISO", "endISO", "dateText", "timeText", "whenText", "tabText", "icsPath",
-    "location", "program",
+    "location", "program", "links",
 }  # fmt: skip
+LINK_FIELDS = {"id", "href", "text"}
 PROGRAM_FIELDS = {"domId", "items", "nested"}
 LOCATION_FIELDS = {
     "id", "domId", "ready", "name", "address", "description", "mapLinks",
@@ -120,6 +121,9 @@ class ContractTests(unittest.TestCase):
             self.assertTrue(event["program"]["nested"])
             for item in event["program"]["items"]:
                 self.assertEqual(set(item), ITEM_FIELDS)
+        self.assertIsInstance(event["links"], list)
+        for link in event["links"]:
+            self.assertEqual(set(link), LINK_FIELDS)
 
     def test_root_and_sections(self):
         for tree in self.trees():
@@ -324,6 +328,88 @@ class OverrideTests(unittest.TestCase):
         pages = build(change)
         self.assertIsNone(section(pages[1], "personal"))
         self.assertEqual(section(pages[2], "personal")["widgets"][0]["text"], "Дворец бракосочетания Энска")
+
+
+def dinner_card(page):
+    return next(item for item in events_widget(page)["items"] if item["id"] == "dinner")
+
+
+class LinkTests(unittest.TestCase):
+    """`links` of an event: what the guest sees, `{token}` filled in."""
+
+    MENU = {"id": "menu", "text": "Меню ужина"}
+
+    def test_every_event_has_links(self):
+        for page in build() + build(site=F.pending_site(), invitations=F.pending_invitations()):
+            for event in walk_events(page):
+                self.assertIsInstance(event["links"], list)
+        # the set without places has no links at all
+        for page in build(site=F.pending_site(), invitations=F.pending_invitations()):
+            self.assertEqual([event["links"] for event in walk_events(page)], [[]] * len(walk_events(page)))
+
+    def test_a_link_is_hidden_by_default(self):
+        pages = build()
+        for number in (0, 2, 3, 4, 5, 6):
+            with self.subTest(invitation=number + 1):
+                self.assertEqual(dinner_card(pages[number])["links"], [])
+
+    def test_switched_on_with_the_token_of_the_invitation(self):
+        pages = build()
+        for number in (1, 7):
+            token = F.INVITATIONS[number]["token"]
+            with self.subTest(invitation=number + 1):
+                self.assertEqual(
+                    dinner_card(pages[number])["links"], [{**self.MENU, "href": f"/menu/{token}/"}]
+                )
+                # the same node of the event everywhere in the tree
+                for event in walk_events(pages[number]):
+                    if event["id"] == "dinner":
+                        self.assertEqual(event["links"], dinner_card(pages[number])["links"])
+                    else:
+                        self.assertEqual(event["links"], [])
+
+    def test_switched_off_and_the_order_of_the_keys(self):
+        def change(site, invitations):
+            links = site["events"]["dinner"]["links"]
+            links["menu"]["visible"] = True
+            links["seating"] = {"text": "Рассадка", "href": "/seating/", "visible": True}
+            links["photos"] = {"text": "Фото", "href": "/photos/{token}/x/"}
+            invitations[0]["events"]["dinner"] = {"links": {"menu": {"visible": False}}}
+            invitations[1]["events"]["dinner"]["links"]["photos"] = {"visible": True}
+
+        pages = build(change)
+        token = F.INVITATIONS[1]["token"]
+        self.assertEqual(
+            dinner_card(pages[0])["links"],
+            [{"id": "seating", "href": "/seating/", "text": "Рассадка"}],
+        )
+        self.assertEqual(
+            dinner_card(pages[1])["links"],
+            [
+                {**self.MENU, "href": f"/menu/{token}/"},
+                {"id": "seating", "href": "/seating/", "text": "Рассадка"},
+                {"id": "photos", "href": f"/photos/{token}/x/", "text": "Фото"},
+            ],
+        )
+        self.assertEqual(
+            [link["id"] for link in dinner_card(pages[2])["links"]], ["menu", "seating"]
+        )
+
+    def test_a_hidden_event_takes_its_links_away(self):
+        def change(site, invitations):
+            invitations[1]["events"]["dinner"]["visible"] = False
+            invitations[1]["primaryEvent"] = "ceremony"
+
+        page = build(change)[1]
+        self.assertNotIn("dinner", [event["id"] for event in walk_events(page)])
+        self.assertNotIn("/menu/", repr(page))
+
+    def test_the_cover_of_the_link_preview_has_no_links(self):
+        site = F.site()
+        site["events"]["dinner"]["links"]["menu"]["visible"] = True
+        cover = _page.site_cover(site, F.settings())
+        self.assertEqual(cover["cover"]["event"]["links"], [])
+        self.assertNotIn("{token}", repr(cover))
 
 
 class TextTests(unittest.TestCase):

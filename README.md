@@ -155,7 +155,8 @@ tests/                 автотесты (unittest, стандартная би
 
 ```
 python3 build.py build    [--data DIR] [--media DIR] [--out DIR] [--base-path PATH]
-                          [--site-name NAME] [--chrome PATH] [--no-link-preview-image]
+                          [--allow-path PATH]… [--site-name NAME] [--chrome PATH]
+                          [--no-link-preview-image]
 python3 build.py validate [--data DIR] [--media DIR]
 python3 build.py token    [--prefix NAME]
 python3 build.py links    --url URL [--data DIR]
@@ -167,6 +168,7 @@ python3 build.py links    --url URL [--data DIR]
 | `--media` | `examples/media` рядом с `build.py` |
 | `--out` | `dist` относительно текущего каталога |
 | `--base-path` | `/`: содержимое `--out` публикуется в корне сайта |
+| `--allow-path` | не задан: каждая локальная ссылка страниц ведёт на файл результата ([2.1](#21-build--собрать-приглашения)) |
 | `--site-name` | переменная окружения `SITE_NAME`, иначе не задан (тега `og:site_name` нет) |
 | `--chrome` | переменная окружения `CHROME`, иначе стандартные места: на macOS `/Applications/Google Chrome.app/…` и `Chromium.app`, на Linux `google-chrome`, `google-chrome-stable`, `chromium`, `chromium-browser` в `PATH` |
 | `--no-link-preview-image` | переменная окружения `LINK_PREVIEW_IMAGE=off`, иначе картинка рисуется |
@@ -212,6 +214,37 @@ python3 build.py links    --url URL [--data DIR]
 ```
 python3 build.py build --data data --media media --out dist
 python3 build.py build --data data --media media --out dist/invite --base-path /invite
+```
+
+`--allow-path PATH` names a directory of the site that the build does not write
+itself — a neighbouring page of the site, such as the target of a link of an
+event ([3.2](#32-sitejson--общие-данные)). A link of the pages (`<a href>`,
+`<area href>`) under `PATH` is allowed and is **not** looked up in the output:
+whoever publishes the whole site checks that the page is there (section
+[5](#5-что-получается-в-dist-и-что-проверяется)). Only links are allowed:
+a resource under `PATH` (`src`, `poster`, `srcset`, `<link href>`, `url()` and
+`@import` in CSS) is still an error, and so is a link whose path is not plain
+(an empty segment, `.` or `..`). Rules:
+
+- the format is that of `--base-path`; a trailing `/` is dropped, repeats are
+  ignored, the option may be given several times;
+- `PATH` must lie apart from `--base-path`: it may not be `/`, the base path
+  itself, a directory above it, or — unless the base path is `/` — a directory
+  below it (the addresses under the base path are files of the output and are
+  checked against them as before);
+- at `--base-path /` `PATH` must not lead into the output either: its first
+  segment is neither `assets` nor the token of an invitation (letter case
+  aside). The first case is a usage error; the second one is known only once
+  the data is read: code 1, and the message names no token;
+- a bad value is a usage error: code 2, the value is not repeated;
+- without the option the build behaves exactly as before: a link outside
+  `--base-path` "points outside the output", at `--base-path /` it "does not
+  exist in the output"; the log does not mention the option;
+- `validate` knows no such option: it is a property of publishing, not of the
+  data.
+
+```
+python3 build.py build --data data --media media --out dist/invite --base-path /invite --allow-path /menu
 ```
 
 ### 2.2. `validate` — проверить данные, ничего не записывая
@@ -389,7 +422,9 @@ python3 tools/build_examples.py [--set data|data-venue-pending|all] [--out DIR] 
 ```
 
 Скрипт генерирует медиа-заглушки основного набора в `examples/media/` (в
-`.gitignore`), собирает наборы с `--base-path /` в `dist/data/` и
+`.gitignore`), собирает наборы с `--base-path /` и `--allow-path /menu` (ссылка
+«Меню ужина» в примерах ведёт в каталог вымышленного сайта, которого нет, — для
+вымышленных данных это допустимо) в `dist/data/` и
 `dist/data-venue-pending/` (по умолчанию оба) и печатает строки сборки, путь к
 приглашениям, команду просмотра `python3 -m http.server -d dist/<набор> 8000` и
 адреса всех страниц `http://localhost:8000/<token>/` с обращениями (данные
@@ -541,7 +576,7 @@ python3 -m http.server 8000             # http://localhost:8000/styleguide.html
 | `greeting` | строка | да | обращение, **одна строка**; без форм и подстановок |
 | `form` | `"ty"` или `"vy"` | да | форма обращения для текстов с формами ([3.6](#36-тексты-формы-обращения-и-подстановки)) |
 | `primaryEvent` | id события | нет | первостепенное событие гостя; по умолчанию — `mainEvent` из `site.json` |
-| `events` | объект | нет | `{ "<id события>": { "visible": …, "note": … } }` |
+| `events` | объект | нет | `{ "<id события>": { "visible": …, "note": …, "links": { "<id ссылки>": { "visible": … } } } }` |
 | `sections` | объект | нет | `{ "<id секции>": { "visible": …, "note": …, "widgets": { "<id виджета>": { "visible": … } } } }` |
 
 Переопределения — белый список, других полей нет:
@@ -550,6 +585,11 @@ python3 -m http.server 8000             # http://localhost:8000/styleguide.html
   (`"visible": false` там), или скрыть обычное;
 - `events.<id>.note` — **приписка к событию**: выводится в карточке события в
   виджете «События» (например, «Напишите нам про аллергию»);
+- `events.<id>.links.<id>.visible` — switches a link of the event
+  ([3.2](#32-sitejson--общие-данные)) on or off for this guest; a link is hidden
+  by default. A link that the event does not declare is an error (its key is
+  shown only when it is an id declared in `site.json`, otherwise
+  `<unknown key>`); a link holds `visible` and nothing else;
 - `sections.<id>.visible` — включить секцию, скрытую по умолчанию, или скрыть
   обычную;
 - `sections.<id>.note` — **приписка к секции**: карточка в конце секции.
@@ -568,6 +608,7 @@ python3 -m http.server 8000             # http://localhost:8000/styleguide.html
   не формы «ты/вы» (она и так пишется одному человеку);
 - предупреждение, а не ошибка: приписка к скрытому у гостя событию или
   секции; приписка к событию, которое не показано ни в одном виджете «События»;
+  включённая гостю ссылка (`links.<id>.visible: true`) у такого же события;
   включённая гостю секция, которой нечего показать.
 
 Ключи в `events` и `sections` гостя — id из `site.json`. В сообщениях о записях
@@ -660,6 +701,7 @@ python3 -m http.server 8000             # http://localhost:8000/styleguide.html
 | `schedule` | id программы | нет | программа события (в карточке) |
 | `description` | текст | нет | многострочный — можно; формы и подстановки работают |
 | `visible` | булево | нет | по умолчанию `true`; `false` — событие только для тех, у кого оно включено |
+| `links` | объект | нет | buttons of the card of the event that lead to other pages of the site, see "Links of an event" below |
 
 `start` и `end` — строгое подмножество ISO 8601: `ГГГГ-ММ-ДДTчч:мм[:сс[.мс]]` и
 обязательное смещение (`+03:00`, `-05:00` или `Z`). Смещение обязательно: без
@@ -693,6 +735,43 @@ past/now marks use start + 6 h`. Окончание события не зави
 определяет дату на обложке, виджет даты без `event`, таймер и значения
 подстановок `{eventDate}`, `{eventTime}`, `{eventTitle}`, `{eventPlace}`; в виджете
 «События» его карточка выделена рамкой.
+
+#### Links of an event (`events.<id>.links`)
+
+An event may hold links: buttons in its card that lead to other pages of the
+same site — a page of the site that the build does not write. A link is shown
+**only to the guests who have it switched on** (`events.<id>.links.<id>.visible`
+in `invitations.json`, [3.1](#31-invitationsjson--массив-приглашений)), unless
+`site.json` makes it visible by default. The key is the id of the link
+([3.7](#37-id--не-место-для-имён)); the buttons follow the order of the keys.
+
+| Field | Type | Required | Rules |
+|---|---|---|---|
+| `text` | string | yes | the label of the button; one line, as the `title` of the event: no forms of address, no `{` or `}` (nothing is filled in) |
+| `href` | string | yes | a path from the root of the site to a directory, see below |
+| `visible` | boolean | no | `false` by default: the link is shown to the guests who switch it on; `true` shows it to everybody who sees the event (no warning) |
+
+The rule of `href`: `/`, then segments, each followed by `/` (so the path ends
+with `/`: it leads to the page of a directory). A segment is `A–Z`, `a–z`,
+`0–9`, `_`, `-`, or exactly `{token}` — the token of the guest, filled in for
+every page; `{token}` may be used at most once and only as a whole segment. At
+most 200 characters. Anything else is an error, and the value is never
+quoted: a scheme or a host, `//`, `.` and `..`, `?`, `#`, `%`, spaces, `{token}`
+inside a segment, a path without the trailing `/`, `/` alone. An unknown field
+of a link is an error with a hint.
+
+```json
+"dinner": { "title": "Праздничный ужин", "location": "manor", "start": "2030-06-15T16:00:00+03:00",
+            "links": { "menu": { "text": "Меню ужина", "href": "/menu/{token}/" } } }
+```
+
+Only the "Events" widget shows the links (the date widget and the cover do
+not). The page of a guest holds his token only in the `href` of the links
+switched on for him — the address of the page holds it anyway; other pages and
+`assets/` never do. Such a link leads outside the output of the build, so the
+build needs `--allow-path` for its directory
+([2.1](#21-build--собрать-приглашения)); without it the link fails the check of
+the output.
 
 #### Места (`locations.<id>`)
 
@@ -1161,6 +1240,34 @@ Id **видны**: в атрибутах `id` разметки и в сообщ�
 "events": { "brunch": { "visible": true } }
 ```
 
+**A link to another page of the site, switched on by hand.** The event
+declares the link once, hidden by default; `{token}` makes the address
+personal (e.g. a page of the site made for this guest):
+
+```json
+"dinner": { "title": "Праздничный ужин", "location": "manor", "start": "2030-06-15T16:00:00+03:00",
+            "links": { "menu": { "text": "Меню ужина", "href": "/menu/{token}/" } } }
+```
+
+The guests who should see it get it switched on:
+
+```json
+{ "token": "…", "greeting": "Дорогой Дэйв!", "form": "ty",
+  "events": { "dinner": { "links": { "menu": { "visible": true } } } } }
+```
+
+The button «Меню ужина» appears in the card of the dinner of these guests only,
+right after «Добавить в календарь», and leads to `/menu/<their token>/`. The
+build does not write that page, so the directory is allowed explicitly:
+
+```
+python3 build.py build --data data --media media --out dist/invite --base-path /invite --allow-path /menu
+```
+
+Whether the page exists is up to whoever publishes the whole site. A link
+switched on for a guest who does not see the event, or whose page shows the
+event in no "Events" widget, is a warning.
+
 **Первостепенное событие.** Кого зовут только на регистрацию, у того
 первостепенным должно быть оно — обложка, дата, таймер и `{eventDate}` возьмут
 его время:
@@ -1495,7 +1602,9 @@ Id **видны**: в атрибутах `id` разметки и в сообщ�
 в разные дни), `icsPath` (`<base-path>/assets/<mediaDir>/<hash>.ics` — календарный файл
 события, [5](#5-что-получается-в-dist-и-что-проверяется)), `location` (место,
 `nested: true`), `program` — `{domId, items[], nested: true}` или `null`, если
-программы нет.
+программы нет, `links[]` — ссылки события, видимые гостю, по порядку ключей:
+`{id, href, text}`, в `href` `{token}` заменён токеном гостя (`[]`, если ссылок
+нет; `domId` у ссылки нет).
 
 **Место:** `id`, `domId`, `ready`, `name`, `address`, `description`,
 `mapLinks` (`google`, `yandex`, `apple` — готовая ссылка или `""`),
@@ -1581,7 +1690,7 @@ fragments/
   sections/custom.html       каркас обычной секции
   widgets/text.html          текст: variant body | lead | signature
   widgets/date.html          дата события (по умолчанию первостепенного), таймер, кнопка календаря
-  widgets/events.html        события: список вкладок (скрыт без скрипта) и карточки
+  widgets/events.html        события: список вкладок (скрыт без скрипта) и карточки (кнопки календаря и ссылок)
   widgets/location.html      карточка места
   widgets/schedule.html      программа отдельным виджетом (пункты — h3)
   widgets/media.html         галерея: layout grid | ribbon | single
@@ -1644,6 +1753,20 @@ Id из реестров сами по себе не используются: �
 странице дважды (в виджете даты и среди событий), а путь уникален всегда. На
 всякий случай сборка всё равно проверяет дерево каждой страницы и при повторе
 id останавливается с ошибкой.
+
+**The calendar and the links in the card of an event** (`widgets/events.html`).
+The head of the card ends with the paragraph of the calendar file; every link
+of the event that the guest sees ([4.4](#44-дерево-страницы), `links[]`)
+follows it as a paragraph of its own, on the same line of the fragment:
+
+```html
+<p class="events__actions"><a class="btn btn--secondary" href="{{.icsPath}}" type="text/calendar">Добавить в календарь</a></p><!-- each:.links --><p class="events__actions"><a class="btn btn--secondary" href="{{.href}}">{{.text}}</a></p><!-- endeach -->
+```
+
+A paragraph of its own keeps two buttons from touching when they wrap on a
+phone: the existing spacing of `.events__head > .events__actions` applies, the
+styles are unchanged. A card without links is byte for byte what it was. The
+date widget and the cover show no links.
 
 **Уровни заголовков:** h1 — обложка; h2 — секция; h3 — событие, название
 места в виджете места, пункты отдельного виджета программы; h4 — место
@@ -1835,7 +1958,10 @@ maps, ни файлов витрины, ни фрагментов шаблона
   инструкций обработки; внешние ссылки — только на три картографических сервиса
   и только с `target`/`rel`; каждый локальный адрес лежит под `--base-path`
   (иначе — «points outside the output») и без него указывает на существующий
-  файл сборки (адрес `/` — корень сайта — в результат не входит); нет текста,
+  файл сборки (адрес `/` — корень сайта — в результат не входит), кроме ссылок
+  `<a>`/`<area>` под `--allow-path`: их сборка с файлами результата не
+  сопоставляет — их проверяет тот, кто публикует сайт целиком
+  ([2.1](#21-build--собрать-приглашения)); нет текста,
   который разборщик видит текстом, а браузер прочитал бы как разметку (см.
   [4.3](#43-чего-нельзя-в-шаблоне));
 - **CSS** — `url()` и `@import` указывают на существующие локальные файлы:
@@ -2471,6 +2597,10 @@ ffmpeg -ss 00:00:01 -i proposal.mp4 -frames:v 1 -update 1 -q:v 3 proposal-poster
 `/invite` (`build --out <сайт>/invite --base-path /invite`), и для Cloudflare
 Pages.
 
+The pages that the links of the invitations lead to under `--allow-path` are
+the site's as well: the build does not look for them, so the site checks that
+every such link has its page.
+
 **Заголовки и CSP.** Образец `_headers` в корне сайта (синтаксис Cloudflare
 Pages):
 
@@ -2599,6 +2729,11 @@ CSP работает потому, что страница по построен
   решения»): адрес и картинка уходят на серверы мессенджера;
 - всё, что гостю не показано (секции, виджеты, события, приписки других
   гостей), вырезается до рендера: этого нет в HTML его страницы;
+- the token of a guest is in the HTML of his own page only in the `href` of the
+  links of events switched on for him (`{token}`,
+  [3.2](#32-sitejson--общие-данные)): the address of the page holds it anyway,
+  and `Referrer-Policy: no-referrer` does not pass it on when the guest follows
+  a link. Other pages and `assets/` never hold it;
 - календарные файлы — по одному на событие для всего сайта, без обращения и
   приписок, в каталоге медиа под хэшем содержимого с ключом из всех токенов;
   ссылка на файл есть только у гостей, которым событие видно, а вычислить имя
@@ -2632,12 +2767,12 @@ CSP работает потому, что страница по построен
 | Chrome есть на раннере и запускается headless от обычного пользователя, с песочницей, как его запускает сборка (печать версии, пустая страница; нет или не запустился — ошибка с выводом Chrome): им сборка рисует картинку превью, и тесты с настоящим браузером идут после этого шага, а не пропускаются | `google-chrome --version && google-chrome --headless=new --disable-gpu --dump-dom about:blank` |
 | тесты | `python3 -m unittest` |
 | генерация медиа-заглушек (при необходимости ставится `ffmpeg`) | `python3 tools/gen_example_media.py` |
-| проверка и сборка основного примера (с `SITE_NAME=Example`) | `python3 build.py validate && SITE_NAME=Example python3 build.py build --out /tmp/dist` |
+| проверка и сборка основного примера (с `SITE_NAME=Example` и `--allow-path /menu`: ссылка «Меню ужина» ведёт в каталог вымышленного сайта) | `python3 build.py validate && SITE_NAME=Example python3 build.py build --allow-path /menu --out /tmp/dist` |
 | проверка и сборка примера без площадки и медиа | `python3 build.py build --data examples/data-venue-pending --media examples/media-none --out /tmp/dist-pending` |
-| сборка основного примера под префиксом — раскладка, которой пользуется настоящий сайт (с `SITE_NAME=Example`) | `SITE_NAME=Example python3 build.py build --base-path /invite --out /tmp/site/invite` |
+| сборка основного примера под префиксом — раскладка, которой пользуется настоящий сайт (с `SITE_NAME=Example` и `--allow-path /menu`) | `SITE_NAME=Example python3 build.py build --base-path /invite --allow-path /menu --out /tmp/site/invite` |
 | теги превью ссылки на страницах основного примера (обе сборки): `og:image` — `/assets/<mediaDir>/<хэш>.jpg` у обычной сборки и `/invite/assets/…` у сборки под префиксом, файл есть внутри сборки, это JPEG 1200×630 не больше 300 KB, по `assets/og.*` ничего нет, есть `og:site_name`, нет `og:url`, нет `://` в `<meta>` | `grep -o '<meta property="og:[^>]*>' /tmp/site/invite/*/index.html` |
 | проверка результата (все три сборки): нет `index.html`, `404.html`, `_headers`, `robots.txt`, нет `*.json`, `*.map`, файлов витрины и страницы-превью, число страниц `*/index.html` вне `assets/` равно числу приглашений | `ls /tmp/dist` — только `assets` и каталоги страниц |
-| воспроизводимость: две сборки подряд дают одинаковые контрольные суммы | собрать дважды в разные каталоги и сравнить `sha256` файлов |
+| воспроизводимость: две сборки подряд (основной пример, `--allow-path /menu`) дают одинаковые контрольные суммы | собрать дважды в разные каталоги и сравнить `sha256` файлов |
 | рабочее дерево осталось чистым | `git status --porcelain` |
 
 Chrome на `ubuntu-24.04` — уже установленный на раннере `google-chrome` (пакет
