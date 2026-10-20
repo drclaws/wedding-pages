@@ -123,7 +123,8 @@ jobs:
         run: |
           set -euo pipefail
           python build.py validate
-          python build.py build --out "$RUNNER_TEMP/dist"
+          # the link to the menu leads to a directory of the fictional site, not built here
+          python build.py build --allow-path /menu --out "$RUNNER_TEMP/dist"
 
       - name: Validate and build the set without a venue and media
         run: |
@@ -137,7 +138,7 @@ jobs:
         run: |
           set -euo pipefail
           # the layout a real site uses: the invitations in a directory of the site
-          python build.py build --base-path /invite --out "$RUNNER_TEMP/site/invite"
+          python build.py build --base-path /invite --allow-path /menu --out "$RUNNER_TEMP/site/invite"
 
       - name: Link preview tags
         run: |
@@ -207,7 +208,7 @@ jobs:
           SITE_NAME: Example
         run: |
           set -euo pipefail
-          python build.py build --out "$RUNNER_TEMP/dist2"
+          python build.py build --allow-path /menu --out "$RUNNER_TEMP/dist2"
           tree_hash() {
             (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum)
           }
