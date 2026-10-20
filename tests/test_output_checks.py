@@ -651,6 +651,27 @@ class AllowPathTests(FailingBuildTestCase):
         )
         self.assertNotIn("SecretWord", result.stderr)
 
+    def test_an_allowed_path_must_not_lead_into_the_output(self):
+        # a link into assets/ or to a page must still be looked up
+        self.add_to_template('<a href="/assets/nope/x.ics">x</a>')
+        result = self.build_in_process("--allow-path", "/assets")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("argument --allow-path: must not lead into assets/ of the output", result.stderr)
+        self.assertEqual(tree_digest(self.out), self.previous)
+        for path in (f"/{support.TOKEN_B}", f"/{support.TOKEN_B.lower()}/x"):
+            with self.subTest(path=path[:6]):
+                self.assertBuildFails(
+                    "error: an allowed path (--allow-path) must not lead into the directory of "
+                    "a page of the output: the addresses there are files of the output and are "
+                    "checked against them\n",
+                    extra=("--allow-path", path),
+                )
+        # under another base path both are pages of the site around the output
+        self.add_to_template(f'<a href="/assets/x/">x</a> <a href="/{support.TOKEN_B}/">y</a>')
+        self.assertBuildPasses(
+            *self.BASE, "--allow-path", "/assets", "--allow-path", f"/{support.TOKEN_B}"
+        )
+
     def test_a_link_that_is_not_plain_is_an_error(self):
         for href in ("/menu/../SecretWord/", "/menu//SecretWord/", "/menu/./SecretWord/",
                      "/menu/%2e%2e/SecretWord/"):  # fmt: skip
@@ -678,16 +699,11 @@ class AllowPathUnitTests(TempDirTestCase):
                     build.check_html(document, exists, base_path=base_path, allow_paths=("/menu",)),
                     [],
                 )
-                # a trailing '/' and the root itself
+                # a trailing '/' is dropped
                 self.assertEqual(
                     build.check_html(document, exists, base_path=base_path, allow_paths=("/menu/",)),
                     [],
                 )
-                self.assertEqual(
-                    [message for _line, message in build.check_html(
-                        document, exists, base_path=base_path, allow_paths=("/",))],
-                    [without],
-                )  # fmt: skip
         problems = build.check_html(
             '<img src="/menu/x.png" alt="">\n<a href="/menu/a/../b/">x</a>', exists,
             allow_paths=("/menu",),
@@ -696,6 +712,78 @@ class AllowPathUnitTests(TempDirTestCase):
             problems,
             [(1, "<img src>: '/menu/….png' does not exist in the output"),
              (2, "<a href>: '/menu/…' is not a plain absolute path")],
+        )  # fmt: skip
+
+    #: (allow_paths, base_path, the start of the problem): values the public
+    #: checks refuse themselves, never quoting them.
+    REFUSED = (
+        (("/",), "/", "must not be '/'"),
+        (("/",), "/invite", "must not be '/'"),
+        (("/invite",), "/invite", "must not be the --base-path"),
+        (("/invite/",), "/invite/", "must not be the --base-path"),
+        (("/a",), "/a/b", "must not contain the --base-path"),
+        (("/invite/menu",), "/invite", "must not lie under the --base-path"),
+        (("/assets",), "/", "must not lead into assets/ of the output"),
+        (("/menu", "/Assets/fonts"), "/", "must not lead into assets/ of the output"),
+        (("menu",), "/", "must be a path from the root of the site"),
+    )
+
+    def test_check_html_refuses_a_bad_allowed_path(self):
+        exists = exists_in("assets/app.css")
+        for allow_paths, base_path, problem in self.REFUSED:
+            with self.subTest(allow_paths=allow_paths, base_path=base_path):
+                with self.assertRaises(ValueError) as caught:
+                    build.check_html('<a href="/x/">x</a>', exists, base_path=base_path,
+                                     allow_paths=allow_paths)  # fmt: skip
+                self.assertTrue(
+                    str(caught.exception).startswith(f"an allowed path (allow_paths) {problem}"),
+                    caught.exception,
+                )
+        # with the base path itself allowed, nothing under it would be looked up any more
+        with self.assertRaises(ValueError):
+            build.check_html('<a href="/invite/nope/">x</a>', exists, base_path="/invite",
+                             allow_paths=("/invite",))  # fmt: skip
+        # outside the output an address named like the shared files is a page of the site
+        self.assertEqual(
+            build.check_html('<a href="/assets/x/">x</a>', exists, base_path="/invite",
+                             allow_paths=("/assets",)),
+            [],
+        )  # fmt: skip
+
+    def make_output(self) -> Path:
+        out = self.tmp / "dist"
+        (out / support.TOKEN_A).mkdir(parents=True)
+        (out / support.TOKEN_A / "index.html").write_text(
+            f'<p>x</p>\n<a href="/menu/{support.TOKEN_A}/">x</a>\n', encoding="utf-8"
+        )
+        (out / "assets").mkdir()
+        (out / "assets" / "app.css").write_text("a{}", encoding="utf-8")
+        return out
+
+    def test_check_output_refuses_a_bad_allowed_path(self):
+        out = self.make_output()
+        refused = (
+            *self.REFUSED,
+            # the directory of a page of the output, letter case aside
+            ((f"/{support.TOKEN_A}",), "/",
+             "must not lead into the directory of a page of the output"),
+            ((f"/{support.TOKEN_A.lower()}/x",), "/",
+             "must not lead into the directory of a page of the output"),
+        )  # fmt: skip
+        for allow_paths, base_path, problem in refused:
+            with self.subTest(allow_paths=allow_paths[0][:12], base_path=base_path):
+                with self.assertRaises(ValueError) as caught:
+                    build.check_output(out, [support.TOKEN_A], base_path=base_path,
+                                       allow_paths=allow_paths)  # fmt: skip
+                message = str(caught.exception)
+                self.assertTrue(message.startswith(f"an allowed path (allow_paths) {problem}"), message)
+                self.assertNotIn(support.TOKEN_A[:5], message)
+                self.assertNotIn(support.TOKEN_A[:5].lower(), message.lower())
+        # under another base path the directory of the page is outside the output
+        self.assertEqual(
+            build.check_output(out, [support.TOKEN_A], base_path="/invite",
+                               allow_paths=("/menu", f"/{support.TOKEN_A}")).files,
+            2,
         )  # fmt: skip
 
     def test_check_output(self):
@@ -746,12 +834,25 @@ class AllowPathUnitTests(TempDirTestCase):
             ("/invite/", "/invite", "must not be the --base-path"),
             ("/menu", "/menu/x", "must not contain the --base-path"),
             ("/invite/menu", "/invite", "must not lie under the --base-path"),
+            # at the root of the site the output itself is not a directory of the site
+            ("/assets", "/", "must not lead into assets/ of the output"),
+            ("/ASSETS/fonts", "/", "must not lead into assets/ of the output"),
+            ("/EveToken-x", "/", "must not lead into the directory of a page of the output"),
+            ("/evetoken-x/menu", "/", "must not lead into the directory of a page of the output"),
         ):
             with self.subTest(value=value, base_path=base_path):
                 with self.assertRaises(ValueError) as caught:
-                    check(["/other", value], base_path)
+                    check(["/other", value], base_path, ["EveToken-X"])
                 self.assertTrue(str(caught.exception).startswith(problem), caught.exception)
-                self.assertNotIn(value.strip("/"), str(caught.exception))
+                if "assets" not in value.lower():  # the name of the code, not the value
+                    self.assertNotIn(value.strip("/"), str(caught.exception))
+                self.assertNotIn("EveToken", str(caught.exception))
+                self.assertNotIn("evetoken", str(caught.exception))
+        # a neighbour of the output: allowed
+        self.assertEqual(check(["/assets-old", "/EveToken-xy"], "/", ["EveToken-X"]),
+                         ("/assets-old", "/EveToken-xy"))  # fmt: skip
+        self.assertEqual(check(["/assets", "/EveToken-x"], "/invite", ["EveToken-X"]),
+                         ("/assets", "/EveToken-x"))  # fmt: skip
 
     def test_build_site_refuses_a_bad_allowed_path(self):
         with self.assertRaises(build.BuildError) as caught:

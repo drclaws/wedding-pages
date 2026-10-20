@@ -47,7 +47,9 @@ so other tools (tests, preview scripts) can reuse the public helpers:
 
 `check_output` and `check_html` take the keyword `allow_paths` (default `()`,
 the behaviour without it is unchanged): the directories of `build
---allow-path`, under which links are allowed and not looked up.
+--allow-path`, under which links are allowed and not looked up.  They check
+the values themselves (`check_allow_paths`): a refused one raises
+`ValueError`.
 
 Exit codes: 0 - success, 1 - data/build error, 2 - bad command line.
 """
@@ -1328,18 +1330,23 @@ def _is_under(path: str, directory: str) -> bool:
 
 
 def check_allow_paths(
-    values: Iterable[Any], base_path: str = DEFAULT_BASE_PATH
+    values: Iterable[Any], base_path: str = DEFAULT_BASE_PATH, pages: Iterable[str] = ()
 ) -> tuple[str, ...]:
     """`build --allow-path`: directories of the site that the build does not
     write and that the links of the pages may lead to.
 
     Each value is checked by `check_allow_path`; repeats are dropped, the
-    order is kept.  A value must lie apart from `base_path` (normalised): not
-    the same path, not above it, and not below it unless the base path is `/`
-    - the addresses under the base path are files of the output and are
-    looked up as before.  `ValueError` names the problem, never the value.
+    order is kept.  A value must lie apart from the output and from
+    `base_path` (normalised): not the same path, not above it, and not below
+    it unless the base path is `/` - the addresses under the base path are
+    files of the output and are looked up as before.  At the base path `/`
+    a value must not lead into the output either: its first segment is
+    neither `assets` nor one of `pages`, the tokens of the invitations (the
+    directories of their pages; letter case aside, as on a file system that
+    ignores it).  `ValueError` names the problem, never the value.
     """
     paths: list[str] = []
+    page_dirs = {token.lower() for token in pages if isinstance(token, str)}
     for value in values:
         path = check_allow_path(value)
         if path == base_path:
@@ -1356,6 +1363,18 @@ def check_allow_paths(
             raise ValueError(
                 "must not lie under the --base-path: the addresses under it are files of "
                 "the output and are checked against them"
+            )
+        first = path.split("/")[1].lower() if base_path == "/" else None
+        if first == ASSETS_DIRNAME:
+            raise ValueError(
+                f"must not lead into {ASSETS_DIRNAME}/ of the output: the addresses there "
+                "are files of the output and are checked against them"
+            )
+        if first in page_dirs:
+            # the token itself is never shown
+            raise ValueError(
+                "must not lead into the directory of a page of the output: the addresses "
+                "there are files of the output and are checked against them"
             )
         if path not in paths:
             paths.append(path)
@@ -1910,18 +1929,25 @@ def _within_base(url: str, base_path: str = DEFAULT_BASE_PATH) -> bool:
     return not prefix or path == prefix or path.startswith(f"{prefix}/")
 
 
+def _is_plain_path(path: str) -> bool:
+    """True when a decoded path from the root has no empty, `.` or `..`
+    segment and no `\\`; a trailing `/` stands for the index page of a
+    directory."""
+    segments = path.split("/")[1:]
+    if path.endswith("/"):
+        segments = segments[:-1]
+    return "\\" not in path and not any(segment in ("", ".", "..") for segment in segments)
+
+
 def _local_file(url: str, base_path: str = DEFAULT_BASE_PATH) -> str | None:
     """Output file that a root-absolute URL points at; None if it is not plain
     or lies outside `base_path` (the output is published under it)."""
     if not _within_base(url, base_path):
         return None
     path = _url_path(url)[len(base_path.rstrip("/")) :] or "/"
-    if path.endswith("/"):
-        path += PAGE_FILE
-    segments = path.split("/")[1:]
-    if any(segment in ("", ".", "..") for segment in segments) or "\\" in path:
+    if not _is_plain_path(path):
         return None
-    return "/".join(segments)
+    return (path + PAGE_FILE if path.endswith("/") else path)[1:]
 
 
 def _data_url_type(url: str) -> str:
@@ -1998,11 +2024,9 @@ class _UrlPolicy:
         #: local URL must lie under it.
         self.base_path = base_path
         #: Directories of the site the build does not write (`build
-        #: --allow-path`): a link under one of them is not looked up.  `/`
-        #: would allow everything and is never one of them.
-        self.allow_paths = tuple(
-            path.rstrip("/") for path in allow_paths if path.rstrip("/")
-        )
+        #: --allow-path`), as `check_allow_paths` returns them: a link under
+        #: one of them is not looked up.
+        self.allow_paths = tuple(allow_paths)
         self.problems: list[tuple[int, str]] = []
 
     def _allowed_directory(self, url: str) -> str | None:
@@ -2139,11 +2163,7 @@ class _UrlPolicy:
         when its path is plain, never looked up.  True when it is settled."""
         if self._allowed_directory(url) is None:
             return False
-        path = _url_path(url)
-        segments = path.split("/")[1:]
-        if path.endswith("/"):
-            segments = segments[:-1]  # a directory: its index page
-        if any(segment in ("", ".", "..") for segment in segments) or "\\" in path:
+        if not _is_plain_path(_url_path(url)):
             self.problem(line, f"{where}: '{self.show_path(url)}' is not a plain absolute path")
         return True
 
@@ -2419,6 +2439,16 @@ class _HtmlChecker(HTMLParser):
         self.policy.problem(self.line, "HTML comment left in the output")
 
 
+def _checked_allow_paths(
+    allow_paths: Sequence[str], base_path: str, pages: Iterable[str] = ()
+) -> tuple[str, ...]:
+    """`check_allow_paths` for the public checks: `ValueError` with a subject."""
+    try:
+        return check_allow_paths(allow_paths, base_path.rstrip("/") or "/", pages)
+    except ValueError as exc:
+        raise ValueError(f"an allowed path (allow_paths) {exc}") from None
+
+
 def check_html(
     document: str,
     exists: Callable[[str], bool],
@@ -2432,12 +2462,16 @@ def check_html(
     `is_dir` does the same for directories (only used to word the messages).
     The output is published under `base_path`: a local URL outside it points
     outside the output, one inside it is looked up without the base path.
-    A link (`<a href>`, `<area href>`) under one of `allow_paths` (see
-    `check_allow_paths`) is allowed when its path is plain and is not looked
-    up; a resource there is checked as any other.
+    A link (`<a href>`, `<area href>`) under one of `allow_paths` is allowed
+    when its path is plain and is not looked up; a resource there is checked
+    as any other.  `allow_paths` are checked and normalised against
+    `base_path` by `check_allow_paths` first: a value it refuses (`/`, the
+    base path, a path that leads into the output, a bad format) raises
+    `ValueError` that names the problem, never the value.
     Whatever the parser may read differently from a browser is an error;
     so is any absolute URL, `<meta>` links (`og:image`) included.
     """
+    allow_paths = _checked_allow_paths(allow_paths, base_path)
     policy = _UrlPolicy(exists, is_dir, base_path=base_path, allow_paths=allow_paths)
     leftover = _LEFTOVER_RE.search(document)
     if leftover:
@@ -2760,7 +2794,9 @@ def check_output(
       only to the map services and with `target`/`rel`; every local URL
       lies under `base_path`, the path the output is published under, and
       resolves to a file of the output - but a link under one of
-      `allow_paths`, which is not looked up (see `check_html`);
+      `allow_paths`, which is not looked up (see `check_html`; the values are
+      checked by `check_allow_paths` against `base_path` and the pages first,
+      a refused one raises `ValueError` before anything is read);
     * CSS: `url()` and `@import` point at local files that exist (relative
       URLs of a CSS file are resolved against that file, root-absolute ones
       must lie under `base_path`); no CSS escapes that could hide a URL;
@@ -2770,6 +2806,8 @@ def check_output(
     Messages never quote page text, and the directories of the pages are
     shown as `…` (`_output_path`): they are named after the tokens.
     """
+    pages = list(pages)
+    allow_paths = _checked_allow_paths(allow_paths, base_path, pages)
     root = Path(out_dir)
     try:
         files, directories, problems = _scan_output(root)
@@ -3776,8 +3814,10 @@ def build_site(
     contents of `out_dir` are published (`check_base_path`): every URL of the
     output starts with it.  `allow_paths` are directories of the site that
     the build does not write and that links of the pages may lead to
-    (`check_allow_paths`).  `site_name` is the name of the site in link
-    previews (`og:site_name`, see `check_site_name`); "" writes no such tag.
+    (`check_allow_paths`; at the base path `/` none of them may lead into
+    `assets/` or the directory of a page).  `site_name` is the name of the
+    site in link previews (`og:site_name`, see `check_site_name`); "" writes
+    no such tag.
     `preview` says whether the link preview image is rendered and with which
     browser (`link_preview`).
     """
@@ -3794,6 +3834,13 @@ def build_site(
     check_out_dir(out_dir, code_dir=code_dir, data_dir=data_dir, media_dir=media_dir)
 
     data = load_data(data_dir, media_dir, report, assets_dir=assets_dir)
+    try:
+        # at the base path `/` an allowed path must not lead into a page either
+        check_allow_paths(
+            allow_paths, base_path, [invitation["token"] for invitation in data.invitations]
+        )
+    except ValueError as exc:
+        raise BuildError(f"an allowed path (--allow-path) {exc}") from None
     log(
         f"build: {len(data.invitations)} invitation(s), {report.media_files} media "
         f"file(s) validated (data: {display_path(data_dir)}, media: {display_path(media_dir)})"
@@ -4183,7 +4230,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="a directory of the site that the build does not write, e.g. a page of the "
         "site next to the invitations: links of the pages under it are allowed and not "
         "looked up in the output (resources there are still errors); apart from "
-        "--base-path, never '/'; may be repeated",
+        "--base-path and from the output, never '/'; may be repeated",
     )
     build_cmd.add_argument(
         "--site-name",

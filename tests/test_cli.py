@@ -553,6 +553,7 @@ class BuildCommandTests(CliTestCase):
              "must not lie under the --base-path"),
             (("--base-path", "/zmenu/x", "--allow-path", "/zmenu"),
              "must not contain the --base-path"),
+            (("--allow-path", "/assets/zmenu"), "must not lead into assets/ of the output"),
             (("--allow-path", "/zmenu", "--allow-path", "zother"),
              "must be a path from the root of the site"),
         ):  # fmt: skip
