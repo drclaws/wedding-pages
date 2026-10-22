@@ -66,8 +66,9 @@ EVENT_FIELDS = (
 #: `primaryEvent` in the root has the fields of every event; its DOM id is ""
 #: (and so are those of its place and its program): it is not on the page.
 PRIMARY_EVENT_FIELDS = EVENT_FIELDS
-#: A link of an event that the guest sees (`links[]`).
-LINK_FIELDS = ("id", "href", "text")
+#: A link of an event on the page of the guest (`links[]`): a button
+#: (`pending` "") or the text in its place (`href` and `text` "").
+LINK_FIELDS = ("id", "href", "text", "pending")
 #: The pages link to this directory of their fictional site, which the build
 #: does not write (`build.py build --allow-path`).
 ALLOW_PATHS = ("/menu",)
@@ -369,7 +370,7 @@ class PageTree:
         overrides = self.guest.get("events", {}).get(event_id, {}).get("links", {})
         return [
             node(LINK_FIELDS, id=link_id, text=link["text"],
-                 href=link["href"].replace("{token}", self.guest["token"]))
+                 href=link["href"].replace("{token}", self.guest["token"]), pending="")
             for link_id, link in EVENTS[event_id].get("links", {}).items()
             if overrides.get(link_id, {}).get("visible", link.get("visible", False))
         ]
@@ -609,7 +610,7 @@ def bare_location(full: bool, ready: bool = True, compact: bool = False,
 
 
 def bare_link(link_id: str, text: str = "Ссылка") -> Strict:
-    return node(LINK_FIELDS, id=link_id, href=f"/menu/{link_id}-t0k3n/", text=text)
+    return node(LINK_FIELDS, id=link_id, href=f"/menu/{link_id}-t0k3n/", text=text, pending="")
 
 
 def bare_event(event_id: str, full: bool, primary: bool = False, with_dom_id: bool = True) -> Strict:

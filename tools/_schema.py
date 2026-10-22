@@ -135,10 +135,13 @@ EVENT_FIELDS = (
     "links",
 )
 #: Fields of a link of an event (`events.<id>.links.<id>`): a button in the
-#: card of the event that leads to another page of the site.
-LINK_FIELDS = ("text", "href", "visible")
+#: card of the event that leads to another page of the site, and the text
+#: that stands in its place while the link is not shown (`pending`).
+LINK_FIELDS = ("text", "href", "visible", "pending")
 #: Stands for the token of the invitation in the `href` of a link.
 TOKEN_PLACEHOLDER = "{token}"
+#: Its name, as the parser of texts sees it.
+_TOKEN_NAME = TOKEN_PLACEHOLDER[1:-1]
 MAX_LINK_HREF_LENGTH = 200
 _LINK_SEGMENT_RE = re.compile(r"[A-Za-z0-9_-]+")
 LOCATION_FIELDS = (
@@ -946,7 +949,7 @@ def link_href_problem(href: str) -> str | None:
 def _check_event_links(
     check: _Checker, event: dict, parts: Sequence[PathPart], event_id: str, index: SiteIndex
 ) -> None:
-    """`events.<id>.links`: `{ "<id>": { "text", "href", "visible" } }`."""
+    """`events.<id>.links`: `{ "<id>": { "text", "href", "visible", "pending" } }`."""
     if "links" not in event:
         index.event_links[event_id] = []
         return
@@ -986,7 +989,44 @@ def _check_event_links(
                 check.error((*link_parts, "href"), problem)
         # default: a link is hidden; an invitation switches it on
         check.value(link, "visible", "boolean", link_parts)
+        # default: no text in place of the button while the link is not shown
+        _check_link_pending(check, link, link_parts, index)
     index.event_links[event_id] = declared
+
+
+def _check_link_pending(
+    check: _Checker, link: dict, parts: Sequence[PathPart], index: SiteIndex
+) -> None:
+    """`pending` of a link: a text like the `description` of an event (forms
+    of address, named texts, placeholders), on one line, without `{token}`.
+
+    `{token}` gets a message of its own, and the other problems of that text
+    are reported once it is gone: one broken thing gives one message.
+    """
+    if "pending" not in link:
+        return
+    where = (*parts, "pending")
+    value = link["pending"]
+    variants = (
+        [(where, value)]
+        if isinstance(value, str)
+        else [((*where, form), value.get(form)) for form in FORMS]
+        if isinstance(value, dict)
+        else []
+    )
+    with_token = [
+        variant_parts
+        for variant_parts, text in variants
+        if isinstance(text, str) and _TOKEN_NAME in _placeholder_names(text)
+    ]
+    for variant_parts in with_token:
+        check.error(
+            variant_parts,
+            f"must not contain {TOKEN_PLACEHOLDER}: the text stands in place of the link "
+            "and holds no token",
+        )
+    if not with_token:
+        _check_text(check, link, "pending", parts, index, single_line=True)
 
 
 def _check_main_event(check: _Checker, site: dict, index: SiteIndex) -> None:

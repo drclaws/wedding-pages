@@ -8,7 +8,8 @@ of an event never depends on the other events.  Every field of the tree always e
 string, `[]`, `false` or `null` for an object.  Texts come ready: the form of
 address is picked and the placeholders are filled in.  The token of the
 invitation is in its tree only in the `href` of the links of events that are
-switched on for it.
+switched on for it; a link that is not shown may leave a text in its place
+(`pending`), which holds neither the token nor an address.
 
 Everything outside the data comes in through `PageSettings`: the URL of a
 media file and of the calendar file of an event, the facts of the media files (sizes, durations), the default
@@ -285,8 +286,10 @@ class _Page:
         }
 
     def links(self, event_id: str) -> list[dict]:
-        """The links of an event this invitation sees, in their order, with
-        `{token}` replaced by its token."""
+        """The links of an event on the page of this invitation, in their
+        order: a link it sees with `{token}` replaced by its token and
+        `pending` "", a hidden one with a text in its place (`pending`) as
+        that text alone, with `href` and `text` "" (no token, no address)."""
         token = self.invitation.get("token")
         if not isinstance(token, str):
             return []  # nobody in particular (the link preview page)
@@ -300,8 +303,17 @@ class _Page:
                         "id": link_id,
                         "href": link["href"].replace(TOKEN_PLACEHOLDER, token),
                         "text": link["text"],
+                        "pending": "",
                     }
                 )
+                continue
+            # default: a hidden link leaves nothing in its place unless it has
+            # a text for it
+            pending = self.registry_text(
+                link.get("pending"), ("events", event_id, "links", link_id, "pending")
+            )
+            if pending:
+                found.append({"id": link_id, "href": "", "text": "", "pending": pending})
         return found
 
     def program(self, raw: dict, event_dom_id: str) -> dict | None:
