@@ -1514,7 +1514,7 @@ class EventLinkTests(SchemaTestCase):
     """`events.<id>.links` in site.json."""
 
     def test_fields_of_a_link(self):
-        self.assertEqual(_schema.LINK_FIELDS, ("text", "href", "visible"))
+        self.assertEqual(_schema.LINK_FIELDS, ("text", "href", "visible", "pending"))
         self.assertIn("links", _schema.EVENT_FIELDS)
         self.assertIn("links", _schema.GUEST_EVENT_FIELDS)
         self.assertEqual(_schema.GUEST_LINK_FIELDS, ("visible",))
@@ -1631,6 +1631,97 @@ class EventLinkTests(SchemaTestCase):
         )
 
 
+#: A text in place of the link `menu` (fictional): the same shape as the
+#: description of an event.
+PENDING = {
+    "ty": "Меню появится здесь позже — мы тебе напишем",
+    "vy": "Меню появится здесь позже — мы вам напишем",
+}
+TOKEN_IN_PENDING = (
+    "must not contain {token}: the text stands in place of the link and holds no token"
+)
+
+
+class LinkPendingTests(SchemaTestCase):
+    """`events.<id>.links.<id>.pending`: the text in place of the button."""
+
+    def test_a_string_or_forms_of_address(self):
+        for value in ("Меню появится здесь позже", PENDING):
+            with self.subTest(value=value):
+                self.assertMessages(run(change_menu(pending=value)))
+
+    def test_named_texts_and_placeholders_as_in_a_description(self):
+        for value in (
+            "{text:announce} Меню — {eventTitle}, {eventDate}, {eventPlace}",
+            {"ty": "{greeting} Меню — позже", "vy": "{coupleNames}: меню — позже"},
+            "Меню {{скоро}}",
+        ):
+            with self.subTest(value=value):
+                self.assertMessages(run(change_menu(pending=value)))
+
+    def test_blank_is_no_text(self):
+        for value in ("", "   "):
+            with self.subTest(value=value):
+                self.assertMessages(run(change_menu(pending=value)))
+
+    def test_one_line(self):
+        for value, field, problem in (
+            ("Меню\nпозже", "pending", "must be a single line (no line breaks)"),
+            ({"ty": "Меню", "vy": "Меню\r\nпозже"}, "pending.vy",
+             "must be a single line (no line breaks)"),
+            # `texts.invite` has several lines
+            ("{text:invite}", "pending",
+             "must be a single line (no line breaks), but a text it uses has several lines"),
+        ):  # fmt: skip
+            with self.subTest(value=value):
+                self.assertOneError(run(change_menu(pending=value)), f"{MENU}.{field}' {problem}")
+
+    def test_the_token_is_an_error_of_its_own(self):
+        # one message for the field, whatever else is wrong with the text; the
+        # text is never quoted
+        for value, field in (
+            ("Меню {token}", "pending"),
+            ("Меню {token}, {token} и {foo}\nпозже", "pending"),
+            ({"ty": "Меню {token}", "vy": "Меню"}, "pending.ty"),
+        ):
+            with self.subTest(value=value):
+                report = run(change_menu(pending=value))
+                self.assertOneError(report, f"{MENU}.{field}' {TOKEN_IN_PENDING}")
+                self.assertNotIn("Меню", report.errors[0])
+        report = run(change_menu(pending={"ty": "{token}", "vy": "Меню {token}"}))
+        self.assertMessages(
+            report,
+            errors=[f"{MENU}.pending.ty' {TOKEN_IN_PENDING}", f"{MENU}.pending.vy' {TOKEN_IN_PENDING}"],
+        )
+        # a literal brace is text
+        self.assertMessages(run(change_menu(pending="Меню {{token}}")))
+
+    def test_the_problems_of_a_text(self):
+        available = (
+            "available: {coupleNames}, {greeting}, {rsvpDeadline}, {eventTitle}, {eventDate}, "
+            "{eventTime}, {eventPlace} (write '{{' for a literal brace)"
+        )
+        for value, problem in (
+            ("Меню {foo}", f"has an unknown placeholder at character 6; {available}"),
+            ("Меню {token", "has an unclosed '{' at character 6 (write '{{' for a literal brace)"),
+            ("{text:nope}", "refers to an unknown text 'nope' at character 1; known: announce, invite"),
+            (3, "must be a string or an object with the strings 'ty' and 'vy'"),
+            ({"ty": "Меню"}, "must have both 'ty' and 'vy' (missing 'vy')"),
+        ):
+            with self.subTest(value=value):
+                self.assertOneError(run(change_menu(pending=value)), f"{MENU}.pending' {problem}")
+
+        def without_deadline(site, invitations):
+            change_menu(pending="Меню до {rsvpDeadline}")(site, invitations)
+            site.pop("rsvpDeadline")
+
+        # (the text of the section `rsvp` uses it as well)
+        self.assertIn(
+            f"{MENU}.pending' uses {{rsvpDeadline}}, but 'rsvpDeadline' is not set",
+            run(without_deadline).errors,
+        )
+
+
 class GuestLinkTests(SchemaTestCase):
     """`events.<id>.links.<id>.visible` in invitations.json."""
 
@@ -1662,6 +1753,15 @@ class GuestLinkTests(SchemaTestCase):
     def test_only_visible(self):
         report = run(lambda s, i: i[1]["events"]["dinner"]["links"]["menu"].update(note="x"))
         self.assertOneError(report, f"{GUEST_2}: unknown field 'events.dinner.links.menu.note'")
+        # the text in place of a link belongs to site.json: one switch per guest
+        for value in ("Меню позже", PENDING):
+            with self.subTest(pending=value):
+                report = run(
+                    lambda s, i: i[1]["events"]["dinner"]["links"]["menu"].update(pending=value)
+                )
+                self.assertOneError(
+                    report, f"{GUEST_2}: unknown field 'events.dinner.links.menu.<unknown key>'"
+                )
         report = run(lambda s, i: i[1]["events"]["dinner"]["links"]["menu"].update(visble=True))
         self.assertOneError(
             report,

@@ -158,6 +158,13 @@ class BuildExamplesTests(TempDirTestCase):
         ]  # fmt: skip
         self.assertEqual(len(linked), 2)
         self.assertFalse((out / "menu").exists())
+        # the other six see the text in place of the button
+        with_text = [
+            token for token, _greeting in tokens("data")
+            if '<p class="events__actions card__text">' in (out / token / "index.html").read_text(encoding="utf-8")
+        ]  # fmt: skip
+        self.assertEqual(len(with_text), 6)
+        self.assertFalse(set(with_text) & set(linked))
         self.assertOnlyOutputAndMedia()
 
     def test_the_sets_are_built_with_the_allowed_path(self):

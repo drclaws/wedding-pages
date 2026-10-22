@@ -352,6 +352,38 @@ class PrivacyTests(ExamplePagesTestCase):
         # the link to the menu is switched on for two guests of the main set
         self.assertEqual(linked, 2)
 
+    def test_the_button_or_the_text_in_its_place(self):
+        site, invitations, files = self.built["data"]
+        menu = site["events"]["dinner"]["links"]["menu"]
+        with_button = []
+        for number, invitation in enumerate(invitations, start=1):
+            page = files[f"{invitation['token']}/index.html"]
+            button = f'<a class="btn btn--secondary" href="/menu/{invitation["token"]}/">{menu["text"]}</a>'
+            text = build.text_to_html(menu["pending"][invitation["form"]])
+            other = build.text_to_html(menu["pending"]["vy" if invitation["form"] == "ty" else "ty"])
+            with self.subTest(invitation=number):
+                self.assertNotIn(other, page)
+                if button in page:
+                    with_button.append(number)
+                    self.assertEqual(page.count(button), 1)
+                    self.assertNotIn(text, page)
+                else:
+                    # in place of the button, once: in the card of the dinner
+                    self.assertEqual(page.count(f'<p class="events__actions card__text">{text}</p>'), 1)
+                    self.assertEqual(page.count(text), 1)
+                    self.assertNotIn(f'>{menu["text"]}</a>', page)
+                    self.assertNotIn("/menu/", page)
+        # one switch per guest: the second and the eighth see the button
+        self.assertEqual(with_button, [2, 8])
+        # the text is on the pages of the guests only
+        for path, content in files.items():
+            if not path.endswith("/index.html"):
+                for form in ("ty", "vy"):
+                    self.assertNotIn(build.text_to_html(menu["pending"][form]), content, path)
+        # the set without places has no links
+        for path, content in self.built["data-venue-pending"][2].items():
+            self.assertNotIn("events__actions card__text", content, path)
+
     def test_media_names_of_the_data_are_not_published(self):
         site, _invitations, files = self.built["data"]
         for item in site["media"].values():

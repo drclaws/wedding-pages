@@ -122,6 +122,33 @@ class TreePrivacyTests(unittest.TestCase):
         # the second and the eighth invitation
         self.assertEqual(switched_on, 2)
 
+    def test_a_text_in_place_of_a_link_holds_no_token(self):
+        site, invitations = F.site(), F.invitations()
+        site["events"]["dinner"]["links"]["menu"]["pending"] = {
+            "ty": "{greeting} Меню появится здесь позже — мы тебе напишем",
+            "vy": "{greeting} Меню появится здесь позже — мы вам напишем",
+        }
+        pages, _usage = _page.build_pages(site, invitations, F.settings())
+        guests_with_text = 0
+        for number, (invitation, page) in enumerate(zip(invitations, pages), start=1):
+            token = invitation["token"]
+            text = json.dumps(page, ensure_ascii=False)
+            links = link_nodes(page)
+            with self.subTest(invitation=number):
+                self.assertNotIn("{token}", text)
+                for link in links:
+                    if link["pending"]:
+                        # no address at all: neither the token nor a path
+                        self.assertEqual((link["href"], link["text"]), ("", ""))
+                        self.assertTrue(link["pending"].startswith(invitation["greeting"]))
+                    else:
+                        self.assertEqual(link["href"], f"/menu/{token}/")
+                # the token only in the `href` of the links shown to the guest
+                self.assertEqual(text.count(token), sum(token in link["href"] for link in links))
+            guests_with_text += any(link["pending"] for link in links)
+        # everybody but the second and the eighth invitation
+        self.assertEqual(guests_with_text, 6)
+
     def test_widget_switched_on_for_one_invitation(self):
         booked = F.SITE["sections"][5]["widgets"][2]["text"]
         pages, _usage = _page.build_pages(F.site(), F.invitations(), F.settings())

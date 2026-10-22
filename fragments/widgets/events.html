@@ -1,4 +1,4 @@
-<!-- Виджет событий; ожидает в `.` виджет: domId, labelledBy, items[] (события гостя по времени начала; у события links[] — id, href, text: кнопки после «Добавить в календарь»), multiple, primaryDomId. Без скрипта список вкладок скрыт и все карточки идут подряд; первостепенная — в рамке (events__panel--primary). Пометки «прошло» и «идёт сейчас» ставит скрипт. Таймера в карточках нет. -->
+<!-- Виджет событий; ожидает в `.` виджет: domId, labelledBy, items[] (события гостя по времени начала; у события links[] — id, href, text, pending: кнопки после «Добавить в календарь»; элемент с непустым pending — текст на месте кнопки, без адреса), multiple, primaryDomId. Без скрипта список вкладок скрыт и все карточки идут подряд; первостепенная — в рамке (events__panel--primary). Пометки «прошло» и «идёт сейчас» ставит скрипт. Таймера в карточках нет. -->
 <div class="widget events-widget events" id="{{.domId}}" data-events data-events-primary="{{.primaryDomId}}">
   <!-- if:.multiple -->
   <div class="events__tabs" role="tablist" aria-labelledby="{{.labelledBy}}" data-events-tablist hidden>
@@ -19,7 +19,7 @@
       <p class="events__when"><time datetime="{{.startISO}}">{{.whenText}}</time>
         <span class="time-label" data-events-when="past" hidden>событие прошло</span>
         <span class="time-label time-label--strong" data-events-when="now" hidden>идёт сейчас</span></p>
-      <p class="events__actions"><a class="btn btn--secondary" href="{{.icsPath}}" type="text/calendar">Добавить в календарь</a></p><!-- each:.links --><p class="events__actions"><a class="btn btn--secondary" href="{{.href}}">{{.text}}</a></p><!-- endeach -->
+      <p class="events__actions"><a class="btn btn--secondary" href="{{.icsPath}}" type="text/calendar">Добавить в календарь</a></p><!-- each:.links --><!-- if:!.pending --><p class="events__actions"><a class="btn btn--secondary" href="{{.href}}">{{.text}}</a></p><!-- endif --><!-- if:.pending --><p class="events__actions card__text">{{.pending}}</p><!-- endif --><!-- endeach -->
     </header>
     <!-- if:.description -->
     <div class="prose events__description">
