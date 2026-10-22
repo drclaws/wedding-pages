@@ -750,6 +750,7 @@ in `invitations.json`, [3.1](#31-invitationsjson--массив-приглаше�
 | `text` | string | yes | the label of the button; one line, as the `title` of the event: no forms of address, no `{` or `}` (nothing is filled in) |
 | `href` | string | yes | a path from the root of the site to a directory, see below |
 | `visible` | boolean | no | `false` by default: the link is shown to the guests who switch it on; `true` shows it to everybody who sees the event (no warning) |
+| `pending` | text | no | the text **in place of the button** while the link is not shown to the guest, see below; a value of the same shape as the `description` of the event (a string or `{ "ty": …, "vy": … }`, placeholders and `{text:<id>}`, [3.6](#36-тексты-формы-обращения-и-подстановки)), but on one line, also once its named texts are expanded; no `{token}`; blank means no text |
 
 The rule of `href`: `/`, then segments, each followed by `/` (so the path ends
 with `/`: it leads to the page of a directory). A segment is `A–Z`, `a–z`,
@@ -772,6 +773,22 @@ switched on for him — the address of the page holds it anyway; other pages and
 build needs `--allow-path` for its directory
 ([2.1](#21-build--собрать-приглашения)); without it the link fails the check of
 the output.
+
+**A text in place of the button** (`pending`). While a link is not shown to a
+guest, its place in the card may hold a text instead: for example, that the
+menu will appear here closer to the day. Each guest sees either the button or
+the text, never both, and the same switch of the invitation
+(`events.<id>.links.<id>.visible`) turns one into the other; an invitation has
+no text of its own. The text holds neither the token nor an address: `{token}`
+in it is an error of its own (`must not contain {token}: the text stands in
+place of the link and holds no token`). A link without `pending` leaves nothing
+in its place.
+
+```json
+"menu": { "text": "Меню ужина", "href": "/menu/{token}/",
+          "pending": { "ty": "Меню ужина появится здесь ближе к празднику — мы тебе напишем",
+                       "vy": "Меню ужина появится здесь ближе к празднику — мы вам напишем" } }
+```
 
 #### Места (`locations.<id>`)
 
@@ -1024,7 +1041,7 @@ Chrome тогда не нужен. Пропорции, далёкие от 1200�
 | приписки гостя (`note`) | нет | да, и `{text:<id>}` |
 | общие тексты `texts.<id>` | да, плюс общая форма `all` | да, и `{text:<id>}` |
 | `linkPreview.description` | нет (тексты — в общей форме `all`) | только уровня сайта (без `{greeting}`; `{event…}` — основного события), и `{text:<id>}` |
-| `description` события и места, `title` и `text` пункта программы | да | да, и `{text:<id>}` |
+| `description` события и места, `title` и `text` пункта программы, `pending` ссылки события (одной строкой, без `{token}`) | да | да, и `{text:<id>}` |
 | `title` события, `name` и `address` места, `greeting`, `coupleNames`, `rsvpDeadline`, `alt` медиа | нет | нет |
 
 Последняя строка — то, что уходит в **общие файлы**: название события и его
@@ -1092,9 +1109,9 @@ Chrome тогда не нужен. Пропорции, далёкие от 1200�
   сама служит общей формой, если в ней нет `{greeting}`;
 - `{text:x}` работает там же, где подстановки: `title`, `eyebrow`, `text`
   виджета, приписки гостя, `linkPreview.description`, `description` события и
-  места, `title` и `text` пункта программы. В `title` события, `name` и
-  `address` места, `greeting`, `coupleNames`, `rsvpDeadline` и `alt` — нет
-  (там это обычный текст).
+  места, `title` и `text` пункта программы, `pending` ссылки события. В
+  `title` события, `name` и `address` места, `greeting`, `coupleNames`,
+  `rsvpDeadline` и `alt` — нет (там это обычный текст).
 
 **Как разворачивается:**
 
@@ -1267,6 +1284,21 @@ python3 build.py build --data data --media media --out dist/invite --base-path /
 Whether the page exists is up to whoever publishes the whole site. A link
 switched on for a guest who does not see the event, or whose page shows the
 event in no "Events" widget, is a warning.
+
+**A text in place of a link until it is switched on.** The guests who do not
+have the link may see a line in the place of the button, in their form of
+address:
+
+```json
+"links": { "menu": { "text": "Меню ужина", "href": "/menu/{token}/",
+                     "pending": { "ty": "Меню ужина появится здесь ближе к празднику — мы тебе напишем",
+                                  "vy": "Меню ужина появится здесь ближе к празднику — мы вам напишем" } } }
+```
+
+A guest without the link sees the line, muted, right after «Добавить в
+календарь»; the guests who have it switched on see the button instead.
+Switching the link on for one more guest (`"visible": true` in his invitation)
+replaces the line with the button on his page; nothing else changes.
 
 **Первостепенное событие.** Кого зовут только на регистрацию, у того
 первостепенным должно быть оно — обложка, дата, таймер и `{eventDate}` возьмут
@@ -1602,9 +1634,17 @@ event in no "Events" widget, is a warning.
 в разные дни), `icsPath` (`<base-path>/assets/<mediaDir>/<hash>.ics` — календарный файл
 события, [5](#5-что-получается-в-dist-и-что-проверяется)), `location` (место,
 `nested: true`), `program` — `{domId, items[], nested: true}` или `null`, если
-программы нет, `links[]` — ссылки события, видимые гостю, по порядку ключей:
-`{id, href, text}`, в `href` `{token}` заменён токеном гостя (`[]`, если ссылок
-нет; `domId` у ссылки нет).
+программы нет, `links[]` — ссылки события на странице гостя, по порядку ключей:
+`{id, href, text, pending}`, в `href` `{token}` заменён токеном гостя (`[]`, если
+ссылок нет; `domId` у ссылки нет; см. ниже).
+
+**A link of an event** (`links[]`) is one of two kinds. A link the guest sees
+has `href` with `{token}` replaced by his token, `text`, and `pending` `""`. A
+hidden link with a text in its place (`pending`, [3.2](#32-sitejson--общие-данные))
+has that text in `pending`, ready (the form of address, the named texts and the
+placeholders resolved), and `href` and `text` `""`: no token, no address. A
+hidden link without such a text is not in the list. The tree of the link
+preview page has no links at all.
 
 **Место:** `id`, `domId`, `ready`, `name`, `address`, `description`,
 `mapLinks` (`google`, `yandex`, `apple` — готовая ссылка или `""`),
@@ -1756,17 +1796,21 @@ id останавливается с ошибкой.
 
 **The calendar and the links in the card of an event** (`widgets/events.html`).
 The head of the card ends with the paragraph of the calendar file; every link
-of the event that the guest sees ([4.4](#44-дерево-страницы), `links[]`)
-follows it as a paragraph of its own, on the same line of the fragment:
+of the event on the page of the guest ([4.4](#44-дерево-страницы), `links[]`)
+follows it as a paragraph of its own, on the same line of the fragment: a
+button, or the text in its place when `pending` is not empty:
 
 ```html
-<p class="events__actions"><a class="btn btn--secondary" href="{{.icsPath}}" type="text/calendar">Добавить в календарь</a></p><!-- each:.links --><p class="events__actions"><a class="btn btn--secondary" href="{{.href}}">{{.text}}</a></p><!-- endeach -->
+<p class="events__actions"><a class="btn btn--secondary" href="{{.icsPath}}" type="text/calendar">Добавить в календарь</a></p><!-- each:.links --><!-- if:!.pending --><p class="events__actions"><a class="btn btn--secondary" href="{{.href}}">{{.text}}</a></p><!-- endif --><!-- if:.pending --><p class="events__actions card__text">{{.pending}}</p><!-- endif --><!-- endeach -->
 ```
 
 A paragraph of its own keeps two buttons from touching when they wrap on a
 phone: the existing spacing of `.events__head > .events__actions` applies, the
-styles are unchanged. A card without links is byte for byte what it was. The
-date widget and the cover show no links.
+styles are unchanged. The text in place of a button is a plain paragraph in the
+same place and with the same spacing, in the muted colour of the text of a card
+(`card__text`); it needs no script and prints as it is shown. A card without
+links and texts in their place is byte for byte what it was. The date widget
+and the cover show neither.
 
 **Уровни заголовков:** h1 — обложка; h2 — секция; h3 — событие, название
 места в виджете места, пункты отдельного виджета программы; h4 — место
@@ -2733,7 +2777,9 @@ CSP работает потому, что страница по построен
   links of events switched on for him (`{token}`,
   [3.2](#32-sitejson--общие-данные)): the address of the page holds it anyway,
   and `Referrer-Policy: no-referrer` does not pass it on when the guest follows
-  a link. Other pages and `assets/` never hold it;
+  a link. Other pages and `assets/` never hold it, and neither does the text in
+  place of a link that is not shown: it has no address, and `{token}` in it is
+  an error;
 - календарные файлы — по одному на событие для всего сайта, без обращения и
   приписок, в каталоге медиа под хэшем содержимого с ключом из всех токенов;
   ссылка на файл есть только у гостей, которым событие видно, а вычислить имя
