@@ -581,6 +581,15 @@ class ExampleDataTests(CliTestCase):
             in (out / invitation["token"] / "index.html").read_text(encoding="utf-8")
         ]
         self.assertEqual(with_link, [2, 8])
+        # the others see the text in place of the button, in their form
+        pending = site["events"]["dinner"]["links"]["menu"]["pending"]
+        with_text = [
+            number
+            for number, invitation in enumerate(invitations, start=1)
+            if f'<p class="events__actions card__text">{pending[invitation["form"]]}</p>'
+            in (out / invitation["token"] / "index.html").read_text(encoding="utf-8")
+        ]
+        self.assertEqual(with_text, [1, 3, 4, 5, 6, 7])
 
     def test_the_link_of_the_example_needs_the_allowed_path(self):
         site, invitations = self.load("data")

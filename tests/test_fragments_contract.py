@@ -198,7 +198,9 @@ EVENTS = {
                  "whenText": "Суббота, 15 июня 2030, 11:00–12:00"},
     "dinner": {"title": "Праздничный ужин", "location": "manor", "schedule": "dinner",
                "description": "Дресс-код — светлые тона.",
-               "links": {"menu": {"text": "Меню ужина", "href": "/menu/{token}/"}},
+               "links": {"menu": {"text": "Меню ужина", "href": "/menu/{token}/",
+                                  "pending": {"ty": "Меню ужина появится позже — напишем тебе",
+                                              "vy": "Меню ужина появится позже — напишем вам"}}},
                "start": "2030-06-15T16:00:00+03:00", "end": "2030-06-15T23:30:00+03:00",
                "dateText": "15 июня 2030", "timeText": "16:00", "dayMonth": "15 июня",
                "whenText": "Суббота, 15 июня 2030, 16:00–23:30"},
@@ -366,14 +368,19 @@ class PageTree:
                       else match.group(0)[0], value)
 
     def links(self, event_id: str) -> list[Strict]:
-        """The links of an event the guest sees: switched on for him, else by default."""
+        """The links of an event on the page of the guest: a button for a link
+        switched on for him (else by default), the text in its place for a
+        hidden link that has one."""
         overrides = self.guest.get("events", {}).get(event_id, {}).get("links", {})
-        return [
-            node(LINK_FIELDS, id=link_id, text=link["text"],
-                 href=link["href"].replace("{token}", self.guest["token"]), pending="")
-            for link_id, link in EVENTS[event_id].get("links", {}).items()
-            if overrides.get(link_id, {}).get("visible", link.get("visible", False))
-        ]
+        found = []
+        for link_id, link in EVENTS[event_id].get("links", {}).items():
+            if overrides.get(link_id, {}).get("visible", link.get("visible", False)):
+                found.append(node(LINK_FIELDS, id=link_id, text=link["text"], pending="",
+                                  href=link["href"].replace("{token}", self.guest["token"])))
+            elif link.get("pending"):
+                found.append(node(LINK_FIELDS, id=link_id, text="", href="",
+                                  pending=self.text(link["pending"])))
+        return found
 
     def event(self, event_id: str, dom_id: str | None) -> Strict:
         item = EVENTS[event_id]
@@ -613,6 +620,11 @@ def bare_link(link_id: str, text: str = "Ссылка") -> Strict:
     return node(LINK_FIELDS, id=link_id, href=f"/menu/{link_id}-t0k3n/", text=text, pending="")
 
 
+def bare_pending(link_id: str, pending: str = "Ссылка появится позже") -> Strict:
+    """A hidden link with the text in its place: no address, no label."""
+    return node(LINK_FIELDS, id=link_id, href="", text="", pending=pending)
+
+
 def bare_event(event_id: str, full: bool, primary: bool = False, with_dom_id: bool = True) -> Strict:
     values = dict(
         id=event_id, title="Событие", description="Описание" if full else "",
@@ -625,7 +637,8 @@ def bare_event(event_id: str, full: bool, primary: bool = False, with_dom_id: bo
         program=node(PROGRAM_FIELDS, domId=f"w--e-{event_id}--program", nested=True, items=[
             node(SCHEDULE_ITEM_FIELDS, time="16:00", title="Пункт", text="Текст"),
             node(SCHEDULE_ITEM_FIELDS, time="", title="Пункт", text="")]) if full else None,
-        links=[bare_link("menu"), bare_link("map", "Схема")] if full else [],
+        links=[bare_link("menu"), bare_link("map", "Схема"), bare_pending("seating")]
+        if full else [],
     )
     values["domId"] = f"w--e-{event_id}" if with_dom_id else ""
     return node(EVENT_FIELDS if with_dom_id else PRIMARY_EVENT_FIELDS, **values)
@@ -859,8 +872,8 @@ class FragmentContractTests(unittest.TestCase):
             "events", items=[bare_event("a", True, primary=True)], count=1, multiple=False,
             primaryDomId="w--e-a")])
         order = ["<h3", "events__when", "text/calendar", 'href="/menu/menu-t0k3n/"',
-                 'href="/menu/map-t0k3n/"', "</header>", "events__description",
-                 "events__note", "venue__name", "events__program"]
+                 'href="/menu/map-t0k3n/"', "Ссылка появится позже", "</header>",
+                 "events__description", "events__note", "venue__name", "events__program"]
         positions = [document.index(marker) for marker in order]
         self.assertEqual(positions, sorted(positions))
         self.assertRegex(document, r"<h4 class=\"venue__name\">")
@@ -889,6 +902,48 @@ class FragmentContractTests(unittest.TestCase):
         self.assertIn('href="/menu/menu-t0k3n/">&lt;b&gt;Меню&lt;/b&gt;</a>',
                       card([bare_link("menu", "<b>Меню</b>")]))
 
+    def test_the_text_in_place_of_a_link(self):
+        def card(links: list) -> str:
+            event = bare_event("a", False, primary=True)
+            event["links"] = links
+            document = self.render("widgets", [bare_widget(
+                "events", items=[event], count=1, multiple=False, primaryDomId="w--e-a")])
+            self.assertEqual(html_problems(document), [])
+            return re.search(r'<header class="events__head">.*?</header>', document, re.S).group(0)
+
+        calendar = ('<p class="events__actions"><a class="btn btn--secondary" '
+                    'href="/assets/m/a.ics" type="text/calendar">Добавить в календарь</a></p>')
+        text = '<p class="events__actions card__text">Меню появится позже</p>'
+        # a paragraph in place of the button: the same place and spacing, muted,
+        # no link at all
+        self.assertTrue(card([bare_pending("menu", "Меню появится позже")]).endswith(
+            f"{calendar}{text}\n    </header>"))
+        # a button and a text, in the order of the links
+        self.assertTrue(card([bare_pending("menu", "Меню появится позже"),
+                              bare_link("map", "Схема")]).endswith(
+            f'{calendar}{text}<p class="events__actions"><a class="btn btn--secondary" '
+            'href="/menu/map-t0k3n/">Схема</a></p>\n    </header>'))
+        self.assertTrue(card([bare_link("map", "Схема"),
+                              bare_pending("menu", "Меню появится позже")]).endswith(
+            f'{calendar}<p class="events__actions"><a class="btn btn--secondary" '
+            f'href="/menu/map-t0k3n/">Схема</a></p>{text}\n    </header>'))
+        # markup in the text is escaped
+        self.assertTrue(card([bare_pending("menu", "<b>Меню</b> & позже")]).endswith(
+            f'{calendar}<p class="events__actions card__text">&lt;b&gt;Меню&lt;/b&gt; &amp; '
+            'позже</p>\n    </header>'))
+
+    def test_the_markup_of_the_text_in_place_of_a_link(self):
+        source = (FRAGMENTS_DIR / "widgets" / "events.html").read_text(encoding="utf-8")
+        self.assertIn(
+            '<p class="events__actions"><a class="btn btn--secondary" href="{{.icsPath}}" '
+            'type="text/calendar">Добавить в календарь</a></p><!-- each:.links --><!-- '
+            'if:!.pending --><p class="events__actions"><a class="btn btn--secondary" '
+            'href="{{.href}}">{{.text}}</a></p><!-- endif --><!-- if:.pending --><p '
+            'class="events__actions card__text">{{.pending}}</p><!-- endif --><!-- endeach -->\n',
+            source,
+        )
+        self.assertEqual(source.count("{{.pending}}"), 1)
+
     def test_only_the_events_widget_shows_the_links(self):
         event = bare_event("e", True, True)
         self.assertTrue(event["links"])
@@ -900,6 +955,7 @@ class FragmentContractTests(unittest.TestCase):
             backgroundFocus="center")])
         for document in (date, cover):
             self.assertNotIn("/menu/", document)
+            self.assertNotIn("Ссылка появится позже", document)
 
     def test_one_program_markup_at_two_depths(self):
         items = [node(SCHEDULE_ITEM_FIELDS, time="10:00", title="Пункт", text="")]
@@ -1081,6 +1137,23 @@ class FullPageTests(unittest.TestCase):
         for guest in GUESTS:
             tree = page_tree(guest)
             cls.pages[guest["token"]] = (tree, render_page(tree, fragments))
+
+    def test_the_button_or_the_text_in_its_place(self):
+        pending = EVENTS["dinner"]["links"]["menu"]["pending"]
+        for guest in GUESTS:
+            _tree, page = self.pages[guest["token"]]
+            menu = guest.get("events", {}).get("dinner", {}).get("links", {}).get("menu", {})
+            shown = menu.get("visible", False)
+            other = "vy" if guest["form"] == "ty" else "ty"
+            with self.subTest(token=guest["token"][:4]):
+                self.assertEqual(
+                    page.count(f'href="/menu/{guest["token"]}/">Меню ужина</a></p>'), int(shown))
+                self.assertEqual(
+                    page.count(f'<p class="events__actions card__text">{pending[guest["form"]]}</p>'),
+                    int(not shown))
+                self.assertNotIn(pending[other], page)
+        self.assertEqual(sum(
+            "/menu/" in page for _tree, page in self.pages.values()), 2)
 
     def test_the_fixture_covers_the_matrix(self):
         combinations = set()
@@ -1293,6 +1366,18 @@ class DataLayerPageTests(unittest.TestCase):
             with self.subTest(page=label):
                 build.check_rendered(page)
                 self.assertEqual(html_problems(page, published_files(tree)), [])
+
+    def test_the_text_in_place_of_the_link_of_the_fixture(self):
+        pending = F.SITE["events"]["dinner"]["links"]["menu"]["pending"]
+        main = [(tree, page) for label, tree, page in self.pages if label.startswith("main")]
+        texts = []
+        for (tree, page), invitation in zip(main, F.INVITATIONS):
+            paragraph = f'<p class="events__actions card__text">{pending[tree["form"]]}</p>'
+            # once on the page: in the card of the dinner, not in the cover or the date
+            texts.append(page.count(paragraph))
+            self.assertEqual(page.count('href="/menu/'), 1 - texts[-1])
+            self.assertNotIn(invitation["token"], page.replace(f'href="/menu/{invitation["token"]}/"', ""))
+        self.assertEqual(texts, [1, 0, 1, 1, 1, 1, 1, 0])
 
     def test_the_nodes_have_exactly_the_fields_of_the_contract(self):
         widget_fields = {

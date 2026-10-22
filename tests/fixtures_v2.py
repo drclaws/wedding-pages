@@ -3,9 +3,10 @@
 `SITE` / `INVITATIONS` are the main set: eight invitations that cover every
 combination of the form of address, a guest from another city and a
 companion, a different primary event, hidden and switched-on events, notes
-for sections and events, a link of an event switched on for two invitations,
-a place that is not announced yet, events on two days, photos with a portrait
-and a landscape video and a photo behind the cover.  `PENDING_SITE` /
+for sections and events, a link of an event switched on for two invitations
+(the others see a text in its place), a place that is not announced yet,
+events on two days, photos with a portrait and a landscape video and a photo
+behind the cover.  `PENDING_SITE` /
 `PENDING_INVITATIONS` are the set without places and media (and a cover
 without a photo).
 
@@ -143,8 +144,18 @@ SITE = {
             "end": "2030-06-15T23:30:00+03:00",
             "showEnd": True,
             "schedule": "dinner",
-            # hidden by default: switched on for two invitations
-            "links": {"menu": {"text": "Меню ужина", "href": "/menu/{token}/"}},
+            # hidden by default: switched on for two invitations, the others
+            # see the text in its place
+            "links": {
+                "menu": {
+                    "text": "Меню ужина",
+                    "href": "/menu/{token}/",
+                    "pending": {
+                        "ty": "Меню ужина появится здесь ближе к празднику — мы тебе напишем",
+                        "vy": "Меню ужина появится здесь ближе к празднику — мы вам напишем",
+                    },
+                }
+            },
         },
         "brunch": {
             "title": "Второй день",
